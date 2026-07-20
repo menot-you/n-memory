@@ -5,16 +5,26 @@ name: release
 on:
   push:
     tags: ["v*"]
+  # Pre-flip full-matrix proof: dispatch rebuilds an EXISTING tag's assets
+  # (macOS/ARM included) while the repo is still private.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build and upload assets for"
+        required: true
 permissions:
   contents: write
 env:
   CARGO_TERM_COLOR: always
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 jobs:
   # Always builds — this is the asset the private-phase pipeline test proves.
   build-core:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
       - run: cargo build --release
       - run: |
           mkdir -p dist && cp target/release/nmemory dist/nmemory
@@ -27,7 +37,7 @@ jobs:
   # The rest of the matrix arms itself when the repository is public
   # (private phase: paid macOS minutes + arm runner availability).
   build-cross:
-    if: ${{ !github.event.repository.private }}
+    if: ${{ !github.event.repository.private || github.event_name == 'workflow_dispatch' }}
     strategy:
       fail-fast: false
       matrix:
@@ -38,6 +48,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
       - run: cargo build --release
       - run: |
           mkdir -p dist && cp target/release/nmemory dist/nmemory
@@ -55,12 +67,17 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           merge-multiple: true
-      - name: create release with checksums
+      - name: create or update release with checksums
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           sha256sum nmemory-*.tar.gz > SHA256SUMS
-          gh release create "$GITHUB_REF_NAME" nmemory-*.tar.gz SHA256SUMS \
-            --repo "$GITHUB_REPOSITORY" --verify-tag \
-            --title "nMEMORY $GITHUB_REF_NAME" \
-            --notes "Hermetic local memory for LLM agents. Binaries consumed by install.sh; SHA256SUMS attached."
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" nmemory-*.tar.gz SHA256SUMS \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$RELEASE_TAG" nmemory-*.tar.gz SHA256SUMS \
+              --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --title "nMEMORY $RELEASE_TAG" \
+              --notes "Hermetic local memory for LLM agents. Binaries consumed by install.sh; SHA256SUMS attached."
+          fi
