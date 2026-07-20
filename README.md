@@ -3,7 +3,7 @@
 <img src="assets/hero.png" alt="ₙMEMORY — hermetic, local memory for coding agents, one that never lies to you" width="900">
 
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
-![Tests](https://img.shields.io/badge/tests-517%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-520%20passing-brightgreen)
 ![Coverage](https://img.shields.io/badge/coverage-95%25%20lines-brightgreen)
 ![Audit](https://img.shields.io/badge/audit-0%20vulnerabilities-brightgreen)
 ![Unsafe Forbidden](https://img.shields.io/badge/unsafe-forbidden-brightgreen)
@@ -141,7 +141,7 @@ Don't take my word for any of this — that would defeat the point. Each law has
 | Deterministic store | `export` twice with `stamp:false` → byte-identical |
 | Fail-safe | point it at a corrupt DB → typed error, no panic; empty store → clean abstain, not a crash |
 
-The full suite is `cargo test` (517 tests, hermetic offline build).
+The full suite is `cargo test` (520 tests, hermetic offline build).
 
 ## The tool surface — 20 tools, four planes
 
