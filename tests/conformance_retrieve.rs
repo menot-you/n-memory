@@ -7,8 +7,8 @@
 //! capsule or a leaking error; a tainted capsule appears FLAGGED, never
 //! silently excluded or promoted; retrieving twice yields the same ranked
 //! order; a query matching nothing abstains, never fabricates. Re-authored
-//! against the new crate API (`retrieve(store, query, now)` with the
-//! evidence envelope) with corpora seeded through the real ingest door,
+//! against the new crate API (`retrieve(store, query, now, anchor_root)`
+//! with the evidence envelope) with corpora seeded through the real ingest door,
 //! mirroring the donor's production-handler discipline.
 //!
 //! Strengthened vs donor: `now` is injected here (no wall-clock reads), so
@@ -25,9 +25,11 @@
     reason = "tests use unwrap/expect so fixture failures fail at the assertion site"
 )]
 
+use std::path::Path;
+
 use nmemory::capsule::AuthorityClass;
 use nmemory::ingest::{IngestDefaults, IngestRequest, ingest};
-use nmemory::retrieve::{ADVISORY_NOT_AUTHORITY, RetrieveQuery, RetrieveResponse, retrieve};
+use nmemory::retrieve::{ADVISORY_NOT_AUTHORITY, RetrieveError, RetrieveQuery, RetrieveResponse};
 use nmemory::store::{Store, Tier};
 use time::OffsetDateTime;
 use time::macros::datetime;
@@ -35,6 +37,24 @@ use time::macros::datetime;
 /// Injected instants: capture happens before the query instant.
 const CAPTURED: OffsetDateTime = datetime!(2026-07-18 12:00:00 UTC);
 const NOW: OffsetDateTime = datetime!(2026-07-18 20:00:00 UTC);
+
+/// Test seam for the public entry: every recall in this suite injects
+/// the SAME hermetic, nonexistent anchor root (the root is boot-injected
+/// config, no longer a crate constant), so anchor-probe verdicts are
+/// box-independent while the envelope armor gate still sees the full
+/// tri-state wire shape.
+fn retrieve(
+    store: &mut Store,
+    query: &RetrieveQuery,
+    now: OffsetDateTime,
+) -> Result<RetrieveResponse, RetrieveError> {
+    nmemory::retrieve::retrieve(
+        store,
+        query,
+        now,
+        Path::new("/nmemory-hermetic-test-anchor-root"),
+    )
+}
 
 fn defaults() -> IngestDefaults {
     IngestDefaults {

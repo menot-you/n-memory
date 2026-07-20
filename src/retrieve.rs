@@ -125,7 +125,10 @@
 //! at something real: for `path:line`-shaped anchors (everything after
 //! the LAST `:` all ASCII digits; earlier colons belong to the path) the
 //! engine does a cheap symlink-refusing existence probe of the path
-//! resolved against [`ANCHOR_ROOT`] — `anchor_live` is `true` (the path
+//! resolved against the boot-injected anchor root (the server
+//! boundary's [`crate::server::BoundaryConfig::anchor_root`], resolved
+//! at boot as `NMEMORY_ANCHOR_ROOT` > the boot cwd; tests inject a
+//! hermetic temp root) — `anchor_live` is `true` (the path
 //! exists — file OR directory; the line itself is never verified),
 //! `false` (missing, or ANY symlink component — the probe never follows
 //! links, so a repo-internal symlink can never existence-probe outside
@@ -240,11 +243,6 @@ pub const HEADLINE_MAX_CHARS: usize = 140;
 /// stored confidence and never gates matching.
 pub const DECAY_HALF_LIFE_DAYS: f64 = 90.0;
 
-/// Root that `path:line` anchors resolve against for the `anchor_live`
-/// probe (module doc): the monorepo the owner's capsules anchor into.
-/// Tests inject a hermetic temp root instead.
-pub const ANCHOR_ROOT: &str = "/nott/monorepo";
-
 /// Reciprocal-rank-fusion constant (w3 u6a): each lane contributes
 /// `1 / (RRF_K + rank)` (1-based rank) to a candidate's fused score, summed
 /// across the lanes that ranked it. The canonical value from Cormack,
@@ -292,9 +290,9 @@ impl Serialize for DataFraming {
 }
 
 /// Liveness of a `path:line` anchor at recall time (module doc): a
-/// cheap symlink-refusing existence probe against [`ANCHOR_ROOT`]
-/// (symlinks are never followed — fail-closed `false`). Wire form is
-/// the documented tri-state: `true` | `false` | `"unknown"`.
+/// cheap symlink-refusing existence probe against the caller-injected
+/// anchor root (symlinks are never followed — fail-closed `false`).
+/// Wire form is the documented tri-state: `true` | `false` | `"unknown"`.
 /// Advisory explain data — never authority, never a gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnchorLive {
@@ -623,8 +621,8 @@ pub struct Evidence {
     pub provenance: Provenance,
     /// Whether `provenance.anchor` still points at an existing path
     /// (module doc: Anchor liveness): `true` | `false` | `"unknown"`.
-    /// Metadata-only, symlink-refusing probe against [`ANCHOR_ROOT`] —
-    /// advisory explain, never authority, never a gate.
+    /// Metadata-only, symlink-refusing probe against the boot-injected
+    /// anchor root — advisory explain, never authority, never a gate.
     pub anchor_live: AnchorLive,
     /// Whether the anchored file's CONTENT still hashes to its
     /// capture-time hash (module doc: Anchor drift): `"unchanged"` |
@@ -830,12 +828,19 @@ pub enum RetrieveError {
 /// only an advisory alias hint, never a canonical byte. The recording runs
 /// on the concrete [`Store`] (not the [`RecallStore`] recall seam) so the
 /// pure recall algorithm stays untouched.
+///
+/// `anchor_root` is the base the `anchor_live`/`anchor_drift` probes
+/// resolve `path:line` anchors against — boot-injected by the caller
+/// ([`crate::server::BoundaryConfig::anchor_root`]:
+/// `NMEMORY_ANCHOR_ROOT` > the boot cwd), NEVER a compiled-in path;
+/// tests inject a hermetic temp root.
 pub fn retrieve(
     store: &mut Store,
     query: &RetrieveQuery,
     now: OffsetDateTime,
+    anchor_root: &Path,
 ) -> Result<RetrieveResponse, RetrieveError> {
-    let response = retrieve_core(store, query, now, Path::new(ANCHOR_ROOT))?;
+    let response = retrieve_core(store, query, now, anchor_root)?;
     // Map the ungrounded outcomes to a ledger entry; grounded records
     // nothing. Recording uses the RAW caller terms — the store folds and
     // deduplicates them (the alias-key normalization).
@@ -898,8 +903,8 @@ struct Candidate {
 
 /// The engine behind [`retrieve`], generic over the [`RecallStore`]
 /// contract seam; `anchor_root` is injected so tests probe liveness
-/// against a hermetic temp root instead of the production
-/// [`ANCHOR_ROOT`].
+/// against a hermetic temp root instead of the boot-injected production
+/// root ([`crate::server::BoundaryConfig::anchor_root`]).
 fn retrieve_core<S: RecallStore>(
     store: &mut S,
     query: &RetrieveQuery,
@@ -1510,7 +1515,7 @@ fn anchor_liveness(anchor: &str, root: &Path) -> AnchorLive {
 ///
 /// Both ends of the drift comparison use this ONE function: the boundary
 /// at capture (recording into the `anchor_hashes` sidecar against the
-/// production [`ANCHOR_ROOT`]) and the recall probe ([`anchor_drift_of`])
+/// boot-injected anchor root) and the recall probe ([`anchor_drift_of`])
 /// — so the two hashes can only ever differ when the file's bytes did.
 pub(crate) fn anchor_content_hash(anchor: &str, root: &Path) -> Option<String> {
     if anchor_liveness(anchor, root) != AnchorLive::Live {
@@ -1821,6 +1826,26 @@ mod tests {
 
     /// Injected query instant — retrieve reads no clock.
     const NOW: OffsetDateTime = datetime!(2026-07-18 20:00:00 UTC);
+
+    /// Test seam for the public entry (this fn item shadows the
+    /// glob-imported [`super::retrieve`]): every recall in this module
+    /// injects the SAME hermetic, nonexistent anchor root, so probe
+    /// verdicts are box-independent — a relative `path:line` anchor
+    /// reads missing, everything else unknown. Tests that need a LIVE
+    /// root call [`retrieve_core`] with a temp dir instead.
+    fn retrieve(
+        store: &mut Store,
+        query: &RetrieveQuery,
+        now: OffsetDateTime,
+    ) -> Result<RetrieveResponse, RetrieveError> {
+        super::retrieve(
+            store,
+            query,
+            now,
+            Path::new("/nmemory-hermetic-test-anchor-root"),
+        )
+    }
+
     /// Default fixture validity start, safely before [`NOW`].
     const VF: OffsetDateTime = datetime!(2026-07-18 12:00:00 UTC);
     /// Injected append instant (any fixed value works — never read back

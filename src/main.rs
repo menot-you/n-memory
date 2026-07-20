@@ -2,7 +2,8 @@
 //!
 //! Boot: parse args → resolve the DB path (`--db` > `NMEMORY_DB` >
 //! `$XDG_STATE_HOME/nmemory/memory.sqlite3` > `~/.local/state/nmemory/
-//! memory.sqlite3`) → create parent dirs → open the store → serve the five
+//! memory.sqlite3`) → resolve the anchor root (`NMEMORY_ANCHOR_ROOT` >
+//! the boot cwd) → create parent dirs → open the store → serve the five
 //! `memory_*` tools over stdio. stdout carries ONLY protocol frames; the
 //! one boot line goes to stderr. No clock read here — `now` is captured
 //! per call inside the server boundary (`crate::server`).
@@ -38,6 +39,10 @@ enum BootError {
          for the default $XDG_STATE_HOME/nmemory/memory.sqlite3"
     )]
     NoDbPath,
+    /// No `NMEMORY_ANCHOR_ROOT` and no readable boot cwd — nowhere for
+    /// `path:line` anchors to resolve.
+    #[error("no anchor root: set NMEMORY_ANCHOR_ROOT, or run from a readable working directory")]
+    NoAnchorRoot,
     /// The database's parent directory could not be created.
     #[error("cannot create database directory {dir}: {source}")]
     CreateDir {
@@ -126,6 +131,25 @@ fn resolve_db_path(
     Err(BootError::NoDbPath)
 }
 
+/// Resolve the anchor root — the base every `path:line` anchor resolves
+/// against (the `anchor_live`/`anchor_drift` probes and the import
+/// bridge's root-relative anchor rendering) — by fixed precedence:
+/// `NMEMORY_ANCHOR_ROOT` (non-empty) > the boot cwd (the project the
+/// agent runs in, the same value injected as `project_dir`). Inputs
+/// arrive pre-read so the rule is a pure, testable function; empty env
+/// values count as unset. NEVER a hardcoded default root: with neither
+/// source, boot fails typed ([`BootError::NoAnchorRoot`]) instead of
+/// guessing a machine layout.
+fn resolve_anchor_root(
+    env_root: Option<String>,
+    boot_cwd: Option<PathBuf>,
+) -> Result<PathBuf, BootError> {
+    if let Some(root) = env_root {
+        return Ok(PathBuf::from(root));
+    }
+    boot_cwd.ok_or(BootError::NoAnchorRoot)
+}
+
 /// Read an environment variable, treating empty/whitespace as unset.
 fn env_nonempty(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.trim().is_empty())
@@ -170,19 +194,25 @@ async fn run() -> Result<(), BootError> {
 
     // Boundary knowledge, resolved ONCE here: audit actor, forget-key
     // sources (env wins; else a key file beside the DB, created on first
-    // forget), and the import base dirs (home + boot cwd). Everything
-    // ambient stays at this boundary — the server handlers never read env.
+    // forget), the import base dirs (home + boot cwd), and the anchor
+    // root every `path:line` anchor resolves against
+    // (NMEMORY_ANCHOR_ROOT > boot cwd — never a compiled-in path).
+    // Everything ambient stays at this boundary — the server handlers
+    // never read env.
     let hmac_key_file = {
         let mut os = db_path.as_os_str().to_os_string();
         os.push(".hmac-key");
         PathBuf::from(os)
     };
+    let boot_cwd = std::env::current_dir().ok();
+    let anchor_root = resolve_anchor_root(env_nonempty("NMEMORY_ANCHOR_ROOT"), boot_cwd.clone())?;
     let config = BoundaryConfig {
         actor: "mcp-caller".to_string(),
         hmac_env_key: env_nonempty("NMEMORY_HMAC_KEY").map(|k| k.trim().to_string().into_bytes()),
         hmac_key_file: Some(hmac_key_file),
         home_dir: env_nonempty("HOME").map(PathBuf::from),
-        project_dir: std::env::current_dir().ok(),
+        project_dir: boot_cwd,
+        anchor_root,
     };
     let server = MemoryServer::new(
         store,
@@ -303,6 +333,30 @@ mod tests {
         assert!(matches!(
             resolve_db_path(None, None, None, None),
             Err(BootError::NoDbPath)
+        ));
+    }
+
+    #[test]
+    fn resolve_anchor_root_precedence() {
+        // NMEMORY_ANCHOR_ROOT wins over the boot cwd.
+        assert_eq!(
+            resolve_anchor_root(
+                Some("/env/anchor-root".to_string()),
+                Some(PathBuf::from("/boot/cwd"))
+            )
+            .unwrap(),
+            PathBuf::from("/env/anchor-root")
+        );
+        // Boot cwd next — the generic default: the project the agent
+        // runs in, where `path:line` anchors resolve.
+        assert_eq!(
+            resolve_anchor_root(None, Some(PathBuf::from("/boot/cwd"))).unwrap(),
+            PathBuf::from("/boot/cwd")
+        );
+        // Neither → typed failure, fail closed — NEVER a hardcoded root.
+        assert!(matches!(
+            resolve_anchor_root(None, None),
+            Err(BootError::NoAnchorRoot)
         ));
     }
 }
