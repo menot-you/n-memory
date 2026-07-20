@@ -63,17 +63,19 @@
 //! provenance convention, `capsule::Provenance`), where `<line>` is the
 //! 1-based line of the candidate's first kept line in the ORIGINAL file
 //! (frontmatter offsets included). The `<path>` is written RELATIVE to
-//! [`crate::retrieve::ANCHOR_ROOT`] when the source sits under it (q92), so
-//! an in-root import composes with the `anchor_live` probe — that fence
-//! resolves only root-relative paths and reads an absolute anchor as
-//! `unknown`. A source outside the root keeps its absolute path and stays
-//! fail-closed `unknown`.
+//! the caller-injected anchor root (q92) — the SAME boot-injected root
+//! the `anchor_live` probe resolves against
+//! ([`crate::server::BoundaryConfig::anchor_root`]) — when the source
+//! sits under it, so an in-root import composes with the probe: that
+//! fence resolves only root-relative paths and reads an absolute anchor
+//! as `unknown`. A source outside the root keeps its absolute path and
+//! stays fail-closed `unknown`.
 //!
 //! ## Purity
 //!
 //! Pure file reading + splitting: NO store writes, NO taint dependency,
 //! no clock, no randomness, no environment reads, no network. All ambient
-//! input (`base_dir`) is injected at the call boundary. Absent sources
+//! input (`base_dir`, `anchor_root`) is injected at the call boundary. Absent sources
 //! are a TYPED error ([`BridgeError::SourceMissing`]) — a deliberate
 //! deviation from the donor's `"absent"` outcome row (campaign brief):
 //! the integrator maps it to whatever outcome shape the import surface
@@ -95,8 +97,6 @@
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-
-use crate::retrieve::ANCHOR_ROOT;
 
 /// Closed set of file-based memory sources this bridge may read.
 ///
@@ -185,12 +185,15 @@ pub enum BridgeError {
 /// capsule-sized candidates per the module split rule.
 ///
 /// Pure: no store writes, no taint dependency, no ambient input beyond
-/// the injected `base_dir`. Candidate order is deterministic: file order
+/// the injected `base_dir` and `anchor_root` (the boot-injected root
+/// anchors render RELATIVE to when the source sits under it — q92,
+/// module doc). Candidate order is deterministic: file order
 /// (probe order / sorted names for [`BridgeSource::MemoryDir`]), then
 /// document order within each file.
 pub fn read_source(
     source: &BridgeSource,
     base_dir: &Path,
+    anchor_root: &Path,
 ) -> Result<Vec<BridgeCandidate>, BridgeError> {
     let label = source.source_label();
     match source {
@@ -202,7 +205,7 @@ pub fn read_source(
             ];
             for path in &tried {
                 if let Some(content) = read_regular_file(path)? {
-                    return Ok(candidates_from(&content, path, label));
+                    return Ok(candidates_from(&content, path, label, anchor_root));
                 }
             }
             Err(BridgeError::SourceMissing {
@@ -210,17 +213,25 @@ pub fn read_source(
                 tried,
             })
         }
-        BridgeSource::ProjectClaudeMd => read_single(base_dir.join("CLAUDE.md"), label),
-        BridgeSource::ProjectAgentsMd => read_single(base_dir.join("AGENTS.md"), label),
-        BridgeSource::MemoryDir(dir) => read_memory_dir(&base_dir.join(dir), label),
+        BridgeSource::ProjectClaudeMd => {
+            read_single(base_dir.join("CLAUDE.md"), label, anchor_root)
+        }
+        BridgeSource::ProjectAgentsMd => {
+            read_single(base_dir.join("AGENTS.md"), label, anchor_root)
+        }
+        BridgeSource::MemoryDir(dir) => read_memory_dir(&base_dir.join(dir), label, anchor_root),
     }
 }
 
 /// Read exactly one fixed path; absent is the typed
 /// [`BridgeError::SourceMissing`].
-fn read_single(path: PathBuf, label: &'static str) -> Result<Vec<BridgeCandidate>, BridgeError> {
+fn read_single(
+    path: PathBuf,
+    label: &'static str,
+    anchor_root: &Path,
+) -> Result<Vec<BridgeCandidate>, BridgeError> {
     match read_regular_file(&path)? {
-        Some(content) => Ok(candidates_from(&content, &path, label)),
+        Some(content) => Ok(candidates_from(&content, &path, label, anchor_root)),
         None => Err(BridgeError::SourceMissing {
             source_label: label,
             tried: vec![path],
@@ -232,7 +243,11 @@ fn read_single(path: PathBuf, label: &'static str) -> Result<Vec<BridgeCandidate
 /// tests): a non-recursive scan of `dir` for regular `.md` files, sorted
 /// by name. Subdirectories are never entered; symlinked entries are never
 /// followed; the extension match is case-sensitive (`.MD` is skipped).
-fn read_memory_dir(dir: &Path, label: &'static str) -> Result<Vec<BridgeCandidate>, BridgeError> {
+fn read_memory_dir(
+    dir: &Path,
+    label: &'static str,
+    anchor_root: &Path,
+) -> Result<Vec<BridgeCandidate>, BridgeError> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -282,7 +297,7 @@ fn read_memory_dir(dir: &Path, label: &'static str) -> Result<Vec<BridgeCandidat
         // matching the listing's opportunistic nature; symlink/read
         // failures stay typed errors.
         if let Some(content) = read_regular_file(path)? {
-            out.extend(candidates_from(&content, path, label));
+            out.extend(candidates_from(&content, path, label, anchor_root));
         }
     }
     Ok(out)
@@ -329,8 +344,13 @@ fn read_regular_file(path: &Path) -> Result<Option<String>, BridgeError> {
 /// Split one file's content and wrap each piece as a [`BridgeCandidate`]
 /// anchored `<path>:<start-line>` (root-relative when in-root — see
 /// [`anchor_path`]).
-fn candidates_from(content: &str, path: &Path, label: &'static str) -> Vec<BridgeCandidate> {
-    let anchor_base = anchor_path(path);
+fn candidates_from(
+    content: &str,
+    path: &Path,
+    label: &'static str,
+    anchor_root: &Path,
+) -> Vec<BridgeCandidate> {
+    let anchor_base = anchor_path(path, anchor_root);
     split_document(content)
         .into_iter()
         .map(|(start_line, text)| BridgeCandidate {
@@ -341,15 +361,16 @@ fn candidates_from(content: &str, path: &Path, label: &'static str) -> Vec<Bridg
         .collect()
 }
 
-/// q92: render the anchor path RELATIVE to [`ANCHOR_ROOT`] when the source
-/// file sits under it, so an in-root import composes with the `anchor_live`
-/// probe — that fence (`crate::retrieve`) reads an ABSOLUTE `path:line`
-/// anchor as `unknown` forever, so an absolute anchor could never answer
-/// live even with the file on disk. A source OUTSIDE the root keeps its
+/// q92: render the anchor path RELATIVE to the caller-injected
+/// `anchor_root` when the source file sits under it, so an in-root
+/// import composes with the `anchor_live` probe — that fence
+/// (`crate::retrieve`) reads an ABSOLUTE `path:line` anchor as
+/// `unknown` forever, so an absolute anchor could never answer live
+/// even with the file on disk. A source OUTSIDE the root keeps its
 /// absolute path and stays fail-closed `unknown` — the probe never
 /// over-claims liveness for a path it does not resolve.
-fn anchor_path(path: &Path) -> &Path {
-    path.strip_prefix(ANCHOR_ROOT).unwrap_or(path)
+fn anchor_path<'a>(path: &'a Path, anchor_root: &Path) -> &'a Path {
+    path.strip_prefix(anchor_root).unwrap_or(path)
 }
 
 /// True for a fence marker line (` ``` ` or `~~~`, any indentation).
@@ -530,19 +551,20 @@ mod tests {
 
     #[test]
     fn in_root_anchor_is_root_relative_out_of_root_stays_absolute() {
-        // q92: a source UNDER ANCHOR_ROOT gets a ROOT-RELATIVE anchor so it
-        // composes with retrieve's anchor_live probe (an ABSOLUTE anchor
-        // reads "unknown" there forever); a source OUTSIDE the root keeps
-        // its absolute path and stays fail-closed "unknown". Host-
-        // independent: synthetic paths against the ANCHOR_ROOT constant,
-        // no filesystem read.
-        let in_root = Path::new(ANCHOR_ROOT).join("capabilities/nmemory/PLAN.md");
-        let got = candidates_from("only block", &in_root, "project-claude-md");
+        // q92: a source UNDER the injected anchor root gets a
+        // ROOT-RELATIVE anchor so it composes with retrieve's
+        // anchor_live probe (an ABSOLUTE anchor reads "unknown" there
+        // forever); a source OUTSIDE the root keeps its absolute path
+        // and stays fail-closed "unknown". Host-independent: synthetic
+        // paths against a synthetic injected root, no filesystem read.
+        let root = Path::new("/injected-anchor-root");
+        let in_root = root.join("capabilities/nmemory/PLAN.md");
+        let got = candidates_from("only block", &in_root, "project-claude-md", root);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].anchor, "capabilities/nmemory/PLAN.md:1");
 
         let out_of_root = Path::new("/etc/some-notes.md");
-        let got = candidates_from("only block", out_of_root, "project-claude-md");
+        let got = candidates_from("only block", out_of_root, "project-claude-md", root);
         assert_eq!(got[0].anchor, "/etc/some-notes.md:1");
     }
 

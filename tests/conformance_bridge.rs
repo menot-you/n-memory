@@ -25,14 +25,20 @@ fn fixture_root() -> PathBuf {
         .join("bridge")
 }
 
-/// The expected anchor for `file:line`, mirroring the bridge's q92 rewrite:
-/// root-relative when the file sits under `ANCHOR_ROOT`, else absolute — so
-/// these pins hold in BOTH the isolated worktree (outside the root) and the
-/// in-root checkout (where the rewrite fires).
+/// Hermetic anchor root injected into every `read_source` call in this
+/// suite (the root is boot-injected config, no longer a crate constant):
+/// nonexistent on every box, so no fixture ever sits under it and every
+/// anchor keeps its absolute fixture path — the pins are
+/// box-independent. The root-relative rewrite gets its own positive
+/// test below.
+const TEST_ANCHOR_ROOT: &str = "/nmemory-hermetic-test-anchor-root";
+
+/// The expected anchor for `file:line`, mirroring the bridge's q92
+/// rewrite against the SAME injected root (which never contains the
+/// fixtures, so the rewrite never fires here and the pin stays the
+/// absolute path).
 fn anchor_for(file: &Path, line: u32) -> String {
-    let path = file
-        .strip_prefix(nmemory::retrieve::ANCHOR_ROOT)
-        .unwrap_or(file);
+    let path = file.strip_prefix(TEST_ANCHOR_ROOT).unwrap_or(file);
     format!("{}:{line}", path.display())
 }
 
@@ -42,7 +48,12 @@ fn anchor_for(file: &Path, line: u32) -> String {
 fn project_claude_md_splits_per_the_documented_rule() {
     let base = fixture_root().join("project");
     let file = base.join("CLAUDE.md");
-    let got = read_source(&BridgeSource::ProjectClaudeMd, &base).expect("fixture reads");
+    let got = read_source(
+        &BridgeSource::ProjectClaudeMd,
+        &base,
+        Path::new(TEST_ANCHOR_ROOT),
+    )
+    .expect("fixture reads");
 
     let contents: Vec<&str> = got.iter().map(|c| c.content.as_str()).collect();
     assert_eq!(
@@ -74,7 +85,12 @@ fn project_claude_md_splits_per_the_documented_rule() {
 fn agents_md_without_headings_splits_into_paragraph_blocks() {
     let base = fixture_root().join("project");
     let file = base.join("AGENTS.md");
-    let got = read_source(&BridgeSource::ProjectAgentsMd, &base).expect("fixture reads");
+    let got = read_source(
+        &BridgeSource::ProjectAgentsMd,
+        &base,
+        Path::new(TEST_ANCHOR_ROOT),
+    )
+    .expect("fixture reads");
 
     let pairs: Vec<(String, &str)> = got
         .iter()
@@ -95,7 +111,12 @@ fn agents_md_without_headings_splits_into_paragraph_blocks() {
 #[test]
 fn user_claude_md_prefers_claude2_over_claude() {
     let base = fixture_root().join("home_both");
-    let got = read_source(&BridgeSource::UserClaudeMd, &base).expect("fixture reads");
+    let got = read_source(
+        &BridgeSource::UserClaudeMd,
+        &base,
+        Path::new(TEST_ANCHOR_ROOT),
+    )
+    .expect("fixture reads");
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].content, "claude2 canon wins.");
     assert!(got[0].anchor.contains(".claude2"));
@@ -109,7 +130,12 @@ fn user_claude_md_prefers_the_live_claude3_generation() {
     // The LIVE harness generation on real hosts is `.claude3` — a stale
     // `.claude2` canon must lose to it (W1 integrate rung record).
     let base = fixture_root().join("home_claude3");
-    let got = read_source(&BridgeSource::UserClaudeMd, &base).expect("fixture reads");
+    let got = read_source(
+        &BridgeSource::UserClaudeMd,
+        &base,
+        Path::new(TEST_ANCHOR_ROOT),
+    )
+    .expect("fixture reads");
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].content, "claude3 live canon wins.");
     assert!(got[0].anchor.contains(".claude3"));
@@ -120,7 +146,12 @@ fn user_claude_md_prefers_the_live_claude3_generation() {
 #[test]
 fn user_claude_md_falls_back_to_legacy_claude() {
     let base = fixture_root().join("home_legacy");
-    let got = read_source(&BridgeSource::UserClaudeMd, &base).expect("fixture reads");
+    let got = read_source(
+        &BridgeSource::UserClaudeMd,
+        &base,
+        Path::new(TEST_ANCHOR_ROOT),
+    )
+    .expect("fixture reads");
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].content, "legacy fallback canon.");
     assert!(got[0].anchor.contains("/.claude/"));
@@ -132,7 +163,12 @@ fn user_claude_md_falls_back_to_legacy_claude() {
 fn missing_project_file_is_a_typed_error() {
     // The memory fixture dir exists but holds no CLAUDE.md.
     let base = fixture_root().join("memory");
-    let err = read_source(&BridgeSource::ProjectClaudeMd, &base).expect_err("must be typed");
+    let err = read_source(
+        &BridgeSource::ProjectClaudeMd,
+        &base,
+        Path::new(TEST_ANCHOR_ROOT),
+    )
+    .expect_err("must be typed");
     match err {
         BridgeError::SourceMissing {
             source_label,
@@ -148,7 +184,12 @@ fn missing_project_file_is_a_typed_error() {
 #[test]
 fn missing_user_claude_md_reports_every_probed_path() {
     let base = fixture_root().join("project"); // has no .claude3/.claude2/.claude
-    let err = read_source(&BridgeSource::UserClaudeMd, &base).expect_err("must be typed");
+    let err = read_source(
+        &BridgeSource::UserClaudeMd,
+        &base,
+        Path::new(TEST_ANCHOR_ROOT),
+    )
+    .expect_err("must be typed");
     match err {
         BridgeError::SourceMissing {
             source_label,
@@ -174,8 +215,12 @@ fn missing_user_claude_md_reports_every_probed_path() {
 fn memory_dir_reads_only_top_level_md_files_in_sorted_order() {
     let root = fixture_root();
     let dir = root.join("memory");
-    let got = read_source(&BridgeSource::MemoryDir(PathBuf::from("memory")), &root)
-        .expect("fixture reads");
+    let got = read_source(
+        &BridgeSource::MemoryDir(PathBuf::from("memory")),
+        &root,
+        Path::new(TEST_ANCHOR_ROOT),
+    )
+    .expect("fixture reads");
 
     let pairs: Vec<(String, &str)> = got
         .iter()
@@ -217,6 +262,7 @@ fn memory_dir_accepts_an_absolute_path_ignoring_base_dir() {
     let got = read_source(
         &BridgeSource::MemoryDir(absolute),
         Path::new("/nonexistent-base-never-touched"),
+        Path::new(TEST_ANCHOR_ROOT),
     )
     .expect("absolute dir reads regardless of base_dir");
     assert_eq!(got.len(), 3);
@@ -228,6 +274,7 @@ fn memory_dir_missing_is_a_typed_error() {
     let err = read_source(
         &BridgeSource::MemoryDir(PathBuf::from("no_such_dir")),
         &root,
+        Path::new(TEST_ANCHOR_ROOT),
     )
     .expect_err("must be typed");
     assert!(
@@ -242,6 +289,7 @@ fn memory_dir_pointing_at_a_file_is_a_typed_error() {
     let err = read_source(
         &BridgeSource::MemoryDir(PathBuf::from("memory").join("a.md")),
         &root,
+        Path::new(TEST_ANCHOR_ROOT),
     )
     .expect_err("must be typed");
     assert!(matches!(err, BridgeError::NotADirectory(p)
@@ -285,10 +333,33 @@ fn every_closed_enum_variant_is_covered_and_labeled() {
             | BridgeSource::MemoryDir(_) => {}
         }
         assert_eq!(source.source_label(), *label);
-        let got = read_source(source, base).expect("covered variant reads its fixture");
+        let got = read_source(source, base, Path::new(TEST_ANCHOR_ROOT))
+            .expect("covered variant reads its fixture");
         assert!(!got.is_empty());
         assert!(got.iter().all(|c| c.source_label == *label));
     }
+}
+
+// ---- the anchor root is injected config, and it DRIVES rendering ----
+
+#[test]
+fn injected_anchor_root_renders_in_root_anchors_root_relative() {
+    // The configurability proof at the bridge seam: inject the fixture
+    // tree itself as the anchor root and the q92 rewrite fires — the
+    // SAME fixture read that pins ABSOLUTE anchors under the hermetic
+    // root above now pins ROOT-RELATIVE ones.
+    let root = fixture_root();
+    let base = root.join("project");
+    let got = read_source(&BridgeSource::ProjectClaudeMd, &base, &root).expect("fixture reads");
+    let anchors: Vec<String> = got.iter().map(|c| c.anchor.clone()).collect();
+    assert_eq!(
+        anchors,
+        vec![
+            "project/CLAUDE.md:5".to_string(),
+            "project/CLAUDE.md:9".to_string(),
+            "project/CLAUDE.md:17".to_string(),
+        ]
+    );
 }
 
 // ---- symlink policy: leaf rejected, parent followed (unix) ----
@@ -302,7 +373,12 @@ fn a_leaf_symlink_standing_in_for_a_whitelisted_name_is_rejected() {
     let leaf = tmp.path().join("CLAUDE.md");
     std::os::unix::fs::symlink(&target, &leaf).unwrap();
 
-    let err = read_source(&BridgeSource::ProjectClaudeMd, tmp.path()).expect_err("rejected");
+    let err = read_source(
+        &BridgeSource::ProjectClaudeMd,
+        tmp.path(),
+        Path::new(TEST_ANCHOR_ROOT),
+    )
+    .expect_err("rejected");
     assert!(matches!(err, BridgeError::SymlinkRejected(p) if p == leaf));
 }
 
@@ -319,7 +395,12 @@ fn a_symlinked_parent_directory_with_a_plain_leaf_is_accepted() {
     std::fs::create_dir(&home).unwrap();
     std::os::unix::fs::symlink(&real, home.join(".claude2")).unwrap();
 
-    let got = read_source(&BridgeSource::UserClaudeMd, &home).expect("parent symlink is fine");
+    let got = read_source(
+        &BridgeSource::UserClaudeMd,
+        &home,
+        Path::new(TEST_ANCHOR_ROOT),
+    )
+    .expect("parent symlink is fine");
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].content, "canon behind a symlinked parent");
 }
@@ -336,6 +417,7 @@ fn a_symlinked_md_entry_inside_memory_dir_is_skipped_not_followed() {
     let got = read_source(
         &BridgeSource::MemoryDir(tmp.path().to_path_buf()),
         Path::new("/unused"),
+        Path::new(TEST_ANCHOR_ROOT),
     )
     .expect("listing reads");
     assert_eq!(got.len(), 1);

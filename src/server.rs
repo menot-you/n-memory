@@ -76,8 +76,8 @@ use crate::journal::{self, ChainStatus};
 use crate::mcp_app;
 use crate::relation;
 use crate::retrieve::{
-    self, ANCHOR_ROOT, AdvisoryLabel, DataFraming, HEADLINE_MAX_CHARS, RetrieveError,
-    RetrieveQuery, RetrieveResponse, anchor_content_hash,
+    self, AdvisoryLabel, DataFraming, HEADLINE_MAX_CHARS, RetrieveError, RetrieveQuery,
+    RetrieveResponse, anchor_content_hash,
 };
 use crate::store::{
     ImportBlockRow, ListFilter, RelationKind, RelationOrigin, RelationRecord, Store, StoreError,
@@ -1354,6 +1354,13 @@ pub struct BoundaryConfig {
     /// Injected project root (typically the boot cwd) — the base for
     /// `project-claude-md` / `project-agents-md` / relative memory dirs.
     pub project_dir: Option<PathBuf>,
+    /// Injected anchor root — the base every `path:line` anchor resolves
+    /// against: the `anchor_live`/`anchor_drift` probes, the capture-time
+    /// anchor-hash sidecar, and the import bridge's root-relative anchor
+    /// rendering. Boot precedence: `NMEMORY_ANCHOR_ROOT` (non-empty) >
+    /// the boot cwd — NEVER a path baked into the binary at compile
+    /// time. Tests inject a hermetic root.
+    pub anchor_root: PathBuf,
 }
 
 /// The stdio MCP server over one [`Store`]. Single writer by contract:
@@ -1526,7 +1533,7 @@ impl MemoryServer {
                             // capture's own audit row — one act, one row.
                             if !outcome.deduped
                                 && let Some(hash) =
-                                    anchor_content_hash(&anchor, std::path::Path::new(ANCHOR_ROOT))
+                                    anchor_content_hash(&anchor, &self.config.anchor_root)
                             {
                                 store.set_anchor_hash(&id, &hash, now).map_err(|e| {
                                 rmcp::ErrorData::internal_error(
@@ -3670,18 +3677,23 @@ impl MemoryServer {
             vector_k: params.0.vector_k,
         };
         let response: RetrieveResponse =
-            retrieve::retrieve(&mut store, &query, now).map_err(|e| match e {
-                // Caller-side semantic faults (w3 u6a): an empty query, a
-                // malformed query_embedding, or a dimension mismatch are all
-                // schema-valid-but-semantically-wrong params — the teaching
-                // -32602 family, never a fake internal error.
-                RetrieveError::EmptyQuery
-                | RetrieveError::InvalidQueryEmbedding(_)
-                | RetrieveError::DimensionMismatch { .. } => {
-                    rmcp::ErrorData::invalid_params(e.to_string(), None)
-                }
-                RetrieveError::Store(_) | RetrieveError::Serialize(_) => {
-                    rmcp::ErrorData::internal_error(format!("memory_retrieve failed: {e}"), None)
+            retrieve::retrieve(&mut store, &query, now, &self.config.anchor_root).map_err(|e| {
+                match e {
+                    // Caller-side semantic faults (w3 u6a): an empty query, a
+                    // malformed query_embedding, or a dimension mismatch are all
+                    // schema-valid-but-semantically-wrong params — the teaching
+                    // -32602 family, never a fake internal error.
+                    RetrieveError::EmptyQuery
+                    | RetrieveError::InvalidQueryEmbedding(_)
+                    | RetrieveError::DimensionMismatch { .. } => {
+                        rmcp::ErrorData::invalid_params(e.to_string(), None)
+                    }
+                    RetrieveError::Store(_) | RetrieveError::Serialize(_) => {
+                        rmcp::ErrorData::internal_error(
+                            format!("memory_retrieve failed: {e}"),
+                            None,
+                        )
+                    }
                 }
             })?;
         verb_result(&response)
@@ -4300,7 +4312,7 @@ impl MemoryServer {
             },
         };
         let label = source.source_label().to_string();
-        let candidates = match bridge::read_source(&source, &base) {
+        let candidates = match bridge::read_source(&source, &base, &self.config.anchor_root) {
             Ok(candidates) => candidates,
             Err(BridgeError::SourceMissing {
                 source_label,
@@ -5925,6 +5937,11 @@ mod tests {
                     env!("CARGO_MANIFEST_DIR"),
                     "/tests/fixtures/bridge/project"
                 ))),
+                // Hermetic nonexistent root: probe verdicts are
+                // box-independent (a relative anchor reads missing,
+                // everything else unknown; no capture-time hash records),
+                // and import anchors stay absolute fixture paths.
+                anchor_root: PathBuf::from("/nmemory-hermetic-test-anchor-root"),
             },
         )
     }
