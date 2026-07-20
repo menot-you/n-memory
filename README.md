@@ -1,11 +1,18 @@
+<div align="center">
+
 # ₙMEMORY
 
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 ![Tests](https://img.shields.io/badge/tests-514%20passing-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-95%25%20lines-brightgreen)
+![Audit](https://img.shields.io/badge/audit-0%20vulnerabilities-brightgreen)
+![Unsafe Forbidden](https://img.shields.io/badge/unsafe-forbidden-brightgreen)
 ![Hermetic](https://img.shields.io/badge/network-zero%20sockets-black)
 ![Zero Python](https://img.shields.io/badge/python-0%25-blueviolet)
 ![MCP](https://img.shields.io/badge/MCP-20%20tools-orange)
 ![Rust](https://img.shields.io/badge/rust-2024%20edition-93450a)
+
+</div>
 
 **Hermetic, local memory for coding agents — one that never lies to you.**
 
