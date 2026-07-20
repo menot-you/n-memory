@@ -1,0 +1,28 @@
+# CI for the public n-memory mirror.
+# GitHub-hosted runners ONLY — never self-hosted here: fork PRs must not be
+# able to reach private infrastructure.
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      # Floor below the measured 95.67% so honest drift is visible before it
+      # breaks the build; raising the floor is a deliberate act, not a race.
+      - run: cargo llvm-cov --summary-only --fail-under-lines 90

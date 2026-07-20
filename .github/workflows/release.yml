@@ -1,0 +1,66 @@
+# Release: build platform binaries and attach them to the GitHub Release.
+# Asset names MUST match install.sh: nmemory-<os>-<arch>.tar.gz containing the
+# binary named `nmemory` at the archive root.
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  # Always builds — this is the asset the private-phase pipeline test proves.
+  build-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo build --release
+      - run: |
+          mkdir -p dist && cp target/release/nmemory dist/nmemory
+          tar -czf nmemory-linux-x86_64.tar.gz -C dist nmemory
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nmemory-linux-x86_64
+          path: nmemory-linux-x86_64.tar.gz
+
+  # The rest of the matrix arms itself when the repository is public
+  # (private phase: paid macOS minutes + arm runner availability).
+  build-cross:
+    if: ${{ !github.event.repository.private }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04-arm, os: linux, arch: aarch64 }
+          - { runner: macos-13, os: macos, arch: x86_64 }
+          - { runner: macos-latest, os: macos, arch: aarch64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo build --release
+      - run: |
+          mkdir -p dist && cp target/release/nmemory dist/nmemory
+          tar -czf "nmemory-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" -C dist nmemory
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nmemory-${{ matrix.os }}-${{ matrix.arch }}
+          path: nmemory-${{ matrix.os }}-${{ matrix.arch }}.tar.gz
+
+  publish:
+    needs: [build-core, build-cross]
+    if: ${{ always() && needs.build-core.result == 'success' && contains('success skipped', needs.build-cross.result) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: create release with checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha256sum nmemory-*.tar.gz > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" nmemory-*.tar.gz SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "nMEMORY $GITHUB_REF_NAME" \
+            --notes "Hermetic local memory for LLM agents. Binaries consumed by install.sh; SHA256SUMS attached."
