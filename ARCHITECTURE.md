@@ -1,7 +1,7 @@
 # nMEMORY — feature map + engine architecture (LLM-first)
 
 ```
-status:    design companion to prd.nMEMORY.2.md and PLAN.md (2026-07-18)
+status:    engine + feature map for the shipped crate (v0.1.0)
 axiom:     nMEMORY is FOR LLMs. The primary consumer (~90%) is an agent inside a
            session, not a human. Every design choice optimizes for that caller:
            token economy, structured shapes, caller-side intelligence, injection
@@ -20,7 +20,8 @@ DEFERRED). Most of what it filed under NEXT and DEFERRED has since shipped. The
   cosine vector lane) · `memory_get` · `memory_list` · `memory_digest` (session-start
   projection) · `memory_bootstrap` (cold-start pack)
 - **organize** — `memory_classify` · `memory_extract` · `memory_relate`
-  (supersedes / blocks / witnesses / falsifies) · `memory_alias` · `memory_consolidate`
+  (supersedes / derived_from / witnesses / blocks / falsifies) · `memory_alias` ·
+  `memory_consolidate`
 - **lifecycle** — `memory_forget` (tombstone / redact / purge) · `memory_outcome` ·
   `memory_preference` · `memory_session_start` · `memory_session_finish`
 - **views** — `memory_export` (markdown generated view) · `memory_visual`
@@ -67,7 +68,7 @@ tiers for the design *why*, not the present tool count.
 | supersedes | explicit replace chain (sidecar relation); superseded excluded from recall by default | replace-over-append discipline, callable by the caller after a dedup-hint |
 | gold-bar + zero-Python + conformance | CI gates + ported donor tests (fixtures re-authored, no `.py`) | the code bar is law |
 
-### NEXT (each earns entry by observed dogfood pain, in its own unit)
+### SHIPPED SINCE THE FIRST DESIGN (all landed in v0.1.0 — recorded here so a reader never mistakes them for gaps)
 anchor-liveness flag on recall (does path:line still exist? cheap stat/grep) · session records
 (start/finish bracketing episodes) · `memory_forget`/tombstone · export as markdown generated
 view (human window) · scope hierarchies · confidence decay by age (advisory ranking only) ·
@@ -75,7 +76,8 @@ FTS5 synonym table fed BY the caller (the LLM teaches the index its own aliases)
 audit trail (donor B `audit_events`: every mutation logged; orphan reclaimed 2026-07-18) ·
 native bridge import of CLAUDE.md/AGENTS.md/MEMORY.md (donor B closed source enum + taint
 fence before construction — the path to absorb today's file-based memory; orphan reclaimed
-2026-07-18) · distinct `missing_evidence` recall mode (donor B tri-state, today grounded/abstain)
+2026-07-18) · the three-outcome recall contract — `grounded` / `missing_evidence` / `abstain`
+(the tri-state is live: `missing_evidence` counts each exclusion reason)
 
 ### DEFERRED (from the vision; unchanged)
 consequence loop (outcome→rank→falsification) · preference learning/PEFT · taint SCANNER
@@ -143,4 +145,3 @@ feature lands as a sidecar table or an envelope field, never a Capsule field cha
 
 Unchanged: Capsule v1 freeze, SQLite single-file, stdio-only, advisory-always, abstain,
 degradable, zero-Python, gold-bar, walking-skeleton-first, 5-day adoption DoD.
-```
