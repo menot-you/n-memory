@@ -64,6 +64,17 @@ corrupt, but idle is free). Restore = put the file back. `memory_export` is a
 deterministic *generated view* for reading and diffing — useful alongside a
 backup, not a substitute for the file.
 
+**One caveat — the forget key.** The first time you `memory_forget` something,
+nmemory writes a sibling key file `<db>.sqlite3.hmac-key` (mode 0600) that keys
+the tombstone fingerprints. Back it up *with* the store — copy both, or the
+restored store mints a fresh key and can no longer re-verify a historical
+tombstone's fingerprint against the original:
+
+```sh
+cp ~/.local/state/nmemory/memory.sqlite3          backup.sqlite3
+cp ~/.local/state/nmemory/memory.sqlite3.hmac-key backup.sqlite3.hmac-key  # if it exists
+```
+
 ## One store, two machines (SSH)
 
 The store is single-host by design. To use the SAME memory from a second
