@@ -95,7 +95,7 @@ use std::fmt;
 use std::path::Path;
 
 use hmac::{Hmac, KeyInit, Mac};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use time::OffsetDateTime;
@@ -590,6 +590,17 @@ fn validate_embedding(vector: &[f32]) -> Result<(), StoreError> {
 /// version integer, so the stamp renumbers mechanically when lanes land
 /// out of authoring order.
 const SCHEMA_VERSION: i64 = 10;
+
+/// Milliseconds a connection waits for a held write lock before giving up
+/// with `SQLITE_BUSY`. Concurrent sessions on one store — the owner runs
+/// two machines against the same `--db` over SSH, "one store, both machines
+/// live on the same memory" — then wait briefly for the in-flight writer
+/// instead of dying immediately with "database is locked". Effective only
+/// paired with up-front write-lock acquisition (`BEGIN IMMEDIATE`, the
+/// connection default set in [`Store::from_connection`]): a DEFERRED
+/// transaction that reads before it writes is refused a lock upgrade at
+/// once and never reaches this wait.
+const BUSY_TIMEOUT_MS: i64 = 5000;
 
 /// Domain-separation tag for the tombstone content HMAC: a value computed
 /// here can never be replayed as any other HMAC-SHA-256 use keyed on the
@@ -1218,6 +1229,29 @@ impl Store {
     }
 
     fn from_connection(mut conn: Connection) -> Result<Self, StoreError> {
+        // The wait budget for a held write lock: with the up-front lock
+        // acquisition set just below, a concurrent same-store session waits
+        // out the peer's write instead of failing immediately with "database
+        // is locked" (see [`BUSY_TIMEOUT_MS`]). Set before WAL and
+        // schema-init so open-time contention is covered too. The pragma
+        // answers with the resulting timeout as a row, so query it.
+        let _timeout: i64 = conn
+            .query_row(
+                &format!("PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}"),
+                [],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        // Every store transaction WRITES, and each reads before it writes
+        // (append checks for a duplicate; migrate probes the schema). Under a
+        // peer's held write lock a DEFERRED transaction would try to UPGRADE
+        // a read to a write, which SQLite refuses at once with SQLITE_BUSY
+        // and WITHOUT invoking the busy handler (deadlock avoidance) — so the
+        // timeout above would never engage. Taking the write lock up front
+        // (BEGIN IMMEDIATE) keeps the busy handler in play, so a concurrent
+        // session waits for the lock rather than dying "database is locked".
+        // Connection default: every `conn.transaction()` here inherits it.
+        conn.set_transaction_behavior(TransactionBehavior::Immediate);
         // WAL for file-backed durability semantics; the pragma answers with
         // the resulting mode as a row, so query it rather than execute it.
         // In-memory databases report their own mode and are unaffected.
@@ -4515,6 +4549,110 @@ mod tests {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn open_store_sets_busy_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.sqlite3");
+        let store = Store::open(&path).unwrap();
+        // busy_timeout is connection-scoped runtime state (not persisted to
+        // the file), so it must be read from the store's OWN connection — a
+        // fresh connection would report the default 0.
+        let timeout: i64 = store
+            .conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(timeout, BUSY_TIMEOUT_MS);
+    }
+
+    #[test]
+    fn concurrent_writer_waits_for_lock_instead_of_erroring() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.sqlite3");
+        // Initialize the schema + WAL on disk, then keep this second
+        // session's Store open on the same file — the two-machine-over-SSH
+        // shape (one store, two live writers).
+        let mut writer = Store::open(&path).unwrap();
+        writer
+            .append(&capsule("first session write", "nmemory"), injected_now())
+            .unwrap();
+
+        // A concurrent session grabs the write lock and holds it briefly.
+        let (locked_tx, locked_rx) = mpsc::channel();
+        let hold_path = path.clone();
+        let holder = std::thread::spawn(move || {
+            let conn = rusqlite::Connection::open(&hold_path).unwrap();
+            // Take the WAL write lock now (not lazily), announce it, hold.
+            conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+            locked_tx.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+            conn.execute_batch("COMMIT").unwrap();
+        });
+
+        // Once the lock is held, this write collides. With busy_timeout it
+        // waits for the holder's COMMIT and SUCCEEDS; without it, SQLite
+        // returns SQLITE_BUSY immediately ("database is locked").
+        locked_rx.recv().unwrap();
+        let result = writer.append(&capsule("second session write", "nmemory"), later_now());
+
+        holder.join().unwrap();
+        // The append began strictly after the holder took the lock (the
+        // channel recv), so it could only return once the holder COMMITted:
+        // success here IS the proof it waited, not raced. Before the fix
+        // this returned Err(Backend("database is locked")) at once.
+        assert!(
+            result.is_ok(),
+            "concurrent write must wait for the lock, not fail: {result:?}"
+        );
+    }
+
+    #[test]
+    fn concurrent_open_waits_for_lock_instead_of_erroring() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.sqlite3");
+        // Initialize on disk so a second open re-runs only the open-time
+        // schema-init writes — the exact path that reported
+        // "cannot open store: ... database is locked".
+        {
+            let mut store = Store::open(&path).unwrap();
+            store
+                .append(&capsule("seed session write", "nmemory"), injected_now())
+                .unwrap();
+        }
+
+        // A concurrent session holds the write lock briefly.
+        let (locked_tx, locked_rx) = mpsc::channel();
+        let hold_path = path.clone();
+        let holder = std::thread::spawn(move || {
+            let conn = rusqlite::Connection::open(&hold_path).unwrap();
+            conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+            locked_tx.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+            conn.execute_batch("COMMIT").unwrap();
+        });
+
+        // Opening the store runs schema-init writes; with busy_timeout +
+        // BEGIN IMMEDIATE it waits for the holder's COMMIT and SUCCEEDS.
+        // Without the fix the schema-init upgrade returns SQLITE_BUSY at once.
+        locked_rx.recv().unwrap();
+        let opened = Store::open(&path);
+
+        holder.join().unwrap();
+        // The open began strictly after the holder took the lock, so its
+        // schema-init writes could only complete once the holder COMMITted:
+        // success here IS the proof it waited. Before the fix this returned
+        // Err(Backend("database is locked")) at once ("cannot open store").
+        assert!(
+            opened.is_ok(),
+            "concurrent open must wait for the lock, not fail: {opened:?}"
+        );
     }
 
     // ------------------------------------------------------------------
