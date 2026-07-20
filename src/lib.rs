@@ -27,6 +27,7 @@ pub mod extract;
 pub mod ingest;
 pub mod journal;
 pub mod mcp_app;
+pub mod merge;
 pub mod relation;
 pub mod retrieve;
 pub mod server;
