@@ -1,0 +1,3 @@
+# Stable pin (PLAN s1). The donor's nightly pin is donor baggage, NOT carried.
+[toolchain]
+channel = "1.96.1"

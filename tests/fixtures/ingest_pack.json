@@ -1,0 +1,62 @@
+[
+  {
+    "content": "the ssot remote sync epic lives at .nott/ssot.md/epics/epic-ssot-remote-sync.md",
+    "source": "session:2026-07-18",
+    "anchor": ".nott/ssot.md/epics/epic-ssot-remote-sync.md:1"
+  },
+  {
+    "content": "conflict resolution for remote sync happens in resolve.rs at the merge boundary",
+    "source": "session:2026-07-18",
+    "anchor": "mcps/ssot/src/sync/resolve.rs:29:5"
+  },
+  {
+    "content": "the compose invariants document pins the canonical infra layout",
+    "source": "doc-1361",
+    "anchor": "doc-1361"
+  },
+  {
+    "content": "outbox writes are staged before dispatch so a crash never loses a queued sync",
+    "source": "doc-1402",
+    "anchor": "doc-1402#outbox"
+  },
+  {
+    "content": "gate 1531 established provenance-required-at-construction for capsules",
+    "source": "session:2026-07-10",
+    "anchor": "&1531"
+  },
+  {
+    "content": "the jwt guard on the mcp surface fails closed with 401 when the token is absent",
+    "source": "review:smoke-verdict",
+    "anchor": "#123"
+  },
+  {
+    "content": "the runner listener env file holds the github token on the dev box",
+    "source": "review:runner-audit",
+    "anchor": "PR-45"
+  },
+  {
+    "content": "session start injects a digest projection\nthe digest carries counts and newest headlines\nit is sized for context assembly",
+    "source": "ARCHITECTURE.md",
+    "anchor": "digest: one-call compact store projection sized for session-start injection"
+  },
+  {
+    "content": "o dono repete o contexto do projeto a cada sessão — a memória existe para acabar com isso",
+    "source": "prds/prd.nMEMORY.2.md",
+    "anchor": "prds/prd.nMEMORY.2.md:8"
+  },
+  {
+    "content": "the ssot remote sync epic lives at .nott/ssot.md/epics/epic-remote-sync.md",
+    "source": "session:2026-07-18",
+    "anchor": ".nott/ssot.md/epics/epic-ssot-remote-sync.md:1"
+  },
+  {
+    "content": "the twenty line stub law caps verbatim anchors",
+    "source": "PLAN.md",
+    "anchor": "stub line 1\nstub line 2\nstub line 3\nstub line 4\nstub line 5\nstub line 6\nstub line 7\nstub line 8\nstub line 9\nstub line 10\nstub line 11\nstub line 12\nstub line 13\nstub line 14\nstub line 15\nstub line 16\nstub line 17\nstub line 18\nstub line 19\nstub line 20"
+  },
+  {
+    "content": "the store persists the capsule as canonical json in a single sqlite file, derives four filter columns from it at append time, and re-validates the canonical bytes through the capsule funnel on every read so corruption surfaces typed instead of drifting silently",
+    "source": "src/store.rs",
+    "anchor": "src/store.rs:1"
+  }
+]

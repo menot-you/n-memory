@@ -1,0 +1,47 @@
+# nmemory — hermetic, single-file, local memory for LLM agents.
+#
+# ALL plan-locked dependencies are front-loaded here in s1 so later parallel
+# lanes (s2 store / s3 ingest / s4 retrieve / s5 server) never write this
+# file. Do not add deps outside the PLAN without a plan change.
+
+[package]
+name = "nmemory"
+version = "0.1.0"
+edition = "2024"
+description = "nMEMORY: capture with mandatory provenance, recall that is grounded-or-abstain and ADVISORY_NOT_AUTHORITY. Hermetic single-file SQLite, stdio MCP, zero network."
+# Owner-ratified 2026-07-20 (ledger cap-82): AGPL-3.0-only, monorepo-wide canon.
+license = "AGPL-3.0-only"
+
+[dependencies]
+# Capsule v1 + canonical JSON (byte-stable via fixed struct field order).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# provenance.source_hash mechanism (sha256 hex); hashing POLICY lands in s3.
+sha2 = "0.11"
+hex = "0.4"
+# Keyed tombstone fingerprints (w1 forget_capsule): HMAC-SHA-256 over the
+# removed content, donor fingerprint.rs behavior. Offline+tiny (RustCrypto,
+# pairs with the sha2 dep above); authorized by the w1 campaign brief.
+hmac = "0.13"
+# Typed errors — no panics in the library.
+thiserror = "2"
+# RFC3339 timestamps on the Capsule. The store itself reads NO clock —
+# `now` is injected at the surface boundary.
+time = { version = "0.3", features = ["serde-well-known", "formatting", "parsing", "macros"] }
+# Single-file SQLite store (s2) + FTS5-bm25 recall (s4). Bundled = hermetic.
+rusqlite = { version = "0.39", features = ["bundled"] }
+# Spool organ (copied verbatim @9f92fa58): tempfile persist + tracing warns.
+tempfile = "3"
+tracing = "0.1"
+# stdio MCP surface (s5). stdio ONLY — no HTTP transport, no network.
+rmcp = { version = "2.2", features = ["server", "transport-io"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
+# rmcp tool macros derive parameter schemas via schemars (donor B parity).
+schemars = "1"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
