@@ -1,0 +1,47 @@
+name: Bug report
+description: Something behaves differently than documented
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `nmemory --version`
+      placeholder: nmemory 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: linux x86_64 / macOS aarch64
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: >
+        The exact MCP calls or CLI invocation, in order, from a fresh store if
+        possible. A reproduction we can run beats a description.
+      placeholder: |
+        1. memory_ingest {content: "...", source: "...", anchor: "..."}
+        2. memory_retrieve {terms: [...]}
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs observed
+      description: What the docs/contract say, and what actually happened (paste the actual envelope).
+    validations:
+      required: true
+  - type: checkboxes
+    id: honesty
+    attributes:
+      label: Recall-honesty check
+      options:
+        - label: >
+            This bug makes recall fabricate, drop provenance, or invent an
+            outcome beyond grounded / missing_evidence / abstain (highest
+            priority — the core contract).

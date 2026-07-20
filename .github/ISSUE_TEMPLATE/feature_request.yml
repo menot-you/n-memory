@@ -1,0 +1,26 @@
+name: Feature request
+description: Propose a capability
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem, not the solution first
+      description: What do you need to do that you cannot today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed shape
+      description: Tool surface, flags, or behavior — as concretely as you can.
+  - type: checkboxes
+    id: laws
+    attributes:
+      label: Fit with the project's laws
+      description: nmemory rejects some proposals regardless of merit — check what your idea respects.
+      options:
+        - label: "Stays hermetic: no network, no telemetry, no external service"
+          required: true
+        - label: "Keeps provenance mandatory and recall honest (grounded / missing_evidence / abstain)"
+          required: true
