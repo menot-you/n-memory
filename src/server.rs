@@ -54,7 +54,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
-    CallToolResult, ContentBlock, Implementation, ProtocolVersion, ServerCapabilities, ServerInfo,
+    CallToolResult, ContentBlock, Implementation, ListResourcesResult, Meta, ProtocolVersion,
+    ReadResourceRequestParams, ReadResourceResult, Resource, ResourceContents, ServerCapabilities,
+    ServerInfo,
 };
 use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use serde::{Deserialize, Serialize};
@@ -71,6 +73,7 @@ use crate::ingest::{
     self, DedupHint, IngestDefaults, IngestError, IngestOutcome, IngestRequest, SiblingHint,
 };
 use crate::journal::{self, ChainStatus};
+use crate::mcp_app;
 use crate::relation;
 use crate::retrieve::{
     self, ANCHOR_ROOT, AdvisoryLabel, DataFraming, HEADLINE_MAX_CHARS, RetrieveError,
@@ -1378,8 +1381,20 @@ impl MemoryServer {
     /// defaults, and the boundary config.
     #[must_use]
     pub fn new(store: Store, defaults: IngestDefaults, config: BoundaryConfig) -> Self {
+        let mut tool_router = Self::tool_router();
+        if let Some(route) = tool_router.map.get_mut("memory_visual") {
+            let mut meta = Meta::new();
+            meta.insert(
+                "ui".to_string(),
+                serde_json::json!({
+                    "resourceUri": mcp_app::VISUAL_URI,
+                    "visibility": ["model", "app"]
+                }),
+            );
+            route.attr.meta = Some(meta);
+        }
         MemoryServer {
-            tool_router: Self::tool_router(),
+            tool_router,
             store: Arc::new(Mutex::new(store)),
             defaults,
             config,
@@ -5461,11 +5476,17 @@ impl MemoryServer {
                 }
             }
         };
-        verb_result(&VisualResponse {
+        let response = VisualResponse {
             label: AdvisoryLabel,
             framing: DataFraming,
             mermaid,
-        })
+        };
+        let structured = serde_json::to_value(&response).map_err(|e| {
+            rmcp::ErrorData::internal_error(format!("memory_visual encode failed: {e}"), None)
+        })?;
+        let mut result = verb_result(&response)?;
+        result.structured_content = Some(structured);
+        Ok(result)
     }
 
     /// `memory_consolidate` — the u6c planner over the store's records:
@@ -5706,6 +5727,39 @@ impl MemoryServer {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for MemoryServer {
+    fn list_resources(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> impl Future<Output = Result<ListResourcesResult, rmcp::ErrorData>> + '_ {
+        std::future::ready(Ok(ListResourcesResult::with_all_items(vec![
+            Resource::new(mcp_app::VISUAL_URI, "nmemory_visual")
+                .with_title("nMEMORY visual")
+                .with_description("Interactive view for memory_visual Mermaid projections")
+                .with_mime_type(mcp_app::MIME_TYPE)
+                .with_size(mcp_app::VISUAL_HTML.len() as u64),
+        ])))
+    }
+
+    fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> impl Future<Output = Result<ReadResourceResult, rmcp::ErrorData>> + '_ {
+        let result = if request.uri == mcp_app::VISUAL_URI {
+            Ok(ReadResourceResult::new(vec![
+                ResourceContents::text(mcp_app::VISUAL_HTML, mcp_app::VISUAL_URI)
+                    .with_mime_type(mcp_app::MIME_TYPE),
+            ]))
+        } else {
+            Err(rmcp::ErrorData::resource_not_found(
+                format!("unknown resource {:?}; call resources/list", request.uri),
+                None,
+            ))
+        };
+        std::future::ready(result)
+    }
+
     /// Mirror of the rmcp default (peer-info bookkeeping + `get_info`),
     /// plus the w1d audit seam: the client's `clientInfo.name` becomes
     /// the audit actor for every later mutation on this connection.
@@ -5763,7 +5817,12 @@ impl ServerHandler for MemoryServer {
     }
 
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
+        )
             .with_server_info(Implementation::new("nmemory", env!("CARGO_PKG_VERSION")))
             .with_protocol_version(ProtocolVersion::V_2024_11_05)
             .with_instructions(
