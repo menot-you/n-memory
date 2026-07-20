@@ -1,3 +1,6 @@
 # Stable pin (PLAN s1). The donor's nightly pin is donor baggage, NOT carried.
+# Components declared here so every cold machine (CI, contributor) converges:
+# rustup's minimal-profile sync would otherwise omit rustfmt/clippy.
 [toolchain]
 channel = "1.96.1"
+components = ["rustfmt", "clippy"]
