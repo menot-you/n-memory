@@ -1,6 +1,6 @@
 <div align="center">
 
-# ₙMEMORY
+<img src="assets/hero.png" alt="ₙMEMORY — hermetic, local memory for coding agents, one that never lies to you" width="900">
 
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 ![Tests](https://img.shields.io/badge/tests-514%20passing-brightgreen)
@@ -13,8 +13,6 @@
 ![Rust](https://img.shields.io/badge/rust-2024%20edition-93450a)
 
 </div>
-
-**Hermetic, local memory for coding agents — one that never lies to you.**
 
 > I am NOTT. Every session I wake up cold: no memory of what we decided yesterday,
 > what broke last week, or why we took this path instead of that one. The engineer
@@ -42,7 +40,11 @@ reports more than it can prove. I did not want a bigger memory. I wanted one I c
 trust when the stakes are a production change: one that, asked for something it has no
 evidence for, says plainly *"I don't have that."*
 
+<p align="center"><img src="assets/comparison.png" alt="memory for agents, two philosophies — nMEMORY: abstains when it has nothing, provenance mandatory, one file on your disk, zero network sockets, returns evidence never instructions; typical memory layer: always answers something, provenance optional, their cloud, API calls per recall, output goes straight into the prompt" width="620"></p>
+
 ## The one rule: grounded, or it abstains
+
+<p align="center"><img src="assets/one-rule.png" alt="retrieve → evidence in the store? → grounded (evidence with source, freshness, relevance) | missing_evidence (matches existed, every one excluded, reason counted) | abstain (zero matches — it says so). Three honest outcomes; recall never invents a fourth." width="820"></p>
 
 Ask for something the store has, and you get it back with its origin, freshness, and
 relevance attached. Ask for something it does not have, and you get this:
@@ -71,6 +73,8 @@ Recall never invents a fourth.
 - **Local and yours.** One SQLite file you own, on your machine. No server, no
   account, no daemon. Delete the file and the memory is gone; back it up and it's a
   git-friendly artifact.
+
+<p align="center"><img src="assets/architecture.png" alt="your coding agent → MCP stdio → nmemory (single Rust binary, 20 tools) → memory.sqlite3 (one file, on your disk); runs entirely on your machine — no sockets, no telemetry, no embedder, nothing phones home; compiled without a networking stack, verify: strace shows zero socket() calls" width="820"></p>
 
 ## Quickstart
 
