@@ -182,9 +182,11 @@ fn render_dag_ok(edges: &[&RelationRecord], dag: &Dag) -> String {
         for (_, _, from, to) in &drawn {
             body.push(format!("    {} --> {}", node_id(from), node_id(to)));
         }
-        body.push("    classDef ready fill:#e6f4ea,stroke:#137333,color:#0b3d16;".to_string());
-        body.push("    classDef blocked fill:#fce8e6,stroke:#c5221f,color:#5c0e0b;".to_string());
-        body.push("    classDef done fill:#e8f0fe,stroke:#1a73e8,color:#0b2a5b;".to_string());
+        // nMEMORY light design system (tokens from the canonical assets/*.svg):
+        // green = flows, amber = waiting, warm neutral = closed with proof.
+        body.push("    classDef ready fill:#EDF2EA,stroke:#698664,color:#36332F;".to_string());
+        body.push("    classDef blocked fill:#F9EEDD,stroke:#C88B32,color:#36332F;".to_string());
+        body.push("    classDef done fill:#F0EAE0,stroke:#4A4640,color:#36332F;".to_string());
         if !ready.is_empty() {
             body.push(class_line(&ready, "ready"));
         }
@@ -230,9 +232,9 @@ fn render_dag_cycle(cycle: &[String], entangled_total: usize) -> String {
          witness a member, then re-digest · {entangled_total} entangled"
     );
     body.push(format!("    cycle_banner[\"{}\"]", mermaid_label(&banner)));
-    body.push("    classDef cycle fill:#fef7e0,stroke:#b06000,color:#3d2600;".to_string());
+    body.push("    classDef cycle fill:#F9EEDD,stroke:#C88B32,color:#36332F;".to_string());
     body.push(
-        "    classDef banner fill:#fce8e6,stroke:#c5221f,color:#5c0e0b,stroke-width:2px;"
+        "    classDef banner fill:#FBE9E4,stroke:#E45A43,color:#36332F,stroke-width:2px;"
             .to_string(),
     );
     if !cycle.is_empty() {
