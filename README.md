@@ -114,6 +114,19 @@ ingest   → content + source + anchor         → stored, deduped by content ha
 retrieve → your caller-expanded search terms → grounded evidence, or an honest abstain
 ```
 
+### One store, two machines (SSH)
+
+The store is single-host; access doesn't have to be. On a second machine,
+register the remote binary as the MCP command — stdio rides SSH, the binary
+stays hermetic, your VPN does transport and auth:
+
+```sh
+claude mcp add nmemory -- ssh <user>@<host> /path/to/nmemory --project <your-project>
+```
+
+One store, both machines live on the same memory. Details, requirements, and
+failure modes: [`RUNBOOK.md`](RUNBOOK.md).
+
 ## Guarantees you can verify yourself
 
 Don't take my word for any of this — that would defeat the point. Each law has a check:
@@ -130,6 +143,42 @@ Don't take my word for any of this — that would defeat the point. Each law has
 
 The full suite is `cargo test` (514 tests, hermetic offline build).
 
+## The tool surface — 20 tools, four planes
+
+The complete MCP surface. One line each here; the full contract per tool lives
+in [`ARCHITECTURE.md`](ARCHITECTURE.md).
+
+**Capture** — getting things in, always with provenance:
+
+- `memory_ingest` — capture (single or batch); `source`+`anchor` mandatory; idempotent by content hash
+- `memory_extract` — text → candidate memories over the closed 10-kind set; advisory, stores nothing
+- `memory_classify` — kind / scope / authority / taint labels; optionally persisted as a sidecar
+- `memory_import` — one-shot import of native sources (CLAUDE.md, AGENTS.md, memory dirs); born tainted
+
+**Recall** — getting things out, or an honest refusal:
+
+- `memory_retrieve` — caller-expanded recall; **grounded / missing_evidence / abstain**, never a fourth
+- `memory_get` — one full capsule by id, with relations, classification, and last mutation
+- `memory_list` — compact index with project fences
+- `memory_digest` — session-start projection: counts, newest, handoff, blocks-dag, journal check
+- `memory_bootstrap` — cold-start pack: your constraints FIRST (never capped), the one next action, decisions, traps — in ≤1500 tokens
+
+**Structure** — making memories relate:
+
+- `memory_relate` — typed edges: `supersedes` / `derived_from` / `witnesses` / `blocks` / `falsifies`
+- `memory_alias` — teach recall synonyms the store then honors
+- `memory_vector` — attach caller-fed embeddings (optional cosine lane; no embedder inside)
+- `memory_visual` — deterministic Mermaid projections (dag / relations / tiers), plus an MCP Apps view
+
+**Lifecycle** — honesty over time:
+
+- `memory_forget` — destroy or redact; a tombstone that says so, never silent absence
+- `memory_outcome` — record an observed consequence (advisory observation, never a self-certified close)
+- `memory_preference` — pairwise preference evidence (chosen-over, in context, by whom)
+- `memory_consolidate` — deterministic maintenance plan: exact dupes, merge proposals, tier moves
+- `memory_session_start` / `memory_session_finish` — bracket a session; finish captures the handoff the next session's digest leads with
+- `memory_export` — the whole store as one deterministic markdown view; byte-identical on an unchanged store
+
 ## What it is NOT (yet)
 
 I would rather you hear the limits from me than find them yourself:
@@ -145,9 +194,10 @@ I would rather you hear the limits from me than find them yourself:
   won't claim it does. The real protection is stronger and unconditional: *everything*
   is labeled `DATA` and never executed as a command, flagged or not. The armor is the
   framing, not the detector.
-- **Single-host, single-writer.** One machine, one local store today. Multi-device
-  access is a deliberate future — a server *topology* around the same SQLite engine,
-  not a swap to a database server; the hermetic, zero-network core does not change.
+- **Single-host store.** The store lives on one machine. A second machine can
+  use it live over SSH today (see [`RUNBOOK.md`](RUNBOOK.md)) — but there is no
+  store-to-store sync or merge yet; offline multi-store reconciliation is a
+  deliberate future, and the hermetic, zero-network core will not change for it.
 - **Embeddings are caller-fed.** There is an optional cosine vector lane, but nMEMORY
   computes no embeddings itself — you supply them, or you don't use the lane. Zero
   embedder dependency is a feature, not a gap.
