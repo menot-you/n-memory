@@ -31,6 +31,8 @@ and when it has no grounded answer it **abstains** instead of fabricating one.
 
 *Learn → recall with provenance → abstain — real binary, real store, ~60s.* Full quality: [assets/demo.mp4](assets/demo.mp4).
 
+The full spoken walkthrough (opener, four beats, glossary) lives in [the demo script](assets/demo-script.md).
+
 ---
 
 ## Why I built my own
