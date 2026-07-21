@@ -60,11 +60,14 @@ use crate::capsule::sha256_hex;
 use crate::store::{ListFilter, Store, StoreError};
 
 /// The closed set of audit `action` values recognized as a forget event —
-/// exactly the action the surface wires next to [`Store::forget_capsule`]
-/// (`memory_forget`, the tool name). Extending this set is a deliberate,
-/// reviewed change: a renamed surface action MUST surface here, or clean
-/// forgets start reporting as out-of-band (detection doing its job).
-pub const FORGET_ACTIONS: &[&str] = &["memory_forget"];
+/// every surface action that destroys a capsule's content and records a
+/// tombstone: `memory_forget` (the direct tool) and `memory_merge` (a
+/// forget PROPAGATED cross-store by [`Store::merge_from`] — the source store
+/// forgot the content, so forget wins locally too). Extending this set is a
+/// deliberate, reviewed change: a renamed or new content-destroying action
+/// MUST surface here, or clean forgets start reporting as out-of-band
+/// (detection doing its job).
+pub const FORGET_ACTIONS: &[&str] = &["memory_forget", "memory_merge"];
 
 /// Outcome of the audit-ledger chain leg. This is the exact result shape of
 /// the w2-store2 [`Store::verify_chain`] contract (`Ok(count)` on an intact
@@ -458,7 +461,8 @@ mod tests {
         assert_eq!(
             report.out_of_band,
             vec![
-                "tombstone cap-1: no forget audit event (recognized actions: memory_forget)"
+                "tombstone cap-1: no forget audit event \
+                 (recognized actions: memory_forget, memory_merge)"
                     .to_string()
             ]
         );

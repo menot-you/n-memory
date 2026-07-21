@@ -31,11 +31,15 @@
 //! 3. **Relations.** Every incoming edge is rewritten through the remap, then
 //!    UNIONed with LOCAL and deduped by `(kind, from, to)`. An edge whose
 //!    endpoint does not resolve (dangling) is DROPPED, never an error.
-//! 4. **Tombstones — forget wins.** An incoming tombstone whose id resolves
-//!    through the remap to a LOCAL capsule tombstones that capsule in the plan
-//!    (unless LOCAL already tombstoned it): a forgotten capsule contributes no
-//!    content. A tombstone whose id does not resolve is dropped, like a
-//!    dangling edge.
+//! 4. **Tombstones — forget wins.** An incoming tombstone resolves to a LOCAL
+//!    capsule and tombstones it in the plan (unless LOCAL already tombstoned
+//!    it): a forgotten capsule contributes no content. Resolution prefers
+//!    CONTENT identity — an incoming tombstone carrying the forgotten
+//!    capsule's `source_hash` matches a LOCAL LIVE capsule of the same content
+//!    (the cross-store shape: the forgotten row is absent from
+//!    `incoming_capsules`, so the id-remap alone can never reach it) — and
+//!    falls back to the id-remap for a tombstone whose own id still resolves.
+//!    A tombstone that resolves to neither is dropped, like a dangling edge.
 //! 5. **Determinism.** Pure and total: no clock, no randomness, every output
 //!    re-sorted internally, so input order never changes the bytes and two
 //!    runs on the same inputs are identical. The sort discipline mirrors
@@ -48,13 +52,15 @@
 //!   [`StoredCapsule`]: [`crate::store::CapsuleId`] mints ONLY inside the store
 //!   module, so the plan states the id the shell must assign by appending the
 //!   new capsules in plan order.
-//! - Cross-store forget propagation is limited by the row shapes: a
-//!   [`TombstoneRecord`] carries a keyed, non-portable `content_hmac` (never a
-//!   `source_hash`) and a forgotten capsule is absent from the live vec, so an
-//!   incoming tombstone is content-addressable ONLY through the id-remap. A
-//!   planned tombstone carries the incoming record's fields with `capsule_id`
-//!   rewritten to LOCAL; the shell re-derives the keyed hmac against LOCAL's
-//!   content and key on apply.
+//! - Cross-store forget propagation is content-addressed: a
+//!   [`TombstoneRecord`] carries the forgotten capsule's `source_hash` (v11),
+//!   so an incoming tombstone matches a LOCAL LIVE capsule of the same content
+//!   even though the forgotten row is absent from the live vec. The keyed
+//!   `content_hmac` stays NON-portable — a planned tombstone carries the
+//!   incoming record's fields (including `source_hash`) with `capsule_id`
+//!   rewritten to LOCAL, and the shell re-derives the keyed hmac against
+//!   LOCAL's content and key on apply. A pre-v11 marker with no `source_hash`
+//!   falls back to id-remap resolution only.
 //! - Resurrecting content that LOCAL previously forgot cannot be detected here
 //!   (a tombstoned LOCAL capsule's `source_hash` is not among these inputs);
 //!   the store's `DuplicateSourceHash` append backstop is the real guard.
@@ -195,8 +201,15 @@ pub fn plan_merge(
     }
     new_relations.sort_by(relation_order);
 
-    // 5. Tombstones — forget wins. Resolve each incoming tombstone id through
-    //    the remap; add it for a LOCAL id that is not already tombstoned.
+    // 5. Tombstones — forget wins. Resolve each incoming tombstone to a
+    //    LOCAL id, then add it for a LOCAL id that is not already tombstoned.
+    //    Resolution prefers CONTENT identity: an incoming tombstone that
+    //    carries the forgotten capsule's `source_hash` matches a LOCAL LIVE
+    //    capsule of the same content — the realistic cross-store shape,
+    //    because a forgotten capsule is absent from `incoming_capsules` and
+    //    so can never enter the id-remap. The id-remap is the fallback for a
+    //    tombstone whose own id still resolves (a synthetic/degenerate shape
+    //    where the forgotten row is also present live).
     let local_tombstoned: HashSet<&str> = local_tombstones
         .iter()
         .map(|marker| marker.capsule_id.as_str())
@@ -206,21 +219,30 @@ pub fn plan_merge(
     let mut planned_tombstoned: HashSet<String> = HashSet::new();
     let mut new_tombstones: Vec<TombstoneRecord> = Vec::new();
     for marker in &incoming_markers {
-        let Some(local_id) = id_remap.get(&marker.capsule_id) else {
-            continue;
+        let local_id: &str = match marker
+            .source_hash
+            .as_deref()
+            .and_then(|hash| local_by_hash.get(hash).copied())
+        {
+            Some(id) => id,
+            None => match id_remap.get(marker.capsule_id.as_str()) {
+                Some(id) => id.as_str(),
+                None => continue,
+            },
         };
-        if local_tombstoned.contains(local_id.as_str()) {
+        if local_tombstoned.contains(local_id) {
             continue;
         }
-        if planned_tombstoned.insert(local_id.clone()) {
+        if planned_tombstoned.insert(local_id.to_owned()) {
             new_tombstones.push(TombstoneRecord {
-                capsule_id: local_id.clone(),
+                capsule_id: local_id.to_owned(),
                 mode: marker.mode,
                 content_hmac: marker.content_hmac.clone(),
                 at: marker.at,
                 reason: marker.reason.clone(),
                 provenance_source: marker.provenance_source.clone(),
                 provenance_anchor: marker.provenance_anchor.clone(),
+                source_hash: marker.source_hash.clone(),
             });
         }
     }
@@ -399,6 +421,7 @@ mod tests {
             reason: "forgotten upstream".to_owned(),
             provenance_source: None,
             provenance_anchor: None,
+            source_hash: None,
         }
     }
 
@@ -484,16 +507,17 @@ mod tests {
         assert_eq!(plan.new_relations[0].to_id, "cap-3");
     }
 
-    // 3. Forget wins: an incoming tombstone resolving (through the remap) to a
-    //    capsule LOCAL has LIVE tombstones that LOCAL capsule in the plan.
+    // 3. Forget wins (id-remap fallback): an incoming tombstone whose own id
+    //    resolves through the remap to a LIVE LOCAL capsule tombstones that
+    //    LOCAL capsule in the plan. This synthetic shape (the forgotten row is
+    //    ALSO present live in `incoming`) exercises the fallback path; the
+    //    realistic content-addressed path is `forget_wins_by_source_hash`.
     #[test]
     fn forget_wins_tombstones_a_live_local_capsule() {
         let local = vec![stored("cap-7", 7, "shared")]; // live
         // INCOMING carries the same content (collapses onto local cap-7) and a
-        // tombstone on its own id — the pure fn is defined over arbitrary vecs,
-        // and this drives the resolve -> forget-wins path. (Realistic
-        // content-addressed forget propagation would need a source_hash on the
-        // tombstone; see the module boundary note.)
+        // tombstone on its own id, with NO source_hash — so resolution takes
+        // the id-remap fallback (cap-1 -> cap-7).
         let incoming = vec![stored("cap-1", 1, "shared")];
         let incoming_tombs = vec![tombstone("cap-1")];
 
@@ -505,6 +529,47 @@ mod tests {
         assert_eq!(plan.new_tombstones.len(), 1);
         assert_eq!(plan.new_tombstones[0].capsule_id, "cap-7");
         assert_eq!(plan.new_tombstones[0].reason, "forgotten upstream");
+    }
+
+    // 3c. Forget wins BY CONTENT across stores: an incoming tombstone carrying
+    //     the forgotten capsule's source_hash tombstones the LOCAL LIVE capsule
+    //     of the same content — even though the forgotten row is ABSENT from
+    //     `incoming_capsules` (the realistic store shape, since a forgotten
+    //     capsule is not a live row and can never enter the id-remap).
+    #[test]
+    fn forget_wins_by_source_hash_across_stores() {
+        let local = vec![stored("cap-3", 3, "shared-secret")]; // LIVE locally
+        // INCOMING forgot that content: NO live capsule, only a tombstone whose
+        // source_hash IS the forgotten content's hash (its own id is unresolvable).
+        let incoming: Vec<StoredCapsule> = vec![];
+        let mut tomb = tombstone("cap-99");
+        tomb.source_hash = Some(sha256_hex("shared-secret".as_bytes()));
+
+        let plan = plan_merge(&local, &[], &[], &incoming, &[], &[tomb]);
+
+        assert!(plan.new_capsules.is_empty());
+        assert_eq!(plan.new_tombstones.len(), 1);
+        // Resolved to the LOCAL id by content, not the unresolvable incoming id.
+        assert_eq!(plan.new_tombstones[0].capsule_id, "cap-3");
+        // The forgotten content's identity rides through for further propagation.
+        assert_eq!(
+            plan.new_tombstones[0].source_hash.as_deref(),
+            Some(sha256_hex("shared-secret".as_bytes()).as_str())
+        );
+    }
+
+    // 3d. A source_hash that matches NO local live capsule, and an id that does
+    //     not resolve either, is dropped — never a spurious tombstone.
+    #[test]
+    fn tombstone_with_unmatched_source_hash_is_dropped() {
+        let local = vec![stored("cap-1", 1, "local-A")];
+        let incoming: Vec<StoredCapsule> = vec![];
+        let mut tomb = tombstone("cap-9");
+        tomb.source_hash = Some(sha256_hex("content-local-never-had".as_bytes()));
+
+        let plan = plan_merge(&local, &[], &[], &incoming, &[], &[tomb]);
+
+        assert!(plan.new_tombstones.is_empty());
     }
 
     // 3b. An incoming tombstone whose id does NOT resolve through the remap is

@@ -8,11 +8,11 @@ axiom:     nMEMORY is FOR LLMs. The primary consumer (~90%) is an agent inside a
            safety. The human is the owner and auditor, not the hot-path reader.
 ```
 
-## Shipped surface (current — 20 MCP tools)
+## Shipped surface (current — 21 MCP tools)
 
 The feature map in §1 below is the original 2026-07-18 design plan (CORE / NEXT /
 DEFERRED). Most of what it filed under NEXT and DEFERRED has since shipped. The
-**current live surface is 20 MCP tools**, all tested:
+**current live surface is 21 MCP tools**, all tested:
 
 - **capture** — `memory_ingest` (single/batch, provenance-mandatory) · `memory_import`
   (CLAUDE.md / AGENTS.md / memory-dir, taint-fenced)
@@ -27,6 +27,8 @@ DEFERRED). Most of what it filed under NEXT and DEFERRED has since shipped. The
 - **views** — `memory_export` (markdown generated view) · `memory_visual`
   (dag / relations / tiers)
 - **vectors** — `memory_vector` (attach caller-fed embeddings; zero embedder dependency)
+- **sync** — `memory_merge` (reconcile a second store into this one: content-hash
+  identity, id-remap, forget-wins, deterministic; the offline-first sync core)
 
 The four laws in §0 and the engine architecture in §2 remain current. Read the §1
 tiers for the design *why*, not the present tool count.

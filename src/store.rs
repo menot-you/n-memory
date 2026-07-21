@@ -95,7 +95,7 @@ use std::fmt;
 use std::path::Path;
 
 use hmac::{Hmac, KeyInit, Mac};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use time::OffsetDateTime;
@@ -204,6 +204,10 @@ fn classifications_create_sql(head: &str) -> String {
 ///   `redacted` (the mode's whole point: provenance deliberately retained
 ///   for audit); `purged` leaves them NULL. Existing v2 files gain the two
 ///   nullable columns via the conditional ALTER in [`migrate_to_current`].
+///   `source_hash` (v11) records the forgotten capsule's content identity
+///   for BOTH modes — content is a HASH, not the removed bytes — so a
+///   forget propagates cross-store by content ([`crate::merge`]); a pre-v11
+///   marker backfills NULL and simply cannot propagate that way.
 /// - `sessions`: start/finish bracketing; `finished_at`/`summary` stay NULL
 ///   until [`Store::finish_session`].
 /// - `tiers` (w2, canonical): one lifecycle tier per capsule; the CHECK
@@ -257,7 +261,8 @@ CREATE TABLE IF NOT EXISTS tombstones (
     at                TEXT NOT NULL,
     reason            TEXT NOT NULL,
     provenance_source TEXT,
-    provenance_anchor TEXT
+    provenance_anchor TEXT,
+    source_hash       TEXT
 );
 CREATE TABLE IF NOT EXISTS sessions (
     session_id  TEXT PRIMARY KEY,
@@ -582,14 +587,19 @@ fn validate_embedding(vector: &[f32]) -> Result<(), StoreError> {
 /// `IF NOT EXISTS`, no canonical byte touched). Version 10 (u-r8-REDESIGN
 /// stale-import-supersession) added the additive `import_blocks` lineage
 /// sidecar ([`IMPORT_BLOCKS_DDL`] — `IF NOT EXISTS`, no canonical byte
-/// touched). Version 1–9 files migrate in place via [`migrate_to_current`];
+/// touched). Version 11 (store-merge u2) added the additive nullable
+/// `tombstones.source_hash` column: the forgotten capsule's content
+/// identity, so a forget can propagate cross-store by content
+/// ([`crate::merge`]); a pre-v11 marker backfills NULL and simply cannot
+/// propagate by content (acceptable). Version 1–10 files migrate
+/// in place via [`migrate_to_current`];
 /// versions this build does not know fail closed
 /// ([`StoreError::UnsupportedSchemaVersion`]). Every migration step keys on
 /// the observed DDL shape (`relations_has_old_check` /
 /// `classifications_has_old_check`) or `IF NOT EXISTS`, never on the
 /// version integer, so the stamp renumbers mechanically when lanes land
 /// out of authoring order.
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 
 /// Milliseconds a connection waits for a held write lock before giving up
 /// with `SQLITE_BUSY`. Concurrent sessions on one store — the owner runs
@@ -633,7 +643,7 @@ pub enum StoreError {
     /// The file's `PRAGMA user_version` names a schema this build does not
     /// know — fail closed instead of guessing at columns.
     #[error(
-        "store: unsupported schema version {0} (this build migrates v1..=9 in place and reads v{SCHEMA_VERSION} natively)"
+        "store: unsupported schema version {0} (this build migrates v1..=10 in place and reads v{SCHEMA_VERSION} natively)"
     )]
     UnsupportedSchemaVersion(i64),
     /// A relation/classification endpoint named a capsule id that is not
@@ -1172,6 +1182,51 @@ pub struct TombstoneRecord {
     pub provenance_source: Option<String>,
     /// The retained `provenance.anchor` — same `redacted`-only rule.
     pub provenance_anchor: Option<String>,
+    /// The forgotten capsule's `provenance.source_hash` (content identity),
+    /// recorded for BOTH modes from v11 — a HASH, never the removed bytes.
+    /// It lets a forget propagate cross-store by content ([`crate::merge`]):
+    /// an incoming marker matches a LOCAL live capsule of the same content.
+    /// `None` for a pre-v11 marker (backfilled), which cannot propagate that
+    /// way.
+    pub source_hash: Option<String>,
+}
+
+/// Deterministic tally of one [`Store::merge_from`] apply. Every count
+/// derives PURELY from the applied [`crate::merge::MergePlan`], so merging
+/// identical stores yields an identical summary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MergeSummary {
+    /// Genuinely-new capsules appended to LOCAL (the plan's new capsules).
+    pub capsules_added: usize,
+    /// Incoming capsules that COLLAPSED onto existing LOCAL content by
+    /// `source_hash` (content dedup) — each contributed no new row.
+    pub capsules_collapsed: usize,
+    /// New relation edges inserted (remapped, deduped, danglers dropped).
+    pub relations_added: usize,
+    /// Forget-wins tombstones APPLIED — a LOCAL live capsule the incoming
+    /// side had forgotten (matched by content) is forgotten locally too.
+    pub tombstones_applied: usize,
+    /// Size of the incoming-id -> LOCAL-id remap (collapsed + newly minted).
+    pub id_remap_size: usize,
+}
+
+/// The full outcome of a [`Store::merge_from`] apply: the wire [`MergeSummary`]
+/// plus the LOCAL ids the merge touched, so the caller can AUDIT each one.
+/// Every mutation is audited by its call site (module audit policy), and
+/// [`crate::journal::verify_replay`] coverage requires every live capsule to
+/// be an audit subject and every tombstone a recognized forget event — so the
+/// surface audits one row per added capsule and one per propagated forget,
+/// exactly as `memory_ingest`/`memory_forget` audit per affected id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeApplied {
+    /// The deterministic count summary (the wire shape).
+    pub summary: MergeSummary,
+    /// LOCAL ids of the capsules this merge appended, ascending — each MUST
+    /// be audited (subject = the id) or replay coverage flags it out-of-band.
+    pub added_ids: Vec<String>,
+    /// LOCAL ids forgotten by forget-wins propagation — each MUST be audited
+    /// with a recognized forget action (subject = the id).
+    pub forgotten_ids: Vec<String>,
 }
 
 /// One session bracketing record. `finished_at`/`summary` are `None` until
@@ -1273,7 +1328,7 @@ impl Store {
         // lesson: leaning on the const silently rejects older files
         // after a bump).
         match version {
-            0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | SCHEMA_VERSION => {
+            0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | SCHEMA_VERSION => {
                 migrate_to_current(&mut conn)?
             }
             other => return Err(StoreError::UnsupportedSchemaVersion(other)),
@@ -1293,6 +1348,34 @@ impl Store {
             .map_err(backend)?;
         if canonical_rows != indexed_rows {
             rebuild_fts_on(&mut conn)?;
+        }
+        Ok(Store { conn })
+    }
+
+    /// Open the store at `path` READ-ONLY — the INCOMING side of a merge
+    /// ([`Store::merge_from`]). Reads its core rows without migrating,
+    /// healing, or touching a single byte: no `CREATE` flag (a missing file
+    /// fails closed, never spawns an empty store), no WAL/secure-delete
+    /// pragma (those write), no [`migrate_to_current`]. A non-SQLite or
+    /// corrupt file surfaces on the first read as a typed
+    /// [`StoreError::Backend`]/[`StoreError::Corrupt`]. The schema must be
+    /// the CURRENT version this build reads natively — an older source is
+    /// [`StoreError::UnsupportedSchemaVersion`] (migrate it by opening it
+    /// read-write with this build first; a read-only handle cannot migrate).
+    /// Only the `&self` read methods are safe on the returned handle; a
+    /// write would fail at the SQLite layer (this is a private merge helper,
+    /// never handed a write path).
+    fn open_readonly(path: &Path) -> Result<Self, StoreError> {
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(backend)?;
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(backend)?;
+        if version != SCHEMA_VERSION {
+            return Err(StoreError::UnsupportedSchemaVersion(version));
         }
         Ok(Store { conn })
     }
@@ -2793,8 +2876,8 @@ impl Store {
             .map_err(backend)?;
         tx.execute(
             "INSERT INTO tombstones (capsule_id, mode, content_hmac, at, reason, \
-                                     provenance_source, provenance_anchor) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                                     provenance_source, provenance_anchor, source_hash) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 id,
                 mode.as_str(),
@@ -2802,7 +2885,8 @@ impl Store {
                 at,
                 reason,
                 provenance_source,
-                provenance_anchor
+                provenance_anchor,
+                capsule.provenance().source_hash,
             ],
         )
         .map_err(backend)?;
@@ -2818,7 +2902,7 @@ impl Store {
             .conn
             .query_row(
                 "SELECT capsule_id, mode, content_hmac, at, reason, \
-                        provenance_source, provenance_anchor \
+                        provenance_source, provenance_anchor, source_hash \
                  FROM tombstones WHERE capsule_id = ?1",
                 [id],
                 |row| {
@@ -2830,6 +2914,7 @@ impl Store {
                         row.get::<_, String>(4)?,
                         row.get::<_, Option<String>>(5)?,
                         row.get::<_, Option<String>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
                     ))
                 },
             )
@@ -2845,6 +2930,7 @@ impl Store {
                 reason,
                 provenance_source,
                 provenance_anchor,
+                source_hash,
             )) => {
                 let mode =
                     TombstoneMode::from_wire(&mode_text).ok_or_else(|| StoreError::Corrupt {
@@ -2860,6 +2946,7 @@ impl Store {
                     reason,
                     provenance_source,
                     provenance_anchor,
+                    source_hash,
                 }))
             }
         }
@@ -2881,6 +2968,291 @@ impl Store {
             out.push(row.map_err(backend)?);
         }
         Ok(out)
+    }
+
+    /// Every tombstone marker as a full [`TombstoneRecord`], ordered by
+    /// `capsule_id` — the merge core's LOCAL/INCOMING tombstone input
+    /// ([`crate::merge::plan_merge`]). Same per-row decode + validation as
+    /// [`Store::get_tombstone`] (an unknown `mode` or unparseable `at` is a
+    /// typed [`StoreError::Corrupt`], never a silent skip).
+    pub fn all_tombstones(&self) -> Result<Vec<TombstoneRecord>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT capsule_id, mode, content_hmac, at, reason, \
+                        provenance_source, provenance_anchor, source_hash \
+                 FROM tombstones ORDER BY capsule_id",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                ))
+            })
+            .map_err(backend)?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (
+                capsule_id,
+                mode_text,
+                content_hmac,
+                at_text,
+                reason,
+                provenance_source,
+                provenance_anchor,
+                source_hash,
+            ) = row.map_err(backend)?;
+            let mode = TombstoneMode::from_wire(&mode_text).ok_or_else(|| StoreError::Corrupt {
+                id: capsule_id.clone(),
+                reason: format!("tombstones.mode: unknown value {mode_text:?}"),
+            })?;
+            let at = parse_at(&capsule_id, "tombstones.at", &at_text)?;
+            out.push(TombstoneRecord {
+                capsule_id,
+                mode,
+                content_hmac,
+                at,
+                reason,
+                provenance_source,
+                provenance_anchor,
+                source_hash,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Merge the store at `incoming_path` INTO this one: the imperative
+    /// shell around the pure core ([`crate::merge::plan_merge`]). Opens
+    /// INCOMING read-only ([`Store::open_readonly`]), reads both sides' core
+    /// rows (capsules / relations / tombstones), computes the plan, and
+    /// APPLIES it in ONE transaction — atomic and deterministic (no clock,
+    /// no randomness; every persisted value is carried from the plan or the
+    /// LOCAL row it forgets). A failure at any step rolls the whole
+    /// transaction back: LOCAL is either fully merged or untouched, NEVER
+    /// partially written.
+    ///
+    /// Apply, in plan order:
+    /// - each new capsule is appended under its PLANNED id — the store
+    ///   re-mints the id via its own `MAX(seq)+1` discipline and fails
+    ///   closed if it diverges from the plan ([`StoreError::Corrupt`], the
+    ///   whole merge rolls back). The capsule's `created_at`/`session_id`
+    ///   and its full validated bytes (content, `authority_class`,
+    ///   `instruction_taint`, provenance) ride through VERBATIM: a foreign
+    ///   capsule is NOT more trusted than an import, so its stored taint is
+    ///   carried and authority is NEVER elevated. A capsule whose content
+    ///   LOCAL previously forgot hits the UNIQUE `source_hash` backstop
+    ///   ([`StoreError::DuplicateSourceHash`]) and fails the merge closed —
+    ///   forget is sticky, a merge never silently resurrects it;
+    /// - each new relation edge is inserted (`INSERT OR IGNORE`; the plan
+    ///   already remapped, deduped, and dropped danglers), carrying `origin`;
+    /// - each forget-wins tombstone forgets the resolved LOCAL LIVE capsule
+    ///   (content nulled, FTS row emptied, embedding dropped — exactly
+    ///   [`Store::forget_capsule`]'s content destruction) and records the
+    ///   marker RE-KEYED under LOCAL's key: `content_hmac` is re-derived
+    ///   against LOCAL's content and `hmac_key` (the incoming marker's key
+    ///   is not LOCAL's), `source_hash` set to the local capsule's own
+    ///   identity. A target that is not a LOCAL live capsule is skipped (the
+    ///   plan does not produce these; the guard is defensive).
+    ///
+    /// `hmac_key` is LOCAL's tombstone key, resolved at the boundary exactly
+    /// like [`Store::forget_capsule`]. This method writes NO audit row — it
+    /// returns the touched LOCAL ids ([`MergeApplied`]) so the caller audits
+    /// each one (module audit policy; replay coverage needs every added
+    /// capsule as an audit subject and every propagated forget as a
+    /// recognized forget event), matching every other mutating store method.
+    pub fn merge_from(
+        &mut self,
+        incoming_path: &Path,
+        hmac_key: &[u8],
+    ) -> Result<MergeApplied, StoreError> {
+        // INCOMING core rows, read-only — fails closed on a missing, corrupt,
+        // or stale-schema path BEFORE LOCAL is touched.
+        let incoming = Store::open_readonly(incoming_path)?;
+        let incoming_capsules = incoming.list(ListFilter::default())?;
+        let incoming_relations = incoming.all_relations()?;
+        let incoming_tombstones = incoming.all_tombstones()?;
+        // LOCAL core rows.
+        let local_capsules = self.list(ListFilter::default())?;
+        let local_relations = self.all_relations()?;
+        let local_tombstones = self.all_tombstones()?;
+
+        let plan = crate::merge::plan_merge(
+            &local_capsules,
+            &local_relations,
+            &local_tombstones,
+            &incoming_capsules,
+            &incoming_relations,
+            &incoming_tombstones,
+        );
+
+        let capsules_added = plan.new_capsules.len();
+        let relations_added = plan.new_relations.len();
+        let id_remap_size = plan.id_remap.len();
+        // Every incoming live capsule is in the remap; those that did not
+        // mint a new row collapsed onto existing LOCAL content.
+        let capsules_collapsed = id_remap_size.saturating_sub(capsules_added);
+        // The LOCAL ids the caller must audit (in plan order): the appended
+        // capsules, and the forgotten ids collected as each forget applies.
+        let added_ids: Vec<String> = plan.new_capsules.iter().map(|p| p.id.clone()).collect();
+        let mut forgotten_ids: Vec<String> = Vec::new();
+
+        let tx = self.conn.transaction().map_err(backend)?;
+
+        // 1. New capsules — appended under their planned ids.
+        for planned in &plan.new_capsules {
+            let canonical_json = planned
+                .capsule
+                .to_canonical_json()
+                .map_err(|e| StoreError::Serialize(e.to_string()))?;
+            let created_at = rfc3339_text(planned.created_at)?;
+            let valid_from = rfc3339_text(planned.capsule.freshness().valid_from)?;
+            let authority_class = authority_class_text(planned.capsule.authority_class())?;
+            let seq: i64 = tx
+                .query_row(
+                    "SELECT COALESCE(MAX(seq), 0) + 1 FROM capsules",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            let minted = format!("cap-{seq}");
+            // The store is the only id mint. The pure plan minted the SAME
+            // id after LOCAL's ceiling; a divergence means the ceiling the
+            // plan saw and the live MAX(seq) disagree — fail closed.
+            if minted != planned.id {
+                return Err(StoreError::Corrupt {
+                    id: planned.id.clone(),
+                    reason: format!(
+                        "merge planned id {} but the store minted {minted} \
+                         (id-ceiling divergence)",
+                        planned.id
+                    ),
+                });
+            }
+            tx.execute(
+                "INSERT INTO capsules \
+                 (seq, id, canonical_json, created_at, source_hash, project_id, \
+                  authority_class, valid_from, session_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    seq,
+                    minted,
+                    canonical_json,
+                    created_at,
+                    planned.capsule.provenance().source_hash,
+                    planned.capsule.scope().project_id,
+                    authority_class,
+                    valid_from,
+                    planned.session_id,
+                ],
+            )
+            .map_err(|e| map_unique_source_hash(e, &planned.capsule.provenance().source_hash))?;
+            tx.execute(
+                "INSERT INTO capsules_fts (rowid, content) VALUES (?1, ?2)",
+                params![seq, planned.capsule.content()],
+            )
+            .map_err(backend)?;
+        }
+
+        // 2. New relations — the plan already remapped, deduped, and dropped
+        //    danglers; INSERT OR IGNORE is an idempotent backstop.
+        for edge in &plan.new_relations {
+            let at = rfc3339_text(edge.at)?;
+            tx.execute(
+                "INSERT OR IGNORE INTO relations (kind, from_id, to_id, at, origin) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    edge.kind.as_str(),
+                    edge.from_id,
+                    edge.to_id,
+                    at,
+                    edge.origin.as_str()
+                ],
+            )
+            .map_err(backend)?;
+        }
+
+        // 3. Forget-wins tombstones — forget the resolved LOCAL live capsule
+        //    and record its marker re-keyed under LOCAL's key.
+        let mut tombstones_applied = 0usize;
+        for marker in &plan.new_tombstones {
+            let row: Option<(i64, Option<String>)> = tx
+                .query_row(
+                    "SELECT seq, canonical_json FROM capsules WHERE id = ?1",
+                    [marker.capsule_id.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(backend)?;
+            // Only a LOCAL LIVE capsule is forgotten; an absent or already-
+            // tombstoned target is skipped (the plan does not produce these).
+            let (seq, canonical_json) = match row {
+                Some((seq, Some(json))) => (seq, json),
+                _ => continue,
+            };
+            let capsule: Capsule =
+                serde_json::from_str(&canonical_json).map_err(|e| StoreError::Corrupt {
+                    id: marker.capsule_id.clone(),
+                    reason: format!("canonical_json: {e}"),
+                })?;
+            let content_hmac = content_hmac_hex(hmac_key, &marker.capsule_id, capsule.content());
+            let at = rfc3339_text(marker.at)?;
+            tx.execute(
+                "UPDATE capsules SET canonical_json = NULL WHERE seq = ?1",
+                [seq],
+            )
+            .map_err(backend)?;
+            tx.execute("DELETE FROM capsules_fts WHERE rowid = ?1", [seq])
+                .map_err(backend)?;
+            tx.execute(
+                "INSERT INTO capsules_fts (rowid, content) VALUES (?1, '')",
+                [seq],
+            )
+            .map_err(backend)?;
+            tx.execute(
+                "DELETE FROM embeddings WHERE capsule_id = ?1",
+                [marker.capsule_id.as_str()],
+            )
+            .map_err(backend)?;
+            tx.execute(
+                "INSERT INTO tombstones (capsule_id, mode, content_hmac, at, reason, \
+                                         provenance_source, provenance_anchor, source_hash) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    marker.capsule_id,
+                    marker.mode.as_str(),
+                    content_hmac,
+                    at,
+                    marker.reason,
+                    marker.provenance_source,
+                    marker.provenance_anchor,
+                    capsule.provenance().source_hash,
+                ],
+            )
+            .map_err(backend)?;
+            forgotten_ids.push(marker.capsule_id.clone());
+            tombstones_applied += 1;
+        }
+
+        tx.commit().map_err(backend)?;
+        Ok(MergeApplied {
+            summary: MergeSummary {
+                capsules_added,
+                capsules_collapsed,
+                relations_added,
+                tombstones_applied,
+                id_remap_size,
+            },
+            added_ids,
+            forgotten_ids,
+        })
     }
 
     /// Open a session bracket. `session_id` is caller-chosen, non-empty
@@ -3676,6 +4048,14 @@ fn migrate_to_current(conn: &mut Connection) -> Result<(), StoreError> {
              ALTER TABLE tombstones ADD COLUMN provenance_anchor TEXT;",
         )
         .map_err(backend)?;
+    }
+    // v11 (store-merge u2): the forgotten capsule's content identity, for
+    // cross-store forget propagation. Additive nullable ALTER, guarded on
+    // the column's absence (a fresh file has it from [`SIDECAR_SCHEMA`]); a
+    // pre-v11 marker backfills NULL — it simply cannot propagate by content.
+    if !table_has_column(&tx, "tombstones", "source_hash")? {
+        tx.execute_batch("ALTER TABLE tombstones ADD COLUMN source_hash TEXT;")
+            .map_err(backend)?;
     }
     tx.execute_batch(FTS_DDL).map_err(backend)?;
     tx.execute_batch(USAGE_DDL).map_err(backend)?;
@@ -4529,14 +4909,14 @@ mod tests {
         let path = dir.path().join("memory.sqlite3");
         Store::open(&path).unwrap();
 
-        // One past the current stamp (v10): a version this build cannot
+        // One past the current stamp (v11): a version this build cannot
         // know is refused, never guessed at.
         let conn = rusqlite::Connection::open(&path).unwrap();
-        conn.execute_batch("PRAGMA user_version = 11").unwrap();
+        conn.execute_batch("PRAGMA user_version = 12").unwrap();
         drop(conn);
 
         let err = Store::open(&path).unwrap_err();
-        assert_eq!(err, StoreError::UnsupportedSchemaVersion(11));
+        assert_eq!(err, StoreError::UnsupportedSchemaVersion(12));
     }
 
     #[test]
@@ -7189,11 +7569,12 @@ PRAGMA user_version = 2;
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
         assert_eq!(
-            SCHEMA_VERSION, 10,
+            SCHEMA_VERSION, 11,
             "u6a vector took slot 5, u6h/u6i substrates took slot 6, \
              u-r11 kind-vocabulary took slot 7, u-r2 anchor-drift + \
              epistemics took slot 8, u-r5 miss-ledger took slot 9, \
-             u-r8-REDESIGN stale-import-supersession took slot 10"
+             u-r8-REDESIGN stale-import-supersession took slot 10, \
+             store-merge tombstone source_hash took slot 11"
         );
         let has_table: bool = store
             .conn
@@ -7994,5 +8375,339 @@ PRAGMA user_version = 2;
             }
             other => panic!("expected InvalidEmbedding, got {other:?}"),
         }
+    }
+
+    // ---- store-merge (u2): the imperative apply shell over the pure core ----
+
+    /// A capsule whose IDENTITY is its content, with an EXPLICIT authority
+    /// class + taint flag — so a merge test can prove foreign bytes ride
+    /// through unelevated.
+    fn capsule_authority(
+        text: &str,
+        project: &str,
+        authority: AuthorityClass,
+        taint: bool,
+    ) -> Capsule {
+        Capsule::new(
+            text.to_string(),
+            Provenance {
+                source: "session:2026-07-18".to_string(),
+                anchor: "PLAN.md:67".to_string(),
+                source_hash: sha256_hex(text.as_bytes()),
+            },
+            Confidence::new(0.9).unwrap(),
+            Freshness {
+                valid_from: datetime!(2026-07-18 12:30:45 UTC),
+                valid_to: None,
+            },
+            Scope {
+                project_id: project.to_string(),
+            },
+            authority,
+            taint,
+        )
+        .unwrap()
+    }
+
+    /// Distinct content on both sides UNIONS: incoming capsules are minted
+    /// fresh ids after LOCAL's ceiling, incoming edges rewrite into LOCAL id
+    /// space, and LOCAL's own rows are untouched.
+    #[test]
+    fn merge_distinct_content_unions_capsules_and_relations() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_path = dir.path().join("local.sqlite3");
+        let incoming_path = dir.path().join("incoming.sqlite3");
+        {
+            let mut local = Store::open(&local_path).unwrap();
+            local
+                .append(&capsule("local-A", "nott"), injected_now())
+                .unwrap(); // cap-1
+            local
+                .append(&capsule("local-B", "nott"), injected_now())
+                .unwrap(); // cap-2
+            local
+                .upsert_relation(RelationKind::Blocks, "cap-1", "cap-2", injected_now())
+                .unwrap();
+        }
+        {
+            let mut inc = Store::open(&incoming_path).unwrap();
+            inc.append(&capsule("incoming-C", "nott"), injected_now())
+                .unwrap(); // cap-1
+            inc.append(&capsule("incoming-D", "nott"), injected_now())
+                .unwrap(); // cap-2
+            inc.upsert_relation(RelationKind::Supersedes, "cap-1", "cap-2", injected_now())
+                .unwrap();
+        } // dropped -> checkpointed, closed
+
+        let mut local = Store::open(&local_path).unwrap();
+        let summary = local
+            .merge_from(&incoming_path, b"local-key")
+            .unwrap()
+            .summary;
+        assert_eq!(summary.capsules_added, 2);
+        assert_eq!(summary.capsules_collapsed, 0);
+        assert_eq!(summary.relations_added, 1);
+        assert_eq!(summary.tombstones_applied, 0);
+        assert_eq!(summary.id_remap_size, 2);
+
+        let live = local.list(ListFilter::default()).unwrap();
+        let contents: Vec<&str> = live.iter().map(|s| s.capsule.content()).collect();
+        assert_eq!(contents, ["local-A", "local-B", "incoming-C", "incoming-D"]);
+        assert_eq!(live[2].id.as_str(), "cap-3");
+        assert_eq!(live[3].id.as_str(), "cap-4");
+        let edges = local.all_relations().unwrap();
+        // The incoming edge is rewritten into LOCAL id space (cap-3 -> cap-4).
+        assert!(edges.iter().any(|e| e.kind == RelationKind::Supersedes
+            && e.from_id == "cap-3"
+            && e.to_id == "cap-4"));
+        // LOCAL's own edge survives.
+        assert!(
+            edges.iter().any(|e| e.kind == RelationKind::Blocks
+                && e.from_id == "cap-1"
+                && e.to_id == "cap-2")
+        );
+
+        // Determinism: a second identical merge is a pure no-op (all content
+        // already present -> everything collapses, nothing added).
+        let again = local
+            .merge_from(&incoming_path, b"local-key")
+            .unwrap()
+            .summary;
+        assert_eq!(again.capsules_added, 0);
+        assert_eq!(again.capsules_collapsed, 2);
+        assert_eq!(again.relations_added, 0);
+        assert_eq!(local.list(ListFilter::default()).unwrap().len(), 4);
+    }
+
+    /// Overlapping content COLLAPSES by `source_hash` (no duplicate), and a
+    /// foreign capsule's authority + taint ride through UNELEVATED.
+    #[test]
+    fn merge_overlapping_content_collapses_and_carries_taint_unelevated() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_path = dir.path().join("local.sqlite3");
+        let incoming_path = dir.path().join("incoming.sqlite3");
+        {
+            let mut local = Store::open(&local_path).unwrap();
+            local
+                .append(&capsule("shared", "nott"), injected_now())
+                .unwrap(); // cap-1
+        }
+        {
+            let mut inc = Store::open(&incoming_path).unwrap();
+            inc.append(&capsule("shared", "nott"), injected_now())
+                .unwrap(); // cap-1, collapses
+            inc.append(
+                &capsule_authority(
+                    "foreign-tainted",
+                    "nott",
+                    AuthorityClass::ExternallyImported,
+                    true,
+                ),
+                injected_now(),
+            )
+            .unwrap(); // cap-2, new + tainted
+        }
+
+        let mut local = Store::open(&local_path).unwrap();
+        let summary = local
+            .merge_from(&incoming_path, b"local-key")
+            .unwrap()
+            .summary;
+        assert_eq!(summary.capsules_added, 1);
+        assert_eq!(summary.capsules_collapsed, 1);
+        assert_eq!(summary.id_remap_size, 2);
+
+        let live = local.list(ListFilter::default()).unwrap();
+        assert_eq!(live.len(), 2, "shared did not duplicate");
+        let foreign = local.get("cap-2").unwrap().unwrap();
+        assert_eq!(foreign.capsule.content(), "foreign-tainted");
+        assert_eq!(
+            foreign.capsule.authority_class(),
+            AuthorityClass::ExternallyImported,
+            "authority is never elevated on merge"
+        );
+        assert!(
+            foreign.capsule.instruction_taint(),
+            "foreign taint is carried through, never scrubbed"
+        );
+    }
+
+    /// A forget on the INCOMING store propagates by `source_hash` to the LIVE
+    /// LOCAL capsule of the same content: the local content is destroyed and
+    /// its marker is re-keyed under LOCAL's key.
+    #[test]
+    fn merge_propagates_forget_by_source_hash_to_a_live_local_capsule() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_path = dir.path().join("local.sqlite3");
+        let incoming_path = dir.path().join("incoming.sqlite3");
+        {
+            let mut local = Store::open(&local_path).unwrap();
+            local
+                .append(&capsule("secret-to-forget", "nott"), injected_now())
+                .unwrap(); // cap-1
+            local
+                .append(&capsule("local-keeps-this", "nott"), injected_now())
+                .unwrap(); // cap-2
+        }
+        {
+            let mut inc = Store::open(&incoming_path).unwrap();
+            inc.append(&capsule("secret-to-forget", "nott"), injected_now())
+                .unwrap(); // cap-1
+            inc.forget_capsule(
+                "cap-1",
+                TombstoneMode::Purged,
+                "forgotten upstream",
+                b"incoming-key",
+                later_now(),
+            )
+            .unwrap();
+        }
+
+        let mut local = Store::open(&local_path).unwrap();
+        assert_eq!(
+            local.get("cap-1").unwrap().unwrap().capsule.content(),
+            "secret-to-forget"
+        );
+
+        let summary = local
+            .merge_from(&incoming_path, b"local-key")
+            .unwrap()
+            .summary;
+        assert_eq!(summary.tombstones_applied, 1);
+        assert_eq!(
+            summary.capsules_added, 0,
+            "the incoming forgotten row is not a live capsule to add"
+        );
+
+        // The LOCAL capsule is now forgotten (content gone), matched by content.
+        match local.get("cap-1") {
+            Err(StoreError::Tombstoned { id }) => assert_eq!(id, "cap-1"),
+            other => panic!("expected cap-1 tombstoned, got {other:?}"),
+        }
+        // Its content is unfindable (recall index emptied).
+        assert!(
+            local
+                .search_fts(&["secret".to_string()], None)
+                .unwrap()
+                .is_empty()
+        );
+        // The marker is re-keyed under LOCAL's key and records source_hash.
+        let marker = local.get_tombstone("cap-1").unwrap().unwrap();
+        assert_eq!(
+            marker.source_hash.as_deref(),
+            Some(sha256_hex(b"secret-to-forget").as_str())
+        );
+        assert_eq!(
+            marker.content_hmac,
+            content_hmac_hex(b"local-key", "cap-1", "secret-to-forget"),
+            "re-keyed under LOCAL's key, not the incoming store's"
+        );
+        // The other local capsule is untouched.
+        assert!(local.get("cap-2").unwrap().is_some());
+    }
+
+    /// A missing or corrupt (non-store) source fails CLOSED with a typed
+    /// error and leaves LOCAL byte-for-byte unchanged (no partial write).
+    #[test]
+    fn merge_from_bad_paths_fail_closed_without_partial_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_path = dir.path().join("local.sqlite3");
+        let mut local = Store::open(&local_path).unwrap();
+        local
+            .append(&capsule("local-A", "nott"), injected_now())
+            .unwrap();
+        let before = local.canonical_snapshot().unwrap();
+
+        // Missing path -> typed backend error, LOCAL untouched.
+        let missing = dir.path().join("nope.sqlite3");
+        let err = local.merge_from(&missing, b"local-key").unwrap_err();
+        assert!(
+            matches!(err, StoreError::Backend(_)),
+            "missing path is a typed backend error: {err:?}"
+        );
+        assert_eq!(
+            local.canonical_snapshot().unwrap(),
+            before,
+            "missing source: no partial write"
+        );
+
+        // Corrupt (non-SQLite) file -> typed error, LOCAL untouched.
+        let corrupt = dir.path().join("corrupt.sqlite3");
+        std::fs::write(&corrupt, b"this is not a sqlite database at all").unwrap();
+        let err = local.merge_from(&corrupt, b"local-key").unwrap_err();
+        assert!(
+            matches!(err, StoreError::Backend(_) | StoreError::Corrupt { .. }),
+            "corrupt file is a typed error: {err:?}"
+        );
+        assert_eq!(
+            local.canonical_snapshot().unwrap(),
+            before,
+            "corrupt source: no partial write"
+        );
+    }
+
+    /// A v10 file (no `tombstones.source_hash`) opens and upgrades to v11:
+    /// the column arrives NULL-backfilled for the pre-existing marker, and a
+    /// fresh forget records it going forward.
+    #[test]
+    fn v10_file_migrates_to_v11_and_gains_tombstone_source_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.sqlite3");
+        {
+            let mut store = Store::open(&path).unwrap();
+            store
+                .append(&capsule("to-forget", "nott"), injected_now())
+                .unwrap(); // cap-1
+            store
+                .append(&capsule("still-here", "nott"), injected_now())
+                .unwrap(); // cap-2
+            store
+                .forget_capsule("cap-1", TombstoneMode::Purged, "gone", b"k", later_now())
+                .unwrap();
+        }
+        // Downgrade to a FAITHFUL v10 shape: drop the v11 column, stamp 10.
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "ALTER TABLE tombstones DROP COLUMN source_hash; PRAGMA user_version = 10;",
+            )
+            .unwrap();
+        }
+
+        // Opening IS the migration — v10 is an enumerated migratable version.
+        let mut store = Store::open(&path).unwrap();
+        let version: i64 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            version, SCHEMA_VERSION,
+            "v10 re-stamped to the current version"
+        );
+        assert_eq!(SCHEMA_VERSION, 11);
+
+        // The pre-v11 marker survives; source_hash backfilled NULL (cannot
+        // propagate by content, which is acceptable).
+        let old = store.get_tombstone("cap-1").unwrap().unwrap();
+        assert_eq!(old.source_hash, None);
+        assert_eq!(old.reason, "gone");
+        // Capsule bytes untouched by the migration.
+        assert!(store.get("cap-2").unwrap().is_some());
+
+        // A fresh forget now records source_hash going forward.
+        store
+            .forget_capsule(
+                "cap-2",
+                TombstoneMode::Purged,
+                "gone too",
+                b"k",
+                later_now(),
+            )
+            .unwrap();
+        let fresh = store.get_tombstone("cap-2").unwrap().unwrap();
+        assert_eq!(
+            fresh.source_hash.as_deref(),
+            Some(sha256_hex(b"still-here").as_str())
+        );
     }
 }
