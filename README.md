@@ -25,6 +25,12 @@ capture what matters with its source attached; you recall it later as **evidence
 never as a command. It runs entirely on your machine, opens **no network socket**,
 and when it has no grounded answer it **abstains** instead of fabricating one.
 
+## Demo
+
+![nMEMORY demo](assets/demo.gif)
+
+*Learn → recall with provenance → abstain — real binary, real store, ~60s.* Full quality: [assets/demo.mp4](assets/demo.mp4).
+
 ---
 
 ## Why I built my own
