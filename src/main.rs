@@ -17,10 +17,16 @@ use std::process::ExitCode;
 use nmemory::ingest::IngestDefaults;
 use nmemory::server::{BoundaryConfig, MemoryServer};
 use nmemory::store::Store;
+use nmemory::sync;
 use rmcp::ServiceExt;
 
 /// One-line usage, printed with `--help` and on argument errors.
-const USAGE: &str = "usage: nmemory [--db <path>] [--project <id>] [--version]";
+const USAGE: &str = "usage: nmemory [--db <path>] [--project <id>] [--version]\n   or: \
+                     nmemory sync --remote <[user@]host:/path> [--db <path>] [--push]";
+
+/// Usage for the `sync` subcommand, printed with `sync --help` and on its
+/// argument errors.
+const SYNC_USAGE: &str = "usage: nmemory sync --remote <[user@]host:/path> [--db <path>] [--push]";
 
 /// Default `scope.project_id` fence when neither `--project` nor
 /// `NMEMORY_PROJECT` names one.
@@ -32,6 +38,9 @@ enum BootError {
     /// Malformed command line (fail closed on anything unknown).
     #[error("{0}\n{USAGE}")]
     Usage(String),
+    /// Malformed `sync` subcommand line (fail closed on anything unknown).
+    #[error("{0}\n{SYNC_USAGE}")]
+    SyncUsage(String),
     /// No `--db`, no `NMEMORY_DB`, and neither `XDG_STATE_HOME` nor
     /// `HOME` is set — nowhere to put the database.
     #[error(
@@ -58,6 +67,10 @@ enum BootError {
     /// The stdio service failed to initialize or crashed.
     #[error("stdio serve failed: {0}")]
     Serve(String),
+    /// The `sync` reconcile failed — a typed sync error; the local store is
+    /// left intact (fail-closed, no partial state).
+    #[error("{0}")]
+    Sync(#[from] sync::SyncError),
 }
 
 /// Parsed command line.
@@ -95,6 +108,49 @@ fn parse_args(argv: &[String]) -> Result<CliArgs, BootError> {
                     args.project = Some(take_value("--project", Some(&v.to_string()))?);
                 } else {
                     return Err(BootError::Usage(format!("unknown argument {other:?}")));
+                }
+            }
+        }
+    }
+    Ok(args)
+}
+
+/// Parsed `nmemory sync` command line.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct SyncArgs {
+    remote: Option<String>,
+    db: Option<PathBuf>,
+    push: bool,
+    help: bool,
+}
+
+/// A sync flag's value, rejecting a missing or empty one — the sync-scoped
+/// twin of [`take_value`] so its error trails [`SYNC_USAGE`].
+fn sync_value(flag: &str, value: Option<&String>) -> Result<String, BootError> {
+    match value {
+        Some(v) if !v.is_empty() => Ok(v.clone()),
+        _ => Err(BootError::SyncUsage(format!("{flag} requires a value"))),
+    }
+}
+
+/// Parse `nmemory sync` args (the `sync` token already consumed). Unknown
+/// arguments fail closed.
+fn parse_sync_args(argv: &[String]) -> Result<SyncArgs, BootError> {
+    let mut args = SyncArgs::default();
+    let mut it = argv.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--help" | "-h" => args.help = true,
+            "--push" => args.push = true,
+            "--remote" => args.remote = Some(sync_value("--remote", it.next())?),
+            "--db" => args.db = Some(PathBuf::from(sync_value("--db", it.next())?)),
+            other => {
+                if let Some(v) = other.strip_prefix("--remote=") {
+                    args.remote = Some(sync_value("--remote", Some(&v.to_string()))?);
+                } else if let Some(v) = other.strip_prefix("--db=") {
+                    args.db = Some(PathBuf::from(sync_value("--db", Some(&v.to_string()))?));
+                } else {
+                    return Err(BootError::SyncUsage(format!("unknown argument {other:?}")));
                 }
             }
         }
@@ -155,8 +211,78 @@ fn env_nonempty(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.trim().is_empty())
 }
 
+/// Handle `nmemory sync ...`: reconcile the LOCAL store with a REMOTE mirror
+/// through the opt-in transport. Local-first and fail-closed — a bad path
+/// leaves the local store intact and exits non-zero. The summary prints to
+/// stderr; stdout stays clean (the serve path's stdout discipline).
+fn run_sync_command(argv: &[String]) -> Result<(), BootError> {
+    let args = parse_sync_args(argv)?;
+    if args.help {
+        println!("{SYNC_USAGE}");
+        return Ok(());
+    }
+    let remote = args
+        .remote
+        .filter(|r| !r.trim().is_empty())
+        .ok_or_else(|| BootError::SyncUsage("--remote <spec> is required".to_string()))?;
+
+    // Same DB precedence as the serve path (--db > NMEMORY_DB > XDG > HOME).
+    let db_path = resolve_db_path(
+        args.db,
+        env_nonempty("NMEMORY_DB"),
+        env_nonempty("XDG_STATE_HOME"),
+        env_nonempty("HOME"),
+    )?;
+    // The local store is always present after a sync (Store::open creates it
+    // if absent) — the local-first law; ensure its parent dir exists first.
+    if let Some(dir) = db_path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir).map_err(|source| BootError::CreateDir {
+            dir: dir.to_path_buf(),
+            source,
+        })?;
+    }
+
+    // LOCAL's HMAC key, resolved at the boundary EXACTLY like the serve path:
+    // NMEMORY_HMAC_KEY (trimmed) wins, else the `<db>.hmac-key` file beside the
+    // DB (created on first use). The merge re-keys forget-wins tombstones with
+    // it.
+    let hmac_key_file = {
+        let mut os = db_path.as_os_str().to_os_string();
+        os.push(".hmac-key");
+        PathBuf::from(os)
+    };
+    let env_key = env_nonempty("NMEMORY_HMAC_KEY").map(|k| k.trim().to_string().into_bytes());
+    let key = sync::resolve_hmac_key(env_key, Some(&hmac_key_file))?;
+
+    // The default production transport shells out to `scp` (a SEPARATE
+    // process) — the binary links no network stack, the serve path stays
+    // socket-free.
+    let transport = sync::ScpTransport::default();
+    let summary = sync::reconcile(&db_path, &remote, &key, &transport, args.push)?;
+
+    // Summary to stderr only — stdout stays clean.
+    eprintln!(
+        "nmemory sync · {} -> {} · +{} capsules, {} collapsed, +{} relations, \
+         {} tombstones, remap {}{}",
+        remote,
+        db_path.display(),
+        summary.capsules_added,
+        summary.capsules_collapsed,
+        summary.relations_added,
+        summary.tombstones_applied,
+        summary.id_remap_size,
+        if args.push { " · pushed" } else { "" },
+    );
+    Ok(())
+}
+
 async fn run() -> Result<(), BootError> {
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    // The `sync` subcommand is the opt-in reconcile path; the default (no
+    // subcommand) is the hermetic stdio serve below.
+    if argv.first().map(String::as_str) == Some("sync") {
+        return run_sync_command(&argv[1..]);
+    }
     let cli = parse_args(&argv)?;
     if cli.version {
         println!("nmemory {}", env!("CARGO_PKG_VERSION"));
@@ -299,6 +425,56 @@ mod tests {
         assert!(matches!(
             parse_args(&argv(&["--project"])),
             Err(BootError::Usage(_))
+        ));
+    }
+
+    #[test]
+    fn parse_sync_args_flag_forms() {
+        assert_eq!(parse_sync_args(&argv(&[])).unwrap(), SyncArgs::default());
+
+        let parsed = parse_sync_args(&argv(&[
+            "--remote",
+            "u@h:/m.sqlite3",
+            "--db",
+            "/l.sqlite3",
+            "--push",
+        ]))
+        .unwrap();
+        assert_eq!(parsed.remote.as_deref(), Some("u@h:/m.sqlite3"));
+        assert_eq!(
+            parsed.db.as_deref(),
+            Some(std::path::Path::new("/l.sqlite3"))
+        );
+        assert!(parsed.push);
+
+        // `--flag=value` forms, and push defaults off.
+        let parsed =
+            parse_sync_args(&argv(&["--remote=u@h:/m.sqlite3", "--db=/l.sqlite3"])).unwrap();
+        assert_eq!(parsed.remote.as_deref(), Some("u@h:/m.sqlite3"));
+        assert_eq!(
+            parsed.db.as_deref(),
+            Some(std::path::Path::new("/l.sqlite3"))
+        );
+        assert!(!parsed.push);
+
+        assert!(parse_sync_args(&argv(&["--help"])).unwrap().help);
+    }
+
+    #[test]
+    fn parse_sync_args_fails_closed() {
+        // Missing / empty --remote value.
+        assert!(matches!(
+            parse_sync_args(&argv(&["--remote"])),
+            Err(BootError::SyncUsage(_))
+        ));
+        assert!(matches!(
+            parse_sync_args(&argv(&["--remote="])),
+            Err(BootError::SyncUsage(_))
+        ));
+        // Unknown argument.
+        assert!(matches!(
+            parse_sync_args(&argv(&["--bogus"])),
+            Err(BootError::SyncUsage(_))
         ));
     }
 

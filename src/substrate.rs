@@ -301,4 +301,37 @@ mod tests {
             );
         }
     }
+
+    // Trim semantics are load-bearing: a mandatory field that is non-space
+    // whitespace ONLY (tab, newline, carriage return) is still "empty" and
+    // must be rejected. This pins `.trim()` — a regression to a literal
+    // `== ""` check would let these through and fail this test. (substrate
+    // is already at full line coverage; this hardens the contract.)
+    #[test]
+    fn non_space_whitespace_only_fields_are_rejected() {
+        assert_eq!(
+            OutcomeRecord::new(
+                "out-1".into(),
+                "observed".into(),
+                "\t\n".into(),
+                None,
+                None,
+                at(),
+            )
+            .expect_err("tab/newline actor is empty after trim"),
+            SubstrateError::EmptyField("actor")
+        );
+        assert_eq!(
+            PreferenceRecord::new(
+                "pref-1".into(),
+                "cap-3".into(),
+                "cap-4".into(),
+                "\r\n".into(),
+                "actor".into(),
+                at(),
+            )
+            .expect_err("carriage-return/newline context is empty after trim"),
+            SubstrateError::EmptyField("context")
+        );
+    }
 }

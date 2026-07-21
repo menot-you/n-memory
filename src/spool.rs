@@ -218,4 +218,57 @@ mod tests {
         let back: Vec<(PathBuf, Item)> = replay_spool_files(&missing, 100);
         assert!(back.is_empty());
     }
+
+    // A `.json` entry that read_dir LISTS but whose read fails with
+    // NotFound (a dangling symlink — its target is absent) is skipped, not
+    // fatal: the valid sibling still replays. Exercises the read-NotFound
+    // `continue` arm in replay_spool_files.
+    #[cfg(unix)]
+    #[test]
+    fn replay_skips_json_entry_that_vanishes_before_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let good = item("good", 9);
+        spool_persist(dir, &good.id, &good).unwrap();
+        // Listed by extension, but resolves to an absent target, so
+        // `fs::read` answers NotFound and the entry drops without a panic.
+        std::os::unix::fs::symlink(dir.join("no-such-target"), dir.join("dangling.json")).unwrap();
+
+        let back: Vec<(PathBuf, Item)> = replay_spool_files(dir, 100);
+        assert_eq!(back.len(), 1, "only the readable entry replays");
+        assert_eq!(back[0].1, good);
+    }
+
+    // A `.json` entry that is a DIRECTORY is listed by extension, but its
+    // read fails with a NON-NotFound error (EISDIR); it is warned and
+    // skipped, never fatal, and the valid sibling survives. Exercises the
+    // catch-all read-error arm (warn + continue).
+    #[cfg(unix)]
+    #[test]
+    fn replay_warns_and_skips_unreadable_non_notfound_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let good = item("good", 3);
+        spool_persist(dir, &good.id, &good).unwrap();
+        std::fs::create_dir(dir.join("subdir.json")).unwrap();
+
+        let back: Vec<(PathBuf, Item)> = replay_spool_files(dir, 100);
+        assert_eq!(back.len(), 1, "the directory entry is skipped, not read");
+        assert_eq!(back[0].1, good);
+    }
+
+    // spool_remove tolerates a NON-ENOENT failure: the id resolves to a
+    // directory, so unlink returns EISDIR. It warns and returns — never
+    // panics — and the entry is left in place. Exercises the non-ENOENT
+    // warn arm of spool_remove.
+    #[cfg(unix)]
+    #[test]
+    fn remove_non_enoent_error_is_warned_not_fatal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let blocked = dir.join("blocked.json");
+        std::fs::create_dir(&blocked).unwrap();
+        spool_remove(dir, "blocked"); // remove_file on a dir → EISDIR, warned
+        assert!(blocked.exists(), "a non-ENOENT failure removes nothing");
+    }
 }

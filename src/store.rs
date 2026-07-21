@@ -91,11 +91,14 @@
 //! Usage is a LATE ranking tiebreak input only, never confidence/authority
 //! (ARCHITECTURE §1 law: usage is not success evidence).
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::path::Path;
 
 use hmac::{Hmac, KeyInit, Mac};
-use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{
+    Connection, OpenFlags, OptionalExtension, TransactionBehavior, params, params_from_iter,
+};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use time::OffsetDateTime;
@@ -1636,7 +1639,25 @@ impl Store {
         terms: &[String],
         project_id: Option<&str>,
     ) -> Result<Vec<(StoredCapsule, f64)>, StoreError> {
-        self.search_fts_scoped(terms, project_id, None)
+        self.search_fts_inner(terms, project_id, None, None)
+    }
+
+    /// [`Store::search_fts`] capped to the top-`limit` matches by bm25 rank
+    /// (best first) — the bounded candidate set for the write-time hint
+    /// scans (perf-ingest). The cap is a `LIMIT` applied AFTER the
+    /// `ORDER BY score, seq`, so it keeps the strongest-ranked candidates
+    /// and drops the long tail a common token would otherwise return; the
+    /// per-capture scan therefore stays flat as the store grows instead of
+    /// scoring every match. Advisory ceiling only: exact `source_hash`
+    /// idempotency ([`Store::find_by_source_hash`]) is a SEPARATE exact
+    /// lookup, never this ranked scan.
+    pub fn search_fts_limited(
+        &self,
+        terms: &[String],
+        project_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<(StoredCapsule, f64)>, StoreError> {
+        self.search_fts_inner(terms, project_id, None, Some(limit))
     }
 
     /// [`Store::search_fts`] with the full w2 scope fences: `project_id`
@@ -1644,12 +1665,28 @@ impl Store {
     /// subtree rule — `project_id == p` OR starting with `p + "/"`).
     /// Present fences AND-compose; both `None` is the unfenced search.
     /// Everything else — match semantics, quoting, ordering, tombstone
-    /// exclusion — is exactly [`Store::search_fts`], which delegates here.
+    /// exclusion — is exactly [`Store::search_fts`].
     pub fn search_fts_scoped(
         &self,
         terms: &[String],
         project_id: Option<&str>,
         project_prefix: Option<&str>,
+    ) -> Result<Vec<(StoredCapsule, f64)>, StoreError> {
+        self.search_fts_inner(terms, project_id, project_prefix, None)
+    }
+
+    /// The one FTS query body behind [`Store::search_fts`],
+    /// [`Store::search_fts_scoped`], and [`Store::search_fts_limited`].
+    /// `limit` bounds the ranked result: `None` is unbounded (SQLite reads
+    /// a negative `LIMIT` as unlimited, the same convention as
+    /// [`Store::list`]); `Some(k)` keeps the top-`k` by `ORDER BY score,
+    /// seq`.
+    fn search_fts_inner(
+        &self,
+        terms: &[String],
+        project_id: Option<&str>,
+        project_prefix: Option<&str>,
+        limit: Option<usize>,
     ) -> Result<Vec<(StoredCapsule, f64)>, StoreError> {
         let phrases: Vec<String> = terms
             .iter()
@@ -1665,6 +1702,12 @@ impl Store {
             return Ok(Vec::new());
         }
         let match_expr = phrases.join(" OR ");
+        // SQLite treats a negative LIMIT as "unlimited" (same convention as
+        // [`Store::list`]); a bounded hint scan passes a real top-K cap.
+        let row_limit = match limit {
+            None => -1_i64,
+            Some(n) => i64::try_from(n).unwrap_or(i64::MAX),
+        };
         let mut out = Vec::new();
         // Same NULL-tolerant fence shape as [`Store::list`]: a NULL
         // parameter disables its clause; `substr` keeps prefix bytes
@@ -1681,12 +1724,12 @@ impl Store {
                    AND (?2 IS NULL OR c.project_id = ?2) \
                    AND (?3 IS NULL OR c.project_id = ?3 \
                         OR substr(c.project_id, 1, length(?3) + 1) = ?3 || '/') \
-                 ORDER BY score, c.seq",
+                 ORDER BY score, c.seq LIMIT ?4",
             )
             .map_err(backend)?;
         let rows = stmt
             .query_map(
-                params![match_expr, project_id, project_prefix],
+                params![match_expr, project_id, project_prefix, row_limit],
                 row_to_scored,
             )
             .map_err(backend)?;
@@ -1762,6 +1805,73 @@ impl Store {
                 |row| row.get(0),
             )
             .map_err(backend)
+    }
+
+    /// Of the bounded candidate `ids`, those a `supersedes` edge names as
+    /// replaced — the batched form of [`Store::is_superseded`]: ONE query
+    /// over the whole candidate set instead of one point query per
+    /// candidate (perf-ingest, so the write-time near-duplicate hint scan's
+    /// DB round-trips stay flat as the store grows). An id absent from the
+    /// result is live; an unknown id is simply not superseded. Empty `ids`
+    /// short-circuits to the empty set (no query — `IN ()` is not valid
+    /// SQL).
+    pub fn superseded_among(&self, ids: &[&str]) -> Result<BTreeSet<String>, StoreError> {
+        if ids.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+        let sql = format!(
+            "SELECT DISTINCT to_id FROM relations \
+             WHERE kind = 'supersedes' AND to_id IN ({})",
+            sql_placeholders(ids.len()),
+        );
+        let mut stmt = self.conn.prepare(&sql).map_err(backend)?;
+        let rows = stmt
+            .query_map(params_from_iter(ids.iter().copied()), |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(backend)?;
+        let mut out = BTreeSet::new();
+        for row in rows {
+            out.insert(row.map_err(backend)?);
+        }
+        Ok(out)
+    }
+
+    /// Of the bounded candidate `ids`, those the write-time SIBLING scan
+    /// must drop — the batched union of the three per-candidate fences it
+    /// otherwise fires ([`Store::is_superseded`] + [`Store::is_falsified`] +
+    /// a non-Active [`Store::get_tier`]): an id is excluded when a
+    /// `supersedes` OR `falsifies` edge names it, OR its `tiers` row holds a
+    /// value other than `active`. A MISSING `tiers` row is Active by the
+    /// default rule, so absence from `tiers` never excludes — exactly
+    /// [`Store::get_tier`]'s semantics for these stored candidates. ONE
+    /// round-trip for the whole candidate set (perf-ingest). Empty `ids`
+    /// short-circuits to the empty set (no query).
+    pub fn sibling_excluded_among(&self, ids: &[&str]) -> Result<BTreeSet<String>, StoreError> {
+        if ids.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+        let placeholders = sql_placeholders(ids.len());
+        let sql = format!(
+            "SELECT to_id AS id FROM relations \
+                 WHERE kind IN ('supersedes', 'falsifies') AND to_id IN ({placeholders}) \
+             UNION \
+             SELECT capsule_id AS id FROM tiers \
+                 WHERE tier != 'active' AND capsule_id IN ({placeholders})",
+        );
+        let mut stmt = self.conn.prepare(&sql).map_err(backend)?;
+        // The two IN clauses bind the candidate set twice, in order.
+        let rows = stmt
+            .query_map(
+                params_from_iter(ids.iter().copied().chain(ids.iter().copied())),
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(backend)?;
+        let mut out = BTreeSet::new();
+        for row in rows {
+            out.insert(row.map_err(backend)?);
+        }
+        Ok(out)
     }
 
     /// Record one directed, typed edge `from --kind--> to`. Validates that
@@ -4383,6 +4493,14 @@ fn backend(e: rusqlite::Error) -> StoreError {
     StoreError::Backend(e.to_string())
 }
 
+/// Comma-joined `?` placeholders for an `IN (...)` clause of `n` positional
+/// values. rusqlite binds no array without the `array` feature, so a
+/// candidate id set is expanded to `n` positional params; callers guard
+/// `n == 0` (`IN ()` is not valid SQL) before calling.
+fn sql_placeholders(n: usize) -> String {
+    vec!["?"; n].join(",")
+}
+
 /// Drop and re-derive the FTS5 mirror from the canonical `capsules`
 /// table, atomically; returns the number of rows indexed. Shared by
 /// [`Store::rebuild_fts`] and the open-time heal.
@@ -6185,6 +6303,121 @@ PRAGMA user_version = 1;
         assert_eq!(fenced[0].0.capsule.scope().project_id, "proj-b");
         let open = store.search_fts(&["shared".to_string()], None).unwrap();
         assert_eq!(open.len(), 2);
+    }
+
+    #[test]
+    fn search_fts_limited_caps_candidates_to_top_k_by_rank() {
+        // perf-ingest: the write-time hint scans bound their candidate set
+        // with this cap, so a common token no longer returns the whole
+        // store. Byte-distinct rows sharing one token: the unbounded search
+        // returns all, the limited search returns exactly the top-K prefix.
+        let mut store = Store::open_in_memory().unwrap();
+        let corpus = 40;
+        for i in 0..corpus {
+            store
+                .append(
+                    &capsule(&format!("shared marker row number {i}"), "nmemory"),
+                    injected_now(),
+                )
+                .unwrap();
+        }
+        let all = store.search_fts(&["shared".to_string()], None).unwrap();
+        assert_eq!(
+            all.len(),
+            corpus,
+            "every sharer matches the unbounded search"
+        );
+
+        // The cap keeps the strongest-ranked prefix — same ORDER BY, only a
+        // LIMIT — so it is exactly the head of the unbounded result.
+        let capped = store
+            .search_fts_limited(&["shared".to_string()], None, 10)
+            .unwrap();
+        assert_eq!(capped.len(), 10, "the scan is bounded to the cap");
+        let head: Vec<&str> = all.iter().take(10).map(|(s, _)| s.id.as_str()).collect();
+        let capped_ids: Vec<&str> = capped.iter().map(|(s, _)| s.id.as_str()).collect();
+        assert_eq!(capped_ids, head, "the cap keeps the top-K by bm25 rank");
+
+        // A cap at/above the corpus truncates nothing; a zero cap returns
+        // nothing (the LIMIT is honored exactly).
+        let loose = store
+            .search_fts_limited(&["shared".to_string()], None, corpus + 100)
+            .unwrap();
+        assert_eq!(loose.len(), corpus);
+        let none = store
+            .search_fts_limited(&["shared".to_string()], None, 0)
+            .unwrap();
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn batched_hint_fences_match_per_candidate_probes() {
+        // perf-ingest: the ingest hint scans replace N per-candidate
+        // is_superseded/is_falsified/get_tier round-trips with ONE batched
+        // query. Prove the batched sets equal the per-candidate probes over
+        // a candidate id set with every lifecycle state represented.
+        let mut store = Store::open_in_memory().unwrap();
+        for i in 0..5 {
+            store
+                .append(
+                    &capsule(
+                        &format!("fence family shared record variant {i}"),
+                        "nmemory",
+                    ),
+                    injected_now(),
+                )
+                .unwrap();
+        }
+        // cap-1 superseded (by cap-5), cap-2 falsified (by cap-5),
+        // cap-3 quarantined, cap-4 archived; cap-5 is the one live row.
+        store.supersede("cap-1", "cap-5", injected_now()).unwrap();
+        store
+            .upsert_relation(RelationKind::Falsifies, "cap-5", "cap-2", injected_now())
+            .unwrap();
+        store
+            .set_tier("cap-3", Tier::Quarantined, injected_now())
+            .unwrap();
+        store
+            .set_tier("cap-4", Tier::Archived, injected_now())
+            .unwrap();
+        let ids = ["cap-1", "cap-2", "cap-3", "cap-4", "cap-5"];
+
+        // Batched superseded set == the per-candidate is_superseded probe.
+        let superseded = store.superseded_among(&ids).unwrap();
+        assert_eq!(superseded, BTreeSet::from(["cap-1".to_string()]));
+        for id in ids {
+            assert_eq!(
+                superseded.contains(id),
+                store.is_superseded(id).unwrap(),
+                "superseded_among must agree with is_superseded for {id}"
+            );
+        }
+
+        // Batched sibling-exclusion == the tier/falsify/supersede trio.
+        let excluded = store.sibling_excluded_among(&ids).unwrap();
+        assert_eq!(
+            excluded,
+            BTreeSet::from(["cap-1", "cap-2", "cap-3", "cap-4"].map(String::from)),
+            "superseded, falsified, quarantined, and archived are all dropped"
+        );
+        for id in ids {
+            let dead = store.is_superseded(id).unwrap()
+                || store.is_falsified(id).unwrap()
+                || store.get_tier(id).unwrap() != Tier::Active;
+            assert_eq!(
+                excluded.contains(id),
+                dead,
+                "sibling_excluded_among must agree with the point-query trio for {id}"
+            );
+        }
+        assert!(
+            !excluded.contains("cap-5"),
+            "the one live candidate survives"
+        );
+
+        // Empty candidate set short-circuits (no invalid `IN ()`).
+        assert!(store.superseded_among(&[]).unwrap().is_empty());
+        assert!(store.sibling_excluded_among(&[]).unwrap().is_empty());
     }
 
     #[test]

@@ -151,6 +151,27 @@ pub const DEDUP_MAX_QUERY_TERMS: usize = 12;
 /// every capture into a recall dump.
 pub const SIBLING_TOP_K: usize = 3;
 
+/// Upper bound on the candidate set each write-time hint scan
+/// materializes, taken as the top-K by bm25 rank
+/// ([`Store::search_fts_limited`]).
+///
+/// The near-duplicate and sibling scans are ADVISORY. On a common token the
+/// FTS candidate set grows with the store, and scoring every candidate
+/// (re-tokenizing its full content and probing its lifecycle) made
+/// per-capture latency grow with store size — an O(n) write cost that a
+/// batch multiplies. Capping the scan to the strongest-ranked
+/// `HINT_CANDIDATE_LIMIT` candidates keeps ingest flat.
+///
+/// The bound can ONLY cost the hint a near-duplicate that ranks BELOW the
+/// cap at large scale — acceptable for an advisory the caller adjudicates
+/// (supersede/skip/keep). It NEVER weakens exact dedup: byte-identical
+/// content collapses at the `source_hash` idempotency probe
+/// ([`Store::find_by_source_hash`]), a SEPARATE exact lookup that runs
+/// BEFORE any hint scan (see [`ingest`]). 128 leaves generous headroom over
+/// a true near-duplicate's rank (it shares nearly all query tokens, so it
+/// ranks at the very top) while bounding the tail a homogeneous corpus adds.
+pub const HINT_CANDIDATE_LIMIT: usize = 128;
+
 /// One capture request. Two fields carry decisions (`content` + the
 /// `source`/`anchor` provenance pair); every `Option` is an override the
 /// smart defaults fill when `None` (ARCHITECTURE §1, low-friction capture).
@@ -586,15 +607,22 @@ pub(crate) fn reported_score(raw: f64) -> f64 {
 /// Scan the store for the NEAREST live near-duplicate of `content`:
 /// query the FTS index with the first [`DEDUP_MAX_QUERY_TERMS`]
 /// significant tokens (globally — byte-dedup is global too, so the near
-/// miss of it is), fence candidates by significant-token count
-/// (ELIGIBILITY, q39/w1d), score the eligible ones by mutual
-/// containment over the FULL vocabularies (SCORE, q77), and hint the
-/// max-score candidate at or above [`DEDUP_HINT_MIN_SCORE`].
-/// Deterministic nearest: higher score, then earlier append (`seq` —
-/// with `cap-<seq>` ids that is the numerically lowest id). Superseded
-/// capsules never hint (the live successor speaks), and neither does
-/// `excluded_id` — the capsule the caller is replacing in this very
-/// request.
+/// miss of it is), take the top-[`HINT_CANDIDATE_LIMIT`] by bm25 rank,
+/// fence candidates by significant-token count (ELIGIBILITY, q39/w1d),
+/// score the eligible ones by mutual containment over the FULL
+/// vocabularies (SCORE, q77), and hint the max-score candidate at or
+/// above [`DEDUP_HINT_MIN_SCORE`]. Deterministic nearest: higher score,
+/// then earlier append (`seq` — with `cap-<seq>` ids that is the
+/// numerically lowest id). Superseded capsules never hint (the live
+/// successor speaks), and neither does `excluded_id` — the capsule the
+/// caller is replacing in this very request.
+///
+/// ADVISORY and bounded (perf-ingest): the candidate set is capped, so a
+/// near-duplicate that ranks below the cap in a huge same-token corpus can
+/// go un-hinted — the caller adjudicates the hint, so this is acceptable.
+/// EXACT dedup is a different mechanism entirely: byte-identical content
+/// collapsed at the `source_hash` probe upstream of this scan and never
+/// reaches here.
 fn near_duplicate_hint(
     store: &Store,
     content: &str,
@@ -611,9 +639,16 @@ fn near_duplicate_hint(
         .cloned()
         .collect();
 
+    // Bounded candidate set: the top-[`HINT_CANDIDATE_LIMIT`] by bm25 rank,
+    // not every row a common token matches. One batched liveness probe over
+    // that set replaces a per-candidate `is_superseded` round-trip.
+    let candidates = store.search_fts_limited(&query, None, HINT_CANDIDATE_LIMIT)?;
+    let candidate_ids: Vec<&str> = candidates.iter().map(|(s, _)| s.id.as_str()).collect();
+    let superseded = store.superseded_among(&candidate_ids)?;
+
     let mut best: Option<(f64, i64, CapsuleId)> = None;
-    for (stored, _bm25) in store.search_fts(&query, None)? {
-        if excluded_id == Some(stored.id.as_str()) || store.is_superseded(stored.id.as_str())? {
+    for (stored, _bm25) in candidates {
+        if excluded_id == Some(stored.id.as_str()) || superseded.contains(stored.id.as_str()) {
             continue;
         }
         // Tiny-set fence (w1d): containment over fewer than
@@ -664,6 +699,11 @@ fn near_duplicate_hint(
 ///
 /// Deterministic order: score descending, then earlier append (`seq`
 /// ascending) — the dedup nearest-tiebreak, extended to a list.
+///
+/// ADVISORY and bounded like [`near_duplicate_hint`] (perf-ingest): the
+/// candidate set is capped to the top-[`HINT_CANDIDATE_LIMIT`] by bm25
+/// rank, and the three per-candidate lifecycle probes are folded into one
+/// batched query ([`Store::sibling_excluded_among`]).
 fn sibling_hints(
     store: &Store,
     content: &str,
@@ -681,18 +721,17 @@ fn sibling_hints(
         .cloned()
         .collect();
 
+    // Same bounded candidate set as the dedup hint, project-fenced. Recall's
+    // dominance fences (tier / falsified / superseded), otherwise three
+    // point queries per candidate, fold into ONE batched query over the
+    // capped candidate set.
+    let candidates = store.search_fts_limited(&query, Some(project_id), HINT_CANDIDATE_LIMIT)?;
+    let candidate_ids: Vec<&str> = candidates.iter().map(|(s, _)| s.id.as_str()).collect();
+    let excluded = store.sibling_excluded_among(&candidate_ids)?;
+
     let mut scored: Vec<(f64, i64, CapsuleId)> = Vec::new();
-    for (stored, _bm25) in store.search_fts(&query, Some(project_id))? {
-        if excluded_id == Some(stored.id.as_str()) {
-            continue;
-        }
-        // Recall's dominance fences, write-time edition (tier read once,
-        // probed at both positions — same shape as the recall gate).
-        let tier = store.get_tier(stored.id.as_str())?;
-        if !matches!(tier, crate::store::Tier::Active) {
-            continue;
-        }
-        if store.is_falsified(stored.id.as_str())? || store.is_superseded(stored.id.as_str())? {
+    for (stored, _bm25) in candidates {
+        if excluded_id == Some(stored.id.as_str()) || excluded.contains(stored.id.as_str()) {
             continue;
         }
         // Same tiny-set eligibility fence as the hint scan (q39/w1d).
@@ -1539,6 +1578,77 @@ mod tests {
             (hint.score - 0.86).abs() < f64::EPSILON,
             "6/max(7,7) rounds to 0.86, got {}",
             hint.score
+        );
+    }
+
+    #[test]
+    fn hint_scan_is_bounded_yet_exact_dedup_stays_exact() {
+        // perf-ingest: the advisory near-duplicate / sibling scans are
+        // capped to the top-[`HINT_CANDIDATE_LIMIT`] FTS candidates, so a
+        // homogeneous batch no longer scans the whole store per capture.
+        // Two invariants proven together: (1) the bounded scan still WORKS
+        // at scale — the hint fires and siblings stay within their cap —
+        // and (2) the cap NEVER weakens EXACT dedup: byte-identical content
+        // still collapses at the `source_hash` probe, upstream of any hint
+        // scan.
+        let mut store = Store::open_in_memory().unwrap();
+        // Fill PAST the candidate cap with same-family, byte-DISTINCT
+        // captures (each carries a unique number token).
+        let family = |i: usize| format!("shared sibling family record variant number {i}");
+        let overflow = HINT_CANDIDATE_LIMIT + 20;
+        for i in 0..overflow {
+            let out = ingest(&mut store, request(&family(i)), defaults(), injected_now()).unwrap();
+            assert!(
+                !out.deduped,
+                "byte-distinct variant #{i} is a fresh capsule"
+            );
+            // The sibling advisory is bounded whatever the store size.
+            assert!(
+                out.siblings.len() <= SIBLING_TOP_K,
+                "siblings must never exceed their cap, got {}",
+                out.siblings.len()
+            );
+        }
+        let count_before = store.list(ListFilter::default()).unwrap().len();
+        assert_eq!(count_before, overflow);
+
+        // The scan still WORKS past the cap: one more same-family capture
+        // still earns a near-duplicate hint (many live priors exist), and
+        // the sibling list stays bounded.
+        let scaled = ingest(
+            &mut store,
+            request(&family(999_999)),
+            defaults(),
+            injected_now(),
+        )
+        .unwrap();
+        assert!(!scaled.deduped);
+        assert!(
+            scaled.dedup_hint.is_some(),
+            "the near-duplicate hint must still fire past the candidate cap"
+        );
+        assert!(scaled.siblings.len() <= SIBLING_TOP_K);
+
+        // EXACT dedup invariant, unaffected by the bounded advisory scan: a
+        // byte-identical re-ingest of the very first capture collapses onto
+        // the ONE existing capsule — no new row, and the deduped path
+        // carries no advisory hint.
+        let replay = ingest(&mut store, request(&family(0)), defaults(), injected_now()).unwrap();
+        assert!(
+            replay.deduped,
+            "byte-identical re-ingest must collapse (exact source_hash dedup)"
+        );
+        assert_eq!(
+            replay.id.as_str(),
+            "cap-1",
+            "it collapses onto the first row"
+        );
+        assert_eq!(replay.dedup_hint, None, "the dedup path carries no hint");
+        let count_after = store.list(ListFilter::default()).unwrap().len();
+        assert_eq!(
+            count_after,
+            count_before + 1,
+            "only the one fresh scaled capture was appended; the replay dedup'd"
         );
     }
 

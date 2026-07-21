@@ -959,4 +959,131 @@ mod tests {
             "merged sections count once:\n{out}"
         );
     }
+
+    /// A redacted tombstone deliberately retains provenance — and a real
+    /// store row can carry source WITHOUT anchor, or anchor WITHOUT source.
+    /// Each partial arm renders its own suffix: never the "@ anchor" glue
+    /// when the anchor is absent, never a source token when it is absent.
+    #[test]
+    fn tombstone_renders_each_partial_provenance_arm() {
+        let source_only = ExportRecord::Tombstoned(TombstoneRecord {
+            capsule_id: "cap-1".to_owned(),
+            mode: TombstoneMode::Redacted,
+            content_hmac: "hmac-sha256:aa".to_owned(),
+            at: datetime!(2026-07-18 11:00:00 UTC),
+            reason: "pii".to_owned(),
+            provenance_source: Some("scratch.md".to_owned()),
+            provenance_anchor: None,
+            source_hash: None,
+        });
+        let anchor_only = ExportRecord::Tombstoned(TombstoneRecord {
+            capsule_id: "cap-2".to_owned(),
+            mode: TombstoneMode::Redacted,
+            content_hmac: "hmac-sha256:bb".to_owned(),
+            at: datetime!(2026-07-18 11:01:00 UTC),
+            reason: "pii".to_owned(),
+            provenance_source: None,
+            provenance_anchor: Some("scratch.md:7".to_owned()),
+            source_hash: None,
+        });
+        let out = render_markdown(&[source_only, anchor_only], &[], GENERATED_AT, true);
+        // Source-only: "· was <source>" with NO "@" glue.
+        assert!(
+            out.contains(
+                "- cap-1 — tombstoned (redacted) · reason: \"pii\" · hmac-sha256:aa · was scratch.md\n"
+            ),
+            "source-only provenance arm:\n{out}"
+        );
+        // Anchor-only: "· was @ <anchor>" with NO source token.
+        assert!(
+            out.contains(
+                "- cap-2 — tombstoned (redacted) · reason: \"pii\" · hmac-sha256:bb · was @ scratch.md:7\n"
+            ),
+            "anchor-only provenance arm:\n{out}"
+        );
+    }
+
+    /// Defensive rank (`UNKNOWN_KIND_RANK`): the store CHECK keeps kinds in
+    /// the closed set, but the renderer must degrade gracefully if a row ever
+    /// carries an out-of-set kind — its own section, AFTER every known kind
+    /// and BEFORE `unclassified`, never a panic or a silent merge into a
+    /// known section.
+    #[test]
+    fn out_of_set_classification_kind_sorts_into_its_own_trailing_section() {
+        let classified = |id: &str, seq: i64, kind: &str| ExportRecord::Live {
+            stored: stored(
+                id,
+                seq,
+                capsule(
+                    "some claim",
+                    "p",
+                    0.5,
+                    AuthorityClass::AgentInferred,
+                    false,
+                    (datetime!(2026-07-18 00:00:00 UTC), None),
+                    ("s", "a:1"),
+                ),
+            ),
+            tier: Tier::Active,
+            classification: Some(ClassificationRecord {
+                kind: kind.to_owned(),
+                scope: "project".to_owned(),
+                at: datetime!(2026-07-18 09:00:00 UTC),
+            }),
+        };
+        let records = vec![
+            classified("cap-1", 1, "fact"),
+            classified("cap-2", 2, "mystery-kind"),
+            live_unclassified("cap-3", 3, "loose note", "p"),
+        ];
+        let out = render_markdown(&records, &[], GENERATED_AT, true);
+        let fact_at = out.find("### fact").expect("known kind section");
+        let unknown_at = out.find("### mystery-kind").expect("unknown kind section");
+        let unclassified_at = out.find("### unclassified").expect("unclassified section");
+        assert!(
+            fact_at < unknown_at && unknown_at < unclassified_at,
+            "unknown kind ranks after known, before unclassified:\n{out}"
+        );
+    }
+
+    /// The fifth relation kind (`Falsifies`) had no render coverage: it must
+    /// emit its wire arrow and, by contract rank (Supersedes=0 … Falsifies=4),
+    /// sort LAST among mixed edges even when handed first.
+    #[test]
+    fn falsifies_relation_renders_and_sorts_after_supersedes() {
+        let records = vec![
+            live_unclassified("cap-1", 1, "claim under test", "p"),
+            live_unclassified("cap-2", 2, "the refuting evidence", "p"),
+        ];
+        let relations = vec![
+            // Falsifies handed FIRST; must still sort after supersedes.
+            edge(
+                RelationKind::Falsifies,
+                "cap-2",
+                "cap-1",
+                datetime!(2026-07-18 10:00:00 UTC),
+            ),
+            // Supersedes between ids that are NOT live records here, so no
+            // live entry is turned into a superseded marker.
+            edge(
+                RelationKind::Supersedes,
+                "cap-8",
+                "cap-9",
+                datetime!(2026-07-18 10:05:00 UTC),
+            ),
+        ];
+        let out = render_markdown(&records, &relations, GENERATED_AT, true);
+        let sup_at = out
+            .find("--supersedes-->")
+            .expect("supersedes edge renders");
+        let fal_at = out.find("--falsifies-->").expect("falsifies edge renders");
+        assert!(
+            sup_at < fal_at,
+            "falsifies (rank 4) sorts after supersedes (rank 0):\n{out}"
+        );
+        assert!(
+            out.contains("- cap-2 --falsifies--> cap-1 · at 2026-07-18T10:00:00Z\n"),
+            "falsifies wire arrow:\n{out}"
+        );
+    }
 }

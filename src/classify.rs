@@ -865,4 +865,24 @@ mod tests {
         }
         assert!(serde_json::from_str::<ContentOrigin>("\"llm-dream\"").is_err());
     }
+
+    #[test]
+    fn scope_as_str_matches_its_wire_name_for_every_scope() {
+        // `as_str` and the derived `Serialize` form must never drift — the
+        // Session arm in particular had no caller exercising it. Pin every
+        // scope's programmatic name against its wire bytes; a hand edit to
+        // one without the other now fails here.
+        for scope in ClassificationScope::ALL {
+            let wire = serde_json::to_string(&scope).unwrap();
+            assert_eq!(
+                wire,
+                format!("\"{}\"", scope.as_str()),
+                "as_str drifted from the wire name for {scope:?}"
+            );
+        }
+        // The Session name is exactly "session" (the previously uncovered
+        // arm — the other two were reached only through unrelated callers).
+        assert_eq!(ClassificationScope::Session.as_str(), "session");
+        assert_eq!(ClassificationScope::ALL.len(), 3);
+    }
 }

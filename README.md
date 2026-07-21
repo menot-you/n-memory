@@ -3,7 +3,7 @@
 <img src="assets/hero.png" alt="ₙMEMORY — hermetic, local memory for coding agents, one that never lies to you" width="900">
 
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
-![Tests](https://img.shields.io/badge/tests-520%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-582%20passing-brightgreen)
 ![Coverage](https://img.shields.io/badge/coverage-95%25%20lines-brightgreen)
 ![Audit](https://img.shields.io/badge/audit-0%20vulnerabilities-brightgreen)
 ![Unsafe Forbidden](https://img.shields.io/badge/unsafe-forbidden-brightgreen)
@@ -67,9 +67,12 @@ Recall never invents a fourth.
 - **Advisory, never authority.** Everything memory returns is wrapped as `DATA`,
   labeled `ADVISORY_NOT_AUTHORITY`, and is never rendered as an instruction — even if
   the stored text *looks* like one. Your memory cannot hijack your agent.
-- **Hermetic by construction.** Zero network. The binary is compiled *without* a
-  networking stack; there is no embedder, no sync, no telemetry to phone home. Your
-  memory never leaves your disk.
+- **Hermetic by construction.** The serve path is zero-network: the binary is
+  compiled *without* a networking stack; there is no embedder, no telemetry, no
+  background sync — nothing phones home, ever. Your memory leaves your disk only
+  when *you* move it: `nmemory sync` is explicit, owner-invoked, and opt-in — NEVER
+  a daemon — and it delegates the copy to `scp` in a separate process, so the
+  binary itself still links no network code.
 - **Local and yours.** One SQLite file you own, on your machine. No server, no
   account, no daemon. Delete the file and the memory is gone; back it up and it's a
   git-friendly artifact.
@@ -127,6 +130,10 @@ claude mcp add nmemory -- ssh <user>@<host> /path/to/nmemory --project <your-pro
 One store, both machines live on the same memory. Details, requirements, and
 failure modes: [`RUNBOOK.md`](RUNBOOK.md).
 
+Prefer each machine keeping its *own* store? Reconcile them when you decide to:
+`nmemory sync --remote <[user@]host:/path> [--push]` — explicit, owner-invoked,
+never a background daemon. Operating guide: [`RUNBOOK.md`](RUNBOOK.md).
+
 ## Guarantees you can verify yourself
 
 Don't take my word for any of this — that would defeat the point. Each law has a check:
@@ -134,14 +141,14 @@ Don't take my word for any of this — that would defeat the point. Each law has
 | Guarantee | Verify it |
 |---|---|
 | Never fabricates | `retrieve` a term you never stored → literal `abstain` |
-| Zero network | `strace -f -e trace=network <binary>` over any op → no `socket(AF_INET)`/`connect`; or `ldd` → no network/TLS library linked |
+| Zero-network serve | `strace -f -e trace=network <binary>` over any MCP serve session → no `socket(AF_INET)`/`connect`; or `ldd` → no network/TLS library linked. (`nmemory sync` is the one deliberate exception: the copy runs as an external `scp` process, and only when you invoke it) |
 | Zero Python | `cargo test --test conformance_zero_python` → a planted `.py` (even extensionless, shebang-only) is flagged and named |
 | Provenance-mandatory | `ingest` with no `source`/`anchor` → rejected, the missing fields named |
 | Advisory framing | every `retrieve`/`get`/`digest` result carries `ADVISORY_NOT_AUTHORITY` + `framing: DATA` |
 | Deterministic store | `export` twice with `stamp:false` → byte-identical |
 | Fail-safe | point it at a corrupt DB → typed error, no panic; empty store → clean abstain, not a crash |
 
-The full suite is `cargo test` (520 tests, hermetic offline build).
+The full suite is `cargo test` (582 tests, hermetic offline build).
 
 ## The tool surface — 21 tools, four planes
 
@@ -180,6 +187,20 @@ in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 - `memory_export` — the whole store as one deterministic markdown view; byte-identical on an unchanged store
 - `memory_merge` — reconcile a second store file into this one: content-hash identity, id-remap, forget-wins, deterministic — the offline-first path to keep two machines' stores in sync
 
+**Beyond the tools** — same binary, still no daemon:
+
+- `nmemory sync --remote <[user@]host:/path> [--push]` — a CLI subcommand, not an
+  MCP tool: owner-invoked reconcile of your local store with a remote mirror file.
+  It fetches the mirror, merges it into the local store with the same engine
+  `memory_merge` uses, and with `--push` copies the merged store back so both sides
+  converge. Explicit and opt-in — it runs only when you run it. Operating guide:
+  [`RUNBOOK.md`](RUNBOOK.md).
+- Two MCP App resources (`text/html;profile=mcp-app`) for hosts that render MCP
+  Apps: `ui://nmemory/document` — a readable master-detail document over
+  `memory_export`; `ui://nmemory/visual` — the Mermaid view over `memory_visual`.
+  Self-contained HTML, zero external requests; hosts without MCP Apps support keep
+  getting the plain text payloads unchanged.
+
 ## What it is NOT (yet)
 
 I would rather you hear the limits from me than find them yourself:
@@ -195,10 +216,16 @@ I would rather you hear the limits from me than find them yourself:
   won't claim it does. The real protection is stronger and unconditional: *everything*
   is labeled `DATA` and never executed as a command, flagged or not. The armor is the
   framing, not the detector.
-- **Single-host store.** The store lives on one machine. A second machine can
-  use it live over SSH today (see [`RUNBOOK.md`](RUNBOOK.md)) — but there is no
-  store-to-store sync or merge yet; offline multi-store reconciliation is a
-  deliberate future, and the hermetic, zero-network core will not change for it.
+- **Sync is a command, not a service.** Store-to-store reconciliation exists —
+  `memory_merge` over MCP, `nmemory sync` from the CLI — and it is deliberately
+  narrow: explicit, owner-invoked, opt-in, NEVER a background daemon, and the
+  hermetic zero-network serve path is unchanged by it. Know what sync does *not*
+  do: it copies the whole store file (`scp`, no deltas); it never schedules
+  itself; it never picks between two divergent claims — both survive as separate
+  capsules until you supersede one; and per-store sidecars (usage counters,
+  aliases, classifications, caller-fed vectors, session records, the audit
+  journal) stay local — only capsules, relations, and forget-wins tombstones
+  travel.
 - **Embeddings are caller-fed.** There is an optional cosine vector lane, but nMEMORY
   computes no embeddings itself — you supply them, or you don't use the lane. Zero
   embedder dependency is a feature, not a gap.

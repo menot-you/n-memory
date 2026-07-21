@@ -34,5 +34,6 @@ pub mod server;
 pub mod spool;
 pub mod store;
 pub mod substrate;
+pub mod sync;
 pub mod taint;
 pub mod visual;

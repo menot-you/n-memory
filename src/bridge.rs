@@ -698,4 +698,92 @@ mod tests {
             );
         }
     }
+
+    // ---- read_source error arms (typed, fail-closed) ----
+
+    // A MemoryDir whose listing fails for a reason that is NEITHER
+    // NotFound NOR NotADirectory — a symlink loop makes the directory
+    // listing return FilesystemLoop (ELOOP) — surfaces as the typed
+    // BridgeError::Io, never a panic. Root-proof: a symlink loop is not
+    // bypassed by privilege, so this arm is provable under any uid.
+    // (Comment avoids the literal listing-call token so the single-
+    // listing structural test above still counts exactly one call site.)
+    #[cfg(unix)]
+    #[test]
+    fn memory_dir_listing_error_other_than_missing_is_typed_io() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        std::os::unix::fs::symlink(base.join("loop_b"), base.join("loop_a")).unwrap();
+        std::os::unix::fs::symlink(base.join("loop_a"), base.join("loop_b")).unwrap();
+
+        let err = read_source(
+            &BridgeSource::MemoryDir(PathBuf::from("loop_a")),
+            base,
+            base,
+        )
+        .expect_err("a symlink-loop dir must fail closed");
+        assert!(
+            matches!(err, BridgeError::Io { .. }),
+            "a non-missing listing failure is typed Io, got: {err:?}"
+        );
+    }
+
+    // A fixed source whose PARENT component is a regular file makes
+    // symlink_metadata fail with ENOTDIR (NotADirectory, not NotFound):
+    // the typed BridgeError::Io, never a panic. base_dir is itself a file,
+    // so <base>/CLAUDE.md traverses through a non-directory.
+    #[cfg(unix)]
+    #[test]
+    fn fixed_source_with_non_directory_parent_is_typed_io() {
+        let tmp = tempfile::tempdir().unwrap();
+        let not_a_dir = tmp.path().join("i-am-a-file");
+        std::fs::write(&not_a_dir, b"x").unwrap();
+        let err = read_source(&BridgeSource::ProjectClaudeMd, &not_a_dir, tmp.path())
+            .expect_err("a non-directory parent must fail closed");
+        assert!(
+            matches!(err, BridgeError::Io { .. }),
+            "ENOTDIR on the leaf path is typed Io, got: {err:?}"
+        );
+    }
+
+    // A whitelisted leaf that EXISTS, is not a symlink, but is not a
+    // regular file (it is a directory) is rejected as Io "not a regular
+    // file" — never read, never a panic.
+    #[test]
+    fn fixed_source_that_is_a_directory_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("CLAUDE.md")).unwrap();
+        let err = read_source(&BridgeSource::ProjectClaudeMd, tmp.path(), tmp.path())
+            .expect_err("a directory standing in for a file must fail closed");
+        assert!(
+            matches!(&err, BridgeError::Io { message, .. } if message.contains("not a regular file")),
+            "expected Io 'not a regular file', got: {err:?}"
+        );
+    }
+
+    // A whitelisted leaf that is a regular file but not valid UTF-8 makes
+    // read_to_string fail with InvalidData (not NotFound): the typed
+    // BridgeError::Io, never a panic and never lossy bytes.
+    #[test]
+    fn fixed_source_with_invalid_utf8_is_typed_io() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("AGENTS.md"), [0xff, 0xfe, 0xfd]).unwrap();
+        let err = read_source(&BridgeSource::ProjectAgentsMd, tmp.path(), tmp.path())
+            .expect_err("invalid UTF-8 must fail closed");
+        assert!(
+            matches!(err, BridgeError::Io { .. }),
+            "invalid UTF-8 is typed Io, got: {err:?}"
+        );
+    }
+
+    // Rule 6 materialize step: a split region that is ENTIRELY blank — the
+    // blank preamble before the first heading — is dropped, so no empty
+    // candidate materializes; the heading section still anchors at its
+    // original 1-based line number.
+    #[test]
+    fn all_blank_preamble_region_is_dropped() {
+        let doc = "\n\n# H\nbody\n";
+        let got = split_document(doc);
+        assert_eq!(got, vec![(3, "# H\nbody".to_string())]);
+    }
 }

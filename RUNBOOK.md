@@ -2,7 +2,8 @@
 
 Everything an operator needs to run me, check me, move me, and recover me. The
 README says what I am; this says how to keep me working. Every command here was
-run before it was written down.
+run before it was written down — the single exception is marked NOT RUN where
+it appears (it needs a second machine).
 
 ## Install
 
@@ -64,9 +65,10 @@ corrupt, but idle is free). Restore = put the file back. `memory_export` is a
 deterministic *generated view* for reading and diffing — useful alongside a
 backup, not a substitute for the file.
 
-**One caveat — the forget key.** The first time you `memory_forget` something,
-nmemory writes a sibling key file `<db>.sqlite3.hmac-key` (mode 0600) that keys
-the tombstone fingerprints. Back it up *with* the store — copy both, or the
+**One caveat — the forget key.** The first time you `memory_forget` something
+(or run `nmemory sync` — it resolves the key up front), nmemory writes a
+sibling key file `<db>.sqlite3.hmac-key` (mode 0600) that keys the tombstone
+fingerprints. Back it up *with* the store — copy both, or the
 restored store mints a fresh key and can no longer re-verify a historical
 tombstone's fingerprint against the original:
 
@@ -96,6 +98,111 @@ does not corrupt. Verify the path end to end:
 ```sh
 ssh <user>@<host> /path/to/nmemory --version
 ```
+
+## Two stores, reconciled when you say so (`nmemory sync`)
+
+The offline-first alternative to live SSH: each machine keeps its OWN store,
+and you reconcile with a remote mirror file explicitly. Sync is one
+owner-invoked command, opt-in every time — nMEMORY NEVER syncs in the
+background, and the MCP serve path stays hermetic and zero-network. The copy
+itself runs as `scp` in a separate process (the binary links no network code),
+so the remote spec is anything your SSH/VPN setup lets `scp` reach:
+
+```sh
+nmemory sync --help
+# usage: nmemory sync --remote <[user@]host:/path> [--db <path>] [--push]
+```
+
+One run does, in order:
+
+1. **Fetch** the remote mirror to a private temp file — never over your store.
+2. **Merge** it into the local store in one atomic transaction: content-hash
+   identity (identical content collapses), relations remapped and deduped,
+   forget-wins (content forgotten on either side stays forgotten),
+   deterministic. The local store gains; it never loses live content except by
+   a propagated forget.
+3. With `--push`, copy the merged local store back over the mirror so both
+   sides converge. Without it the mirror is left untouched.
+
+`--db` names the local store; absent, the serve path's resolution order
+applies (`--db` > `NMEMORY_DB` > XDG > HOME). The summary prints to stderr;
+stdout stays clean. Requirements: `scp` on PATH; for a host-qualified spec,
+non-interactive SSH (`ssh -o BatchMode=yes <host> true` succeeds); and the
+mirror file MUST already exist — fetch comes first and fails closed, so
+bootstrap a new mirror by copying your store out once (idle, both files, as
+in Backup). First sync also mints `<db>.sqlite3.hmac-key` beside the local
+store if absent (0600) — the key that re-keys propagated forget tombstones;
+back it up with the store. `NMEMORY_HMAC_KEY` overrides the file.
+
+### A rehearsal you can replay (run exactly as shown)
+
+Run locally with the mirror as a plain file path — `scp` accepts both `file`
+and `host:/file` specs, so the merge semantics below are the ones a two-host
+run gives you; only SSH reachability is out of frame. Two seeded stores:
+`laptop.sqlite3` holds one capsule, `desk.sqlite3` holds two (one shared):
+
+```
+$ nmemory sync --remote desk.sqlite3 --db laptop.sqlite3
+nmemory sync · desk.sqlite3 -> laptop.sqlite3 · +1 capsules, 1 collapsed, +0 relations, 0 tombstones, remap 2
+
+$ nmemory sync --remote desk.sqlite3 --db laptop.sqlite3   # again: idempotent
+nmemory sync · desk.sqlite3 -> laptop.sqlite3 · +0 capsules, 2 collapsed, +0 relations, 0 tombstones, remap 2
+
+$ nmemory sync --remote desk.sqlite3 --db laptop.sqlite3 --push
+nmemory sync · desk.sqlite3 -> laptop.sqlite3 · +0 capsules, 2 collapsed, +0 relations, 0 tombstones, remap 2 · pushed
+```
+
+Reading the summary: `+N capsules` were new to the local store; `collapsed`
+counts incoming capsules whose content the local store already held; `remap`
+is the incoming-id → local-id table size (new + collapsed). The second run
+adding `+0` is the idempotency check — reconciling an already-merged mirror
+is a no-op.
+
+The host-qualified form is the same command with a `[user@]host:` spec —
+**NOT RUN here** (this RUNBOOK was written on one machine); it is the one
+untested command block in this file:
+
+```sh
+nmemory sync --remote nott@host:/nmemory/memory.sqlite3 --push
+```
+
+### Failure modes — every one leaves the local store intact
+
+There is no partial state: the merge is one transaction, so the local store is
+either fully merged or byte-untouched. Both failures below were forced for
+real; outputs verbatim, exit code 1:
+
+```
+$ nmemory sync --remote absent.sqlite3 --db laptop.sqlite3
+nmemory: cannot fetch remote "absent.sqlite3": scp exited unsuccessfully (exit status: 1): cp: cannot stat 'absent.sqlite3': No such file or directory
+
+$ nmemory sync --remote nobody@host.invalid:/nmemory/memory.sqlite3 --db laptop.sqlite3
+nmemory: cannot fetch remote "nobody@host.invalid:/nmemory/memory.sqlite3": scp exited unsuccessfully (exit status: 255): scp: Connection closed
+```
+
+- **Fetch fails** (host down, wrong path, no SSH): the local store was never
+  opened — nothing merged, nothing lost. Fix reachability and re-run.
+- **Fetched file is not a store** (corrupt, not SQLite, stale schema): typed
+  `store:` error, local store untouched.
+- **Push fails**: the local store IS fully merged; only the mirror is stale.
+  Re-run with `--push` when the mirror is reachable again.
+- **No key source** (`no HMAC key`): set `NMEMORY_HMAC_KEY` or use a
+  file-backed store so the key file can live beside the DB.
+- **Rollback**: a failed run needs none (local unchanged). To undo a
+  *completed* merge, restore the pre-sync file backup (see Backup) — sync
+  never deletes live content on its own, so the only surprises to undo are
+  additions and propagated forgets.
+
+### Verify a sync
+
+- Re-run the same sync: `+0 capsules` proves idempotency (transcript above).
+- `memory_list` / `memory_digest` on the local store now show the union of
+  both sides.
+- `memory_digest` → `journal.chain` stays `ok`. Capsules merged in by the CLI
+  carry no per-id audit rows, so the digest counts them under
+  `journal.out_of_band` ("state without audit history") — expected after a
+  CLI sync, and the difference from the `memory_merge` MCP tool, which writes
+  an audit row for every id it adds or forgets.
 
 ## Upgrade
 
