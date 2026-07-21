@@ -33,6 +33,11 @@ DEFERRED). Most of what it filed under NEXT and DEFERRED has since shipped. The
   content-hash identity, id-remap, forget-wins, deterministic. Sync is explicit,
   owner-invoked, opt-in — NEVER a background daemon; the serve path stays
   zero-network.
+- **one-shot verbs** — `nmemory recall` · `nmemory digest` (CLI verbs, not MCP
+  tools): one argv→stdout call through the SAME `memory_retrieve` /
+  `memory_digest` handlers — identical envelope bytes and side effects, no MCP
+  handshake — the transport the NOTT plugin's session-start and per-prompt
+  recall hooks ride (0.15s wall per prompt).
 - **app views** — two MCP App resources (`text/html;profile=mcp-app`):
   `ui://nmemory/document` (readable document over `memory_export`) ·
   `ui://nmemory/visual` (Mermaid over `memory_visual`) — §5. Resources, not tools:

@@ -3,7 +3,7 @@
 <img src="assets/hero.png" alt="ₙMEMORY — hermetic, local memory for coding agents, one that never lies to you" width="900">
 
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
-![Tests](https://img.shields.io/badge/tests-582%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-589%20passing-brightgreen)
 ![Coverage](https://img.shields.io/badge/coverage-95%25%20lines-brightgreen)
 ![Audit](https://img.shields.io/badge/audit-0%20vulnerabilities-brightgreen)
 ![Unsafe Forbidden](https://img.shields.io/badge/unsafe-forbidden-brightgreen)
@@ -200,6 +200,15 @@ in [`ARCHITECTURE.md`](ARCHITECTURE.md).
   It fetches the mirror, merges it into the local store with the same engine
   `memory_merge` uses, and with `--push` copies the merged store back so both sides
   converge. Explicit and opt-in — it runs only when you run it. Operating guide:
+  [`RUNBOOK.md`](RUNBOOK.md).
+- `nmemory recall --terms <term[,term...]> [--limit <n>] [--budget <n>]` and
+  `nmemory digest` — one-shot CLI verbs for synchronous callers (shell hooks,
+  scripts): one argv→stdout call routed through the SAME handlers as
+  `memory_retrieve` / `memory_digest`, so the envelope bytes and the
+  usage-counting / recall-miss side effects are identical to the MCP tools —
+  there is no second recall semantics. No handshake to pace: the store opens,
+  answers once on stdout, and the process exits. The stdio serve path and its
+  zero-network law are unchanged. Operating rehearsal:
   [`RUNBOOK.md`](RUNBOOK.md).
 - Two MCP App resources (`text/html;profile=mcp-app`) for hosts that render MCP
   Apps: `ui://nmemory/document` — a readable master-detail document over
