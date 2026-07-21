@@ -29,7 +29,23 @@ and when it has no grounded answer it **abstains** instead of fabricating one.
 
 ![nMEMORY demo](assets/demo.gif)
 
-*Learn → recall with provenance → abstain — real binary, real store, ~60s.* Full quality: [assets/demo.mp4](assets/demo.mp4).
+*Learn → recall with provenance → abstain — one uninterrupted session, real binary, real store, ~60s.* Full quality: [assets/demo.mp4](assets/demo.mp4).
+
+### The three acts
+
+Each still is the final screen of an act, so you can study every line.
+
+![Act 1 — learn](assets/act1-learn.png)
+
+*Act 1 — three facts captured, one file on disk.*
+
+![Act 2 — recall](assets/act2-recall.png)
+
+*Act 2 — grounded recall, provenance attached.*
+
+![Act 3 — abstain](assets/act3-abstain.png)
+
+*Act 3 — abstain, not improvise.*
 
 The full spoken walkthrough (opener, four beats, glossary) lives in [the demo script](assets/demo-script.md).
 
