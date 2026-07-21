@@ -9,7 +9,7 @@
 ![Unsafe Forbidden](https://img.shields.io/badge/unsafe-forbidden-brightgreen)
 ![Hermetic](https://img.shields.io/badge/network-zero%20sockets-black)
 ![Zero Python](https://img.shields.io/badge/python-0%25-blueviolet)
-![MCP](https://img.shields.io/badge/MCP-20%20tools-orange)
+![MCP](https://img.shields.io/badge/MCP-21%20tools-orange)
 ![Rust](https://img.shields.io/badge/rust-2024%20edition-93450a)
 
 </div>
@@ -74,7 +74,7 @@ Recall never invents a fourth.
   account, no daemon. Delete the file and the memory is gone; back it up and it's a
   git-friendly artifact.
 
-<p align="center"><img src="assets/architecture.png" alt="your coding agent → MCP stdio → nmemory (single Rust binary, 20 tools) → memory.sqlite3 (one file, on your disk); runs entirely on your machine — no sockets, no telemetry, no embedder, nothing phones home; compiled without a networking stack, verify: strace shows zero socket() calls" width="820"></p>
+<p align="center"><img src="assets/architecture.png" alt="your coding agent → MCP stdio → nmemory (single Rust binary, 21 tools) → memory.sqlite3 (one file, on your disk); runs entirely on your machine — no sockets, no telemetry, no embedder, nothing phones home; compiled without a networking stack, verify: strace shows zero socket() calls" width="820"></p>
 
 ## Quickstart
 
@@ -143,7 +143,7 @@ Don't take my word for any of this — that would defeat the point. Each law has
 
 The full suite is `cargo test` (520 tests, hermetic offline build).
 
-## The tool surface — 20 tools, four planes
+## The tool surface — 21 tools, four planes
 
 The complete MCP surface. One line each here; the full contract per tool lives
 in [`ARCHITECTURE.md`](ARCHITECTURE.md).
@@ -178,6 +178,7 @@ in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 - `memory_consolidate` — deterministic maintenance plan: exact dupes, merge proposals, tier moves
 - `memory_session_start` / `memory_session_finish` — bracket a session; finish captures the handoff the next session's digest leads with
 - `memory_export` — the whole store as one deterministic markdown view; byte-identical on an unchanged store
+- `memory_merge` — reconcile a second store file into this one: content-hash identity, id-remap, forget-wins, deterministic — the offline-first path to keep two machines' stores in sync
 
 ## What it is NOT (yet)
 

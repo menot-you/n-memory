@@ -575,6 +575,7 @@ mod tests {
                 reason: "owner request".to_owned(),
                 provenance_source: None,
                 provenance_anchor: None,
+                source_hash: None,
             }),
             ExportRecord::Live {
                 stored: stored(
@@ -783,6 +784,7 @@ mod tests {
                 reason: "gone".to_owned(),
                 provenance_source: None,
                 provenance_anchor: None,
+                source_hash: None,
             }),
             ExportRecord::Tombstoned(TombstoneRecord {
                 capsule_id: "cap-10".to_owned(),
@@ -792,6 +794,7 @@ mod tests {
                 reason: "pii".to_owned(),
                 provenance_source: Some("scratch.md".to_owned()),
                 provenance_anchor: Some("scratch.md:7".to_owned()),
+                source_hash: None,
             }),
         ];
         let out = render_markdown(&records, &[], GENERATED_AT, true);
