@@ -204,6 +204,65 @@ nmemory: cannot fetch remote "nobody@host.invalid:/nmemory/memory.sqlite3": scp 
   CLI sync, and the difference from the `memory_merge` MCP tool, which writes
   an audit row for every id it adds or forgets.
 
+## One-shot verbs (`nmemory recall` / `nmemory digest`)
+
+Two CLI verbs answer a single tool call over argv/stdout and exit — no MCP
+handshake, no server left running. They exist for synchronous shell callers
+(hooks, scripts) where an initialize exchange is pure added latency:
+
+```sh
+nmemory recall --terms <term[,term...]> [--limit <n>] [--budget <n>] [--project-prefix <p>] [--db <path>]
+nmemory digest [--project-prefix <p>] [--db <path>]
+```
+
+There is no second recall semantics: each verb routes through the SAME handler
+as its MCP tool — `recall` is one `memory_retrieve`, `digest` is one
+`memory_digest` — and stdout carries exactly the bytes the MCP path ships as
+the tool result's text content. Side effects are identical too: a one-shot
+recall bumps usage counters on what it returns and logs a miss when it comes
+back empty, like any MCP recall. `--db` absent, the serve path's resolution
+order applies (`--db` > `NMEMORY_DB` > XDG > HOME) — a hook with no explicit
+path answers from your REAL store, so pass `--db` when you mean a different
+one. The zero-network law is unchanged: the verbs open the store, answer once
+on stdout, and exit.
+
+### A rehearsal you can replay (run exactly as shown)
+
+Against a throwaway store (`--db demo.sqlite3`, file created on first use).
+Empty store first — recall abstains, it never invents:
+
+```
+$ nmemory recall --terms sqlite,fts --db demo.sqlite3
+{"outcome":"abstain","reason":"no stored capsule matched any of the 2 query term(s); abstaining instead of fabricating"}
+```
+
+After one capsule captured over MCP (content "the store lives in one SQLite
+file; recall is FTS5 word-exact", source `runbook-rehearsal`), the same call
+grounds — and shows the word-exact law in passing: `matched_terms` lists only
+`sqlite`, because the term `fts` does not match the stored word `FTS5`:
+
+```
+$ nmemory recall --terms sqlite,fts --db demo.sqlite3
+{"outcome":"grounded","results":[{"label":"ADVISORY_NOT_AUTHORITY","framing":"DATA","id":"cap-1","headline":"the store lives in one SQLite file; recall is FTS5 word-exact","instruction_taint":false,"authority_class":"agent-inferred","confidence":0.6,"decayed_weight":0.6,"provenance":{"source":"runbook-rehearsal","anchor":"RUNBOOK.md:1","source_hash":"2d7cc66f0ee8dc0ce3c8bab23fd850289044e16196e2e8212e54d1117854fc8a"},"anchor_live":false,"anchor_drift":"unknown","freshness":{"valid_from":"2026-07-21T19:25:14.118104805Z","valid_to":null},"matched_terms":["sqlite"],"relevance":1.0,"bm25":-1e-6}],"matched":1,"returned":1,"trimmed":0,"trimmed_by_limit":0,"trimmed_by_budget":0,"token_budget":1500}
+```
+
+The digest is the same one-line projection `memory_digest` returns — note
+`recall_misses: 2` counting the two-term miss above; a miss is logged, never
+guessed around:
+
+```
+$ nmemory digest --db demo.sqlite3
+{"label":"ADVISORY_NOT_AUTHORITY","framing":"DATA","total":1,"by_project":[{"project_id":"default","count":1}],"newest":[{"id":"cap-1","project_id":"default","instruction_taint":false,"created_at":"2026-07-21T19:25:14.118104805Z","headline":"the store lives in one SQLite file; recall is FTS5 word-exact"}],"most_recalled":[{"id":"cap-1","project_id":"default","instruction_taint":false,"created_at":"2026-07-21T19:25:14.118104805Z","headline":"the store lives in one SQLite file; recall is FTS5 word-exact","recall_count":1,"last_recalled_at":"2026-07-21T19:25:14.219516743Z"}],"relations":0,"open_sessions":0,"open_session_ids":[],"audit_events":1,"recall_misses":2,"dag":{"status":"ok","ready":[],"ready_total":0,"blocked":[],"blocked_total":0,"done":[],"done_total":0},"tiers":{"active":1,"archived":0,"quarantined":0},"journal":{"chain":"ok","verified":1,"out_of_band":0},"archive_candidates":0}
+```
+
+### Who calls them
+
+The NOTT plugin's hooks are the born callers: session start injects the
+digest, and every prompt injects a grounded recall for that prompt's terms —
+one short-lived process per event, 0.15s wall per prompt measured against a
+real store. The hooks are fail-open by law: missing binary, slow store,
+abstain, or any error → zero output, and the session continues untouched.
+
 ## Upgrade
 
 Replace the binary; re-run `nmemory --version`. The on-disk Capsule v1 schema
