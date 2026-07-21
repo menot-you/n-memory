@@ -2296,4 +2296,52 @@ thanks
             assert_ne!(candidate.kind.as_str(), "failure_pattern", "{candidate:?}");
         }
     }
+
+    #[test]
+    fn entity_anchor_fires_on_backslash_and_symbol_path_shapes() {
+        // Rule F2's entity anchor accepts a backslash path and a `::` symbol
+        // path — two concrete shapes no fixture exercised. Each is a fact
+        // (declarative frame + entity), never a fabrication.
+        let backslash = extract("the share is server\\deploy");
+        assert_eq!(backslash.len(), 1, "{backslash:?}");
+        assert_eq!(backslash[0].kind, CandidateKind::Fact);
+        assert_eq!(backslash[0].cue, "declarative:'is' entity:'server\\deploy'");
+
+        let symbol = extract("the helper is std::mem::swap");
+        assert_eq!(symbol.len(), 1, "{symbol:?}");
+        assert_eq!(symbol[0].kind, CandidateKind::Fact);
+        assert_eq!(symbol[0].cue, "declarative:'is' entity:'std::mem::swap'");
+
+        // Negative: a token with NONE of the concrete shapes (no slash,
+        // backslash, `::`, digit, dot, or interior capital) is not an entity
+        // — the same frame yields no fact (never a guessed one).
+        assert!(extract("the plan is good").is_empty());
+    }
+
+    #[test]
+    fn chat_stamp_fence_rejects_overlong_and_nested_brackets() {
+        // Rule S3c-1 strips only a SHORT (<= 32 bytes), digit-bearing,
+        // bracket-free stamp. An over-long interior and a nested-bracket
+        // interior are both rejected, so the bracket stays content instead of
+        // being silently peeled as a timestamp.
+        let overlong = extract("[2026-07-18 a very long bracketed remark 99] the port is 4320");
+        assert_eq!(overlong.len(), 1, "{overlong:?}");
+        assert!(
+            overlong[0].content.starts_with('['),
+            "over-long bracket must stay content: {overlong:?}"
+        );
+        let nested = extract("[10:05 [x]] the port is 4320");
+        assert_eq!(nested.len(), 1, "{nested:?}");
+        assert!(
+            nested[0].content.starts_with('['),
+            "nested bracket must stay content: {nested:?}"
+        );
+        // Control: a short, flat, digit-bearing stamp IS stripped.
+        let stamp = extract("[10:05] the port is 4320");
+        assert_eq!(stamp.len(), 1, "{stamp:?}");
+        assert!(
+            stamp[0].content.starts_with("the port"),
+            "a valid stamp is stripped: {stamp:?}"
+        );
+    }
 }

@@ -1389,16 +1389,21 @@ impl MemoryServer {
     #[must_use]
     pub fn new(store: Store, defaults: IngestDefaults, config: BoundaryConfig) -> Self {
         let mut tool_router = Self::tool_router();
-        if let Some(route) = tool_router.map.get_mut("memory_visual") {
-            let mut meta = Meta::new();
-            meta.insert(
-                "ui".to_string(),
-                serde_json::json!({
-                    "resourceUri": mcp_app::VISUAL_URI,
-                    "visibility": ["model", "app"]
-                }),
-            );
-            route.attr.meta = Some(meta);
+        for (tool_name, resource_uri) in [
+            ("memory_export", mcp_app::DOCUMENT_URI),
+            ("memory_visual", mcp_app::VISUAL_URI),
+        ] {
+            if let Some(route) = tool_router.map.get_mut(tool_name) {
+                let mut meta = Meta::new();
+                meta.insert(
+                    "ui".to_string(),
+                    serde_json::json!({
+                        "resourceUri": resource_uri,
+                        "visibility": ["model", "app"]
+                    }),
+                );
+                route.attr.meta = Some(meta);
+            }
         }
         MemoryServer {
             tool_router,
@@ -5481,11 +5486,17 @@ impl MemoryServer {
             }
         }
         let relations = store.all_relations().map_err(internal)?;
-        verb_result(&ExportViewResponse {
+        let response = ExportViewResponse {
             label: AdvisoryLabel,
             framing: DataFraming,
             markdown: export::render_markdown(&records, &relations, now, stamp),
-        })
+        };
+        let structured = serde_json::to_value(&response).map_err(|e| {
+            rmcp::ErrorData::internal_error(format!("memory_export encode failed: {e}"), None)
+        })?;
+        let mut result = verb_result(&response)?;
+        result.structured_content = Some(structured);
+        Ok(result)
     }
 
     /// `memory_visual` — deterministic Mermaid projections of the store.
@@ -5900,13 +5911,17 @@ impl ServerHandler for MemoryServer {
         _request: Option<rmcp::model::PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> impl Future<Output = Result<ListResourcesResult, rmcp::ErrorData>> + '_ {
-        std::future::ready(Ok(ListResourcesResult::with_all_items(vec![
-            Resource::new(mcp_app::VISUAL_URI, "nmemory_visual")
-                .with_title("nMEMORY visual")
-                .with_description("Interactive view for memory_visual Mermaid projections")
-                .with_mime_type(mcp_app::MIME_TYPE)
-                .with_size(mcp_app::VISUAL_HTML.len() as u64),
-        ])))
+        let resources = mcp_app::APP_RESOURCES
+            .iter()
+            .map(|resource| {
+                Resource::new(resource.uri, resource.name)
+                    .with_title(resource.title)
+                    .with_description(resource.description)
+                    .with_mime_type(mcp_app::MIME_TYPE)
+                    .with_size(resource.html.len() as u64)
+            })
+            .collect();
+        std::future::ready(Ok(ListResourcesResult::with_all_items(resources)))
     }
 
     fn read_resource(
@@ -5914,17 +5929,20 @@ impl ServerHandler for MemoryServer {
         request: ReadResourceRequestParams,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> impl Future<Output = Result<ReadResourceResult, rmcp::ErrorData>> + '_ {
-        let result = if request.uri == mcp_app::VISUAL_URI {
-            Ok(ReadResourceResult::new(vec![
-                ResourceContents::text(mcp_app::VISUAL_HTML, mcp_app::VISUAL_URI)
-                    .with_mime_type(mcp_app::MIME_TYPE),
-            ]))
-        } else {
-            Err(rmcp::ErrorData::resource_not_found(
-                format!("unknown resource {:?}; call resources/list", request.uri),
-                None,
-            ))
-        };
+        let result = mcp_app::resource_for_uri(&request.uri).map_or_else(
+            || {
+                Err(rmcp::ErrorData::resource_not_found(
+                    format!("unknown resource {:?}; call resources/list", request.uri),
+                    None,
+                ))
+            },
+            |resource| {
+                Ok(ReadResourceResult::new(vec![
+                    ResourceContents::text(resource.html, resource.uri)
+                        .with_mime_type(mcp_app::MIME_TYPE),
+                ]))
+            },
+        );
         std::future::ready(result)
     }
 
@@ -6131,6 +6149,29 @@ mod tests {
             .and_then(|c| c.as_text())
             .expect("text content");
         serde_json::from_str(&raw.text).expect("response is JSON")
+    }
+
+    #[test]
+    fn generated_view_tools_bind_their_exact_mcp_app_resources() {
+        let server = server();
+        for (tool_name, resource_uri) in [
+            ("memory_export", mcp_app::DOCUMENT_URI),
+            ("memory_visual", mcp_app::VISUAL_URI),
+        ] {
+            let route = server
+                .tool_router
+                .map
+                .get(tool_name)
+                .expect("generated-view route");
+            let ui = route
+                .attr
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get("ui"))
+                .expect("route carries nested MCP Apps metadata");
+            assert_eq!(ui["resourceUri"], resource_uri);
+            assert_eq!(ui["visibility"], json!(["model", "app"]));
+        }
     }
 
     /// q114: a dedup collapse that FLIPS the persisted kind sidecar says so
@@ -11379,11 +11420,15 @@ mod tests {
             .await
             .unwrap();
 
-        let value = response_json(
-            &server
-                .export(Parameters(ExportViewParams { stamp: None }))
-                .await
-                .unwrap(),
+        let result = server
+            .export(Parameters(ExportViewParams { stamp: None }))
+            .await
+            .unwrap();
+        let value = response_json(&result);
+        assert_eq!(
+            result.structured_content.as_ref(),
+            Some(&value),
+            "MCP Apps hosts receive the same envelope as the text fallback"
         );
         let markdown = value["markdown"].as_str().expect("markdown string");
         assert!(markdown.contains("GENERATED VIEW — ADVISORY_NOT_AUTHORITY"));

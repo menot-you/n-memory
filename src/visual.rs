@@ -757,4 +757,114 @@ mod tests {
             serde_json::from_value(serde_json::json!({"view": "dag", "nope": 1}));
         assert!(extra.is_err(), "deny_unknown_fields rejects stray keys");
     }
+
+    #[test]
+    fn relations_renders_all_five_kinds_in_contract_rank_order() {
+        // The existing ordering test exercises only supersedes + blocks; the
+        // other three kind_rank arms (derived_from=1, witnesses=2, falsifies=4)
+        // never rendered. One edge of EACH kind, shuffled on input, must come
+        // back in export rank order:
+        // supersedes < derived_from < witnesses < blocks < falsifies.
+        let edges = vec![
+            edge(RelationKind::Falsifies, "cap-9", "cap-10"),
+            edge(RelationKind::Blocks, "cap-7", "cap-8"),
+            edge(RelationKind::Witnesses, "cap-5", "cap-6"),
+            edge(RelationKind::DerivedFrom, "cap-3", "cap-4"),
+            edge(RelationKind::Supersedes, "cap-1", "cap-2"),
+        ];
+        let out = render_relations(&edges);
+        let s = out.find("|supersedes|").expect("supersedes edge renders");
+        let d = out
+            .find("|derived_from|")
+            .expect("derived_from edge renders");
+        let w = out.find("|witnesses|").expect("witnesses edge renders");
+        let b = out.find("|blocks|").expect("blocks edge renders");
+        let f = out.find("|falsifies|").expect("falsifies edge renders");
+        assert!(
+            s < d && d < w && w < b && b < f,
+            "kinds must render in contract-rank order:\n{out}"
+        );
+        assert_eq!(out.matches("-->|").count(), 5, "one arrow per kind:\n{out}");
+        assert_eq!(out, render_relations(&edges), "deterministic");
+    }
+
+    #[test]
+    fn relations_sorts_non_capsule_ids_after_numeric_capsule_ids() {
+        // sort_key is numeric-aware for `cap-<n>` and falls non-conforming ids
+        // to u64::MAX — they sort AFTER every cap-id. A `falsifies` from_id may
+        // be an outcome id (`out-<n>`, a non-conforming id), so this ordering
+        // is a real wire shape, not a hypothetical.
+        let edges = vec![
+            edge(RelationKind::Falsifies, "out-1", "cap-2"),
+            edge(RelationKind::Blocks, "cap-1", "cap-2"),
+        ];
+        let out = render_relations(&edges);
+        let cap1 = out.find("cap_1[").expect("cap-1 node declared");
+        let cap2 = out.find("cap_2[").expect("cap-2 node declared");
+        let out1 = out.find("out_1[").expect("out-1 node declared");
+        assert!(
+            cap1 < out1 && cap2 < out1,
+            "numeric cap-ids sort before the non-conforming out-1:\n{out}"
+        );
+    }
+
+    #[test]
+    fn dag_cycle_render_stays_fail_closed_on_a_degenerate_empty_cycle() {
+        // render_dag_cycle guards the empty-cycle case; production always hands
+        // it a concrete non-empty cycle (DagCycleError never carries an empty
+        // one), but the guard must still hold fail-closed if reached: the
+        // banner renders, NO ring edges are drawn, and no healthy graph leaks.
+        let empty: Vec<String> = Vec::new();
+        let out = render_dag_cycle(&empty, 3);
+        assert!(out.starts_with("graph TD\n"), "dag header:\n{out}");
+        assert!(
+            out.contains("blocks-cycle fail-closed: cycle "),
+            "fail-closed banner with the degenerate path:\n{out}"
+        );
+        assert!(
+            out.contains("3 entangled"),
+            "entangled total carried:\n{out}"
+        );
+        assert!(out.contains("cycle=0 entangled=3"), "counts:\n{out}");
+        assert!(
+            !out.contains("-->"),
+            "no ring edges on an empty cycle:\n{out}"
+        );
+        assert!(
+            out.contains("class cycle_banner banner;"),
+            "banner still styled:\n{out}"
+        );
+        assert_eq!(out, render_dag_cycle(&empty, 3), "deterministic");
+    }
+
+    #[test]
+    fn dag_with_every_participant_witnessed_renders_all_done_and_nothing_ready() {
+        // cap-1 blocks cap-2, and BOTH are witnessed → both DONE. The graph has
+        // closed with proof: `ready` and `blocked` are empty, yet the done
+        // nodes stay drawn (a done node keeps its context, unlike a dead one).
+        // Exercises the ready-empty / blocked-empty render branches every other
+        // dag fixture — each carrying at least one ready node — skips.
+        let edges = vec![
+            edge(RelationKind::Blocks, "cap-1", "cap-2"),
+            edge(RelationKind::Witnesses, "cap-3", "cap-1"),
+            edge(RelationKind::Witnesses, "cap-4", "cap-2"),
+        ];
+        let out = render_dag(&edges, &BTreeSet::new());
+        assert!(
+            out.contains("class cap_1,cap_2 done;"),
+            "both nodes styled done:\n{out}"
+        );
+        // No ready/blocked class-application line — the whole graph is closed.
+        // (`classDef ready ...` is always declared, but no `class ... ready;`.)
+        assert!(!out.contains("ready;"), "nothing ready:\n{out}");
+        assert!(!out.contains("blocked;"), "nothing blocked:\n{out}");
+        // The blocks edge survives: a done endpoint stays live, so its context
+        // is kept (nodes=2 edges=1).
+        assert!(
+            out.contains("cap_1 --> cap_2"),
+            "edge kept for context:\n{out}"
+        );
+        assert!(out.contains("nodes=2 edges=1"), "counts:\n{out}");
+        assert_eq!(out, render_dag(&edges, &BTreeSet::new()), "deterministic");
+    }
 }

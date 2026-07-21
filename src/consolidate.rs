@@ -1320,4 +1320,77 @@ mod tests {
         let plan = plan_consolidation(&fixture(), NOW);
         assert!(plan.alias_proposals.is_empty());
     }
+
+    /// A miss term that also appears verbatim in the vocabulary must never
+    /// be proposed as its OWN alias candidate (the `candidate != term`
+    /// skip): an alias from a term to itself is a no-op the caller must
+    /// never be handed. A distinct prefix-sharing sibling is still proposed
+    /// — the self-skip removes ONLY the identity pair, not the whole term.
+    #[test]
+    fn alias_proposal_never_suggests_a_term_as_its_own_candidate() {
+        // "retrieval" is BOTH the miss term and a vocabulary word; "retrieve"
+        // shares the folded prefix "retriev" (>= ALIAS_PREFIX_MIN) and is a
+        // distinct word.
+        let vocab: BTreeSet<String> = ["retrieval", "retrieve"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let props = alias_proposals(&[("retrieval".to_string(), 4)], &vocab, &BTreeSet::new());
+        assert!(
+            props
+                .iter()
+                .all(|p| p.candidate.as_deref() != Some("retrieval")),
+            "a term must never alias to itself: {props:?}"
+        );
+        assert_eq!(
+            props,
+            vec![AliasProposal {
+                term: "retrieval".to_string(),
+                candidate: Some("retrieve".to_string()),
+                miss_count: 4,
+            }],
+            "only the identity pair is skipped; the sibling still proposes"
+        );
+    }
+
+    /// Three mutually-near-duplicate live actives collapse into ONE cluster
+    /// (connected components over the pairwise containment metric, unioned by
+    /// the disjoint-set structure) — all three ids ride a single proposal in
+    /// append order, never three separate pair proposals. Exercises the DSU
+    /// union/path-halving across a 3-node component regardless of input order.
+    #[test]
+    fn three_near_duplicates_form_one_cluster_not_three_pairs() {
+        let a = record(
+            "cap-1",
+            1,
+            "deploy runs through the tailnet gateway on port 4320",
+        );
+        let b = record(
+            "cap-2",
+            2,
+            "deploy runs through the tailnet gateway on port 4320 now",
+        );
+        let c = record(
+            "cap-3",
+            3,
+            "the deploy runs through the tailnet gateway on port 4320",
+        );
+        // Scrambled input order — membership is union-order-independent.
+        let plan = plan_consolidation(&[c, a, b], NOW);
+        assert_eq!(
+            plan.merge_proposals.len(),
+            1,
+            "one connected cluster, not per-pair proposals: {:?}",
+            plan.merge_proposals
+        );
+        assert_eq!(
+            plan.merge_proposals[0].ids,
+            vec![
+                "cap-1".to_string(),
+                "cap-2".to_string(),
+                "cap-3".to_string()
+            ],
+            "all three members ascend in append order"
+        );
+    }
 }

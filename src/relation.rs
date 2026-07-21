@@ -1166,4 +1166,86 @@ mod tests {
             }
         }
     }
+
+    // ---- record: the `at` accessor + instant round-trip ----
+
+    #[test]
+    fn at_accessor_returns_the_injected_instant_and_survives_serde() {
+        // `at` is caller-injected (the module reads no clock); the accessor
+        // must return exactly what was injected, and the instant must survive
+        // a serde round-trip unchanged (RFC3339, canonical-JSON discipline).
+        let r = rec(RelationKind::Witnesses, "evidence", "claim");
+        assert_eq!(r.at(), at(), "accessor returns the injected instant");
+        let back: RelationRecord =
+            serde_json::from_str(&serde_json::to_string(&r).expect("serializes"))
+                .expect("deserializes");
+        assert_eq!(back.at(), at(), "instant survives the serde round-trip");
+        assert_eq!(back.at(), r.at(), "round-trip is instant-stable");
+    }
+
+    // ---- dag: honest blocked_by for a dead (superseded) target ----
+
+    #[test]
+    fn blocked_by_gives_an_honest_answer_for_a_dead_target_never_ready() {
+        // The documented contract: liveness filtering is on the BLOCKER side,
+        // so a dead (superseded) TARGET still gets an honest `blocked_by` — its
+        // live blockers are named — yet it is never `ready`.
+        let edges = vec![
+            rec(RelationKind::Blocks, "gate", "victim"),
+            rec(RelationKind::Supersedes, "victim2", "victim"),
+        ];
+        let dag = Dag::project(&edges).expect("acyclic");
+        assert!(!dag.is_live("victim"), "victim superseded → dead");
+        assert_eq!(
+            dag.blocked_by("victim"),
+            vec!["gate"],
+            "a dead target still gets an honest blocked_by"
+        );
+        assert!(
+            !dag.ready().contains(&"victim"),
+            "but a dead id is never ready"
+        );
+        // The live, unblocked blocker is the only ready node.
+        assert_eq!(dag.ready(), vec!["gate"]);
+    }
+
+    // ---- find_cycle: the defensive guards, proven by direct unit call ----
+    //
+    // find_cycle is a private helper the Kahn sweep only ever reaches with a
+    // non-empty leftover whose members each keep an in-leftover blocker. It
+    // still guards two degenerate inputs; these pin the guard CONTRACT via a
+    // direct call (the pure helper must behave on all inputs of its type), even
+    // though `project`/`project_excluding` never construct them.
+
+    #[test]
+    fn find_cycle_returns_empty_for_an_empty_leftover() {
+        let leftover: BTreeSet<&str> = BTreeSet::new();
+        let blockers: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        assert!(
+            find_cycle(&leftover, &blockers).is_empty(),
+            "an empty leftover names no cycle"
+        );
+    }
+
+    #[test]
+    fn find_cycle_falls_back_to_the_sorted_leftover_when_no_in_edge_closes() {
+        // Both leftover members' only blockers sit OUTSIDE the leftover, so the
+        // backward walk finds no in-leftover in-edge and breaks — dropping to
+        // the documented fallback: the sorted leftover set itself.
+        let leftover: BTreeSet<&str> = ["b", "a"].into_iter().collect();
+        let mut blockers: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        blockers.insert(
+            "a".to_string(),
+            ["outsider".to_string()].into_iter().collect(),
+        );
+        blockers.insert(
+            "b".to_string(),
+            ["outsider".to_string()].into_iter().collect(),
+        );
+        assert_eq!(
+            find_cycle(&leftover, &blockers),
+            vec!["a".to_string(), "b".to_string()],
+            "fallback returns the sorted leftover set"
+        );
+    }
 }

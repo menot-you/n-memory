@@ -27,8 +27,16 @@ DEFERRED). Most of what it filed under NEXT and DEFERRED has since shipped. The
 - **views** — `memory_export` (markdown generated view) · `memory_visual`
   (dag / relations / tiers)
 - **vectors** — `memory_vector` (attach caller-fed embeddings; zero embedder dependency)
-- **sync** — `memory_merge` (reconcile a second store into this one: content-hash
-  identity, id-remap, forget-wins, deterministic; the offline-first sync core)
+- **sync** — `memory_merge` (MCP: reconcile a second store file into this one) ·
+  `nmemory sync` (CLI subcommand, not an MCP tool: fetch a remote mirror, merge it
+  in, optionally `--push` the merged store back — §4). Both ride one core:
+  content-hash identity, id-remap, forget-wins, deterministic. Sync is explicit,
+  owner-invoked, opt-in — NEVER a background daemon; the serve path stays
+  zero-network.
+- **app views** — two MCP App resources (`text/html;profile=mcp-app`):
+  `ui://nmemory/document` (readable document over `memory_export`) ·
+  `ui://nmemory/visual` (Mermaid over `memory_visual`) — §5. Resources, not tools:
+  the 21-tool surface above is unchanged by them.
 
 The four laws in §0 and the engine architecture in §2 remain current. Read the §1
 tiers for the design *why*, not the present tool count.
@@ -147,3 +155,65 @@ feature lands as a sidecar table or an envelope field, never a Capsule field cha
 
 Unchanged: Capsule v1 freeze, SQLite single-file, stdio-only, advisory-always, abstain,
 degradable, zero-Python, gold-bar, walking-skeleton-first, 5-day adoption DoD.
+
+## 4. Offline-first sync (`src/merge.rs` → `src/sync.rs` → the `sync` CLI)
+
+Three layers, dependency direction downward, the merge logic written once:
+
+- `src/merge.rs` — `plan_merge`, the pure core. Takes both sides' core rows
+  (capsules, relations, tombstones) and returns the delta plan plus the
+  incoming-id → local-id remap. No I/O, no clock, no randomness; every output is
+  internally re-sorted, so identical inputs yield identical plans (the `export`
+  determinism idiom).
+- `store::merge_from` — the imperative shell. Opens the incoming store file
+  read-only, computes the plan, applies it in ONE transaction: the local store is
+  either fully merged or byte-untouched. A corrupt, non-store, or stale-schema
+  incoming file fails closed with a typed error before anything is written.
+- `src/sync.rs` — the transport shell behind `nmemory sync`. Fetches the remote
+  mirror to a private temp path FIRST (a failed fetch never opens the local
+  store), merges via `merge_from`, and with `--push` copies the merged local file
+  back so the mirror converges to the superset. Every failure is a typed
+  `SyncError`, and on every one of them the local store is left intact — a push
+  failure leaves it fully merged with only the mirror stale.
+
+**What moves.** Exactly three row families cross stores. *Capsules*: identity is
+`provenance.source_hash` — an incoming capsule whose content hash the local store
+already holds collapses onto the local id; a genuinely-new one is minted a fresh
+`cap-<seq>` above the local ceiling, in incoming-sequence order. *Relations*:
+rewritten through the id remap, unioned, deduped by kind + endpoints; a dangling
+edge is dropped, never an error. *Tombstones*: forget wins across stores, matched
+by content hash (id-remap as fallback); the keyed `content_hmac` is NOT portable —
+each propagated tombstone is re-keyed under the local HMAC key on apply.
+
+**What never moves.** Per-store sidecars stay where they were written: usage
+counters, aliases, classification and epistemic sidecars, caller-fed vectors,
+session records, and the audit journal. FTS rows are derived and rebuilt locally.
+A CLI sync therefore writes no per-id audit rows — merged capsules surface under
+`journal.out_of_band` in `memory_digest`'s coverage leg (state without audit
+history; the chain itself stays `ok`) — while the `memory_merge` MCP tool audits
+every id it adds or forgets.
+
+**Ordering and idempotency.** The plan is deterministic and the summary type is
+`Eq`: identical inputs reconcile to identical summaries, and re-reconciling an
+already-merged mirror is a no-op (`+0 capsules`). Divergent claims are NEVER
+auto-resolved — two different contents are two capsules, both survive, and
+superseding one afterward is the caller's decision.
+
+**The transport seam.** The remote is reached ONLY through the `Transport` trait.
+Production is `ScpTransport`, which shells out to `scp` as a separate OS process:
+the binary links no network stack, and the serve/engine path never names the
+trait, so the hermetic zero-network serve guarantee is unchanged. Sync is
+explicit, owner-invoked, opt-in — NEVER a background daemon.
+
+## 5. MCP App resources (progressive enhancement)
+
+The server advertises two MCP App resources over `resources/list` /
+`resources/read`, MIME `text/html;profile=mcp-app`: `ui://nmemory/document`, a
+readable master-detail document over `memory_export`'s generated markdown
+(outline, sections, and the exact source), and `ui://nmemory/visual`, which
+renders `memory_visual`'s deterministic Mermaid projections. Each is one
+self-contained HTML string in `src/mcp_app.rs` — no external scripts, styles, or
+URLs, no storage or device permissions; the host owns sandboxing, and the view
+only speaks JSON-RPC over `postMessage` and renders escaped text. They are
+progressive enhancement, not surface: hosts without MCP Apps support keep
+receiving the tools' plain text payloads, and no tool contract changes.
