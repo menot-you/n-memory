@@ -25,4 +25,10 @@ jobs:
       - uses: taiki-e/install-action@b98dda19e8b67e904c9e78a0cbd773be4105a74f # cargo-llvm-cov
       # Floor below the measured 95.67% so honest drift is visible before it
       # breaks the build; raising the floor is a deliberate act, not a race.
-      - run: cargo llvm-cov --summary-only --fail-under-lines 90
+      - run: cargo llvm-cov --lcov --output-path lcov.info --fail-under-lines 90
+      # Upload is best-effort: the coverage FLOOR above is the gate; Codecov is
+      # the public window. A flaky upload must never fail an honest build.
+      - uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
+        with:
+          files: lcov.info
+          fail_ci_if_error: false
