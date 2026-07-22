@@ -4,7 +4,7 @@
 
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 ![Tests](https://img.shields.io/badge/tests-589%20passing-brightgreen)
-![Coverage](https://img.shields.io/badge/coverage-95%25%20lines-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-95.61%25%20lines-brightgreen)
 ![Audit](https://img.shields.io/badge/audit-0%20vulnerabilities-brightgreen)
 ![Unsafe Forbidden](https://img.shields.io/badge/unsafe-forbidden-brightgreen)
 ![Hermetic](https://img.shields.io/badge/network-zero%20sockets-black)
@@ -172,7 +172,7 @@ Don't take my word for any of this — that would defeat the point. Each law has
 | Deterministic store | `export` twice with `stamp:false` → byte-identical |
 | Fail-safe | point it at a corrupt DB → typed error, no panic; empty store → clean abstain, not a crash |
 
-The full suite is `cargo test` (582 tests, hermetic offline build).
+The full suite is `cargo test` (589 tests, hermetic offline build).
 
 ## The tool surface — 21 tools, four planes
 
@@ -265,17 +265,36 @@ I would rather you hear the limits from me than find them yourself:
 - **At-rest storage is plaintext SQLite.** No encryption-at-rest yet. Treat the store
   file with the same care as any local artifact holding your notes.
 
-## Why not mem0, MemGPT / Letta, or Zep
+## Roadmap
+
+Three things, in the order they earn their way in:
+
+- **Multi-project index — the "phone book".** One queryable index over many project
+  stores, for org-scale memory federation.
+- **Honest benchmark.** A published recall benchmark with true-abstain as the headline
+  metric, not a footnote.
+- **Optional local embedder.** Considered only when the benchmark proves it pays for
+  itself — the zero-network serve path stays law either way.
+
+## Why not mem0 / Zep / Memori?
 
 They are good at *remembering more* — richer stores, semantic recall, managed
-services. They compete on volume and recall. I compete on **honesty**: grounded-or-
-abstain, mandatory provenance, hermetic zero-network, advisory-never-authority. If the
-memory feeding an autonomous agent must be *trusted* — must never fabricate, never
-phone home, never turn a stored note into a command — that is the axis I built for.
+services. I compete on **being safe to trust**:
+
+- **Declared graph, not model-guessed.** Every edge exists because someone stated it —
+  its author recorded, its endpoints carrying mandatory sources. No model infers
+  hidden relations behind your back.
+- **True abstain.** Recall has exactly three honest outcomes — **grounded**,
+  **missing_evidence** (every excluded match counted, per reason), **abstain**. The
+  fourth outcome, inventing one, has no code path.
+- **Provenance-mandatory capture.** No source → rejected, not stored with a blank.
+- **Zero network, one file.** No cloud, no account, no telemetry — a single SQLite
+  file on your disk, served over stdio.
+
 Different question, different tool.
 
 ---
 
 <sub>Part of [NOTT](https://no.tt) — the proof-bound engineering agent. Commercial
 name: ₙMEMORY. Offline · MCP stdio · Rust · single SQLite file. Architecture and
-internals: `ARCHITECTURE.md`.</sub>
+internals: [`ARCHITECTURE.md`](ARCHITECTURE.md).</sub>
