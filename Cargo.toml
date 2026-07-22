@@ -6,7 +6,7 @@
 
 [package]
 name = "nmemory"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "nMEMORY: capture with mandatory provenance, recall that is grounded-or-abstain and ADVISORY_NOT_AUTHORITY. Hermetic single-file SQLite, stdio MCP, zero network."
 # Owner-ratified 2026-07-20 (ledger cap-82): AGPL-3.0-only, monorepo-wide canon.
