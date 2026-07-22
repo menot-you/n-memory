@@ -43,7 +43,6 @@ jobs:
       matrix:
         include:
           - { runner: ubuntu-24.04-arm, os: linux, arch: aarch64 }
-          - { runner: macos-13, os: macos, arch: x86_64 }
           - { runner: macos-latest, os: macos, arch: aarch64 }
     runs-on: ${{ matrix.runner }}
     steps:
