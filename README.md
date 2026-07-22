@@ -4,7 +4,7 @@
 
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 ![Tests](https://img.shields.io/badge/tests-589%20passing-brightgreen)
-![Coverage](https://img.shields.io/badge/coverage-95.61%25%20lines-brightgreen)
+[![codecov](https://codecov.io/gh/menot-you/n-memory/graph/badge.svg)](https://codecov.io/gh/menot-you/n-memory)
 ![Audit](https://img.shields.io/badge/audit-0%20vulnerabilities-brightgreen)
 ![Unsafe Forbidden](https://img.shields.io/badge/unsafe-forbidden-brightgreen)
 ![Hermetic](https://img.shields.io/badge/network-zero%20sockets-black)
