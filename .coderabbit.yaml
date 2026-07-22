@@ -1,0 +1,10 @@
+# CodeRabbit review configuration for the public n-memory mirror.
+reviews:
+  profile: assertive
+  high_level_summary: true
+  poem: false
+  request_changes_workflow: false
+  path_filters:
+    - "!assets/**"
+chat:
+  auto_reply: true
