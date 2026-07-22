@@ -29,10 +29,13 @@ jobs:
       - run: |
           mkdir -p dist && cp target/release/nmemory dist/nmemory
           tar -czf nmemory-linux-x86_64.tar.gz -C dist nmemory
+          bash .github/mcpb-bundle.sh linux x86_64
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: nmemory-linux-x86_64
-          path: nmemory-linux-x86_64.tar.gz
+          path: |
+            nmemory-linux-x86_64.tar.gz
+            nmemory-linux-x86_64.mcpb
 
   # The rest of the matrix arms itself when the repository is public
   # (private phase: paid macOS minutes + arm runner availability).
@@ -53,10 +56,13 @@ jobs:
       - run: |
           mkdir -p dist && cp target/release/nmemory dist/nmemory
           tar -czf "nmemory-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" -C dist nmemory
+          bash .github/mcpb-bundle.sh "${{ matrix.os }}" "${{ matrix.arch }}"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: nmemory-${{ matrix.os }}-${{ matrix.arch }}
-          path: nmemory-${{ matrix.os }}-${{ matrix.arch }}.tar.gz
+          path: |
+            nmemory-${{ matrix.os }}-${{ matrix.arch }}.tar.gz
+            nmemory-${{ matrix.os }}-${{ matrix.arch }}.mcpb
 
   publish:
     needs: [build-core, build-cross]
@@ -70,12 +76,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          sha256sum nmemory-*.tar.gz > SHA256SUMS
+          sha256sum nmemory-*.tar.gz nmemory-*.mcpb > SHA256SUMS
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" nmemory-*.tar.gz SHA256SUMS \
+            gh release upload "$RELEASE_TAG" nmemory-*.tar.gz nmemory-*.mcpb SHA256SUMS \
               --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create "$RELEASE_TAG" nmemory-*.tar.gz SHA256SUMS \
+            gh release create "$RELEASE_TAG" nmemory-*.tar.gz nmemory-*.mcpb SHA256SUMS \
               --repo "$GITHUB_REPOSITORY" --verify-tag \
               --title "nMEMORY $RELEASE_TAG" \
               --notes "Hermetic local memory for LLM agents. Binaries consumed by install.sh; SHA256SUMS attached."
