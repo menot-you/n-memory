@@ -6,6 +6,7 @@
 [![Mirror: Codeberg](https://img.shields.io/badge/mirror-codeberg-2185D0)](https://codeberg.org/nott/n-memory)
 ![Tests](https://img.shields.io/badge/tests-589%20passing-brightgreen)
 [![codecov](https://codecov.io/gh/menot-you/n-memory/graph/badge.svg)](https://codecov.io/gh/menot-you/n-memory)
+[![n-memory MCP server](https://glama.ai/mcp/servers/menot-you/n-memory/badges/score.svg)](https://glama.ai/mcp/servers/menot-you/n-memory)
 ![Audit](https://img.shields.io/badge/audit-0%20vulnerabilities-brightgreen)
 ![Unsafe Forbidden](https://img.shields.io/badge/unsafe-forbidden-brightgreen)
 ![Hermetic](https://img.shields.io/badge/network-zero%20sockets-black)
