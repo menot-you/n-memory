@@ -3,6 +3,7 @@
 <img src="assets/hero.png" alt="ₙMEMORY — hermetic, local memory for coding agents, one that never lies to you" width="900">
 
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
+[![Mirror: Codeberg](https://img.shields.io/badge/mirror-codeberg-2185D0)](https://codeberg.org/nott/n-memory)
 ![Tests](https://img.shields.io/badge/tests-589%20passing-brightgreen)
 [![codecov](https://codecov.io/gh/menot-you/n-memory/graph/badge.svg)](https://codecov.io/gh/menot-you/n-memory)
 ![Audit](https://img.shields.io/badge/audit-0%20vulnerabilities-brightgreen)
