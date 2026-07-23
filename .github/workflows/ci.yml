@@ -32,3 +32,19 @@ jobs:
         with:
           files: lcov.info
           fail_ci_if_error: false
+  # Mirror to Codeberg on main pushes only — folded into this single workflow
+  # so each event produces exactly one run (noise control until nSHIP owns
+  # shipping). Read-only mirror: issues/PRs/wiki disabled on the far side.
+  mirror:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - name: push to codeberg
+        env:
+          TOKEN: ${{ secrets.CODEBERG_TOKEN }}
+        run: |
+          git push "https://tiagodocouto:${TOKEN}@codeberg.org/nott/n-memory.git" \
+            HEAD:refs/heads/main --tags
