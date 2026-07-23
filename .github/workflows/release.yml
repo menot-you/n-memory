@@ -42,23 +42,29 @@ jobs:
 
   # The rest of the matrix arms itself when the repository is public
   # (private phase: paid macOS minutes + arm runner availability).
+  # Windows is continue-on-error: its absence must never block a release.
   build-cross:
     if: ${{ !github.event.repository.private || github.event_name == 'workflow_dispatch' }}
+    continue-on-error: ${{ matrix.os == 'windows' }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { runner: ubuntu-24.04-arm, os: linux, arch: aarch64 }
-          - { runner: macos-latest, os: macos, arch: aarch64 }
+          - { runner: ubuntu-24.04-arm, os: linux, arch: aarch64, bin: nmemory, archive: tar.gz }
+          - { runner: macos-latest, os: macos, arch: aarch64, bin: nmemory, archive: tar.gz }
+          - { runner: windows-latest, os: windows, arch: x86_64, bin: nmemory.exe, archive: zip }
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ inputs.tag || github.ref_name }}
       - run: cargo build --release
-      - run: |
-          mkdir -p dist && cp target/release/nmemory dist/nmemory
-          tar -czf "nmemory-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" -C dist nmemory
+      # bsdtar/GNU tar both pick the format from the extension with -a, so one
+      # command yields tar.gz on unix and a real zip on windows.
+      - shell: bash
+        run: |
+          mkdir -p dist && cp "target/release/${{ matrix.bin }}" "dist/${{ matrix.bin }}"
+          tar -a -cf "nmemory-${{ matrix.os }}-${{ matrix.arch }}.${{ matrix.archive }}" -C dist "${{ matrix.bin }}"
           # Tag rebuilds: the dispatched workflow file comes from main, but the
           # checkout is the tag — fetch the bundler from main when absent.
           [ -f .github/mcpb-bundle.sh ] || { git fetch --depth 1 origin main && git checkout FETCH_HEAD -- .github/mcpb-bundle.sh; }
@@ -66,9 +72,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: nmemory-${{ matrix.os }}-${{ matrix.arch }}
-          path: |
-            nmemory-${{ matrix.os }}-${{ matrix.arch }}.tar.gz
-            nmemory-${{ matrix.os }}-${{ matrix.arch }}.mcpb
+          path: nmemory-${{ matrix.os }}-${{ matrix.arch }}.*
 
   publish:
     needs: [build-core, build-cross]
@@ -82,12 +86,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          sha256sum nmemory-*.tar.gz nmemory-*.mcpb > SHA256SUMS
+          sha256sum nmemory-* > SHA256SUMS
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" nmemory-*.tar.gz nmemory-*.mcpb SHA256SUMS \
+            gh release upload "$RELEASE_TAG" nmemory-* SHA256SUMS \
               --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create "$RELEASE_TAG" nmemory-*.tar.gz nmemory-*.mcpb SHA256SUMS \
+            gh release create "$RELEASE_TAG" nmemory-* SHA256SUMS \
               --repo "$GITHUB_REPOSITORY" --verify-tag \
               --title "nMEMORY $RELEASE_TAG" \
               --notes "Hermetic local memory for LLM agents. Binaries consumed by install.sh; SHA256SUMS attached."
