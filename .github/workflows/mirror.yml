@@ -1,0 +1,24 @@
+# Mirror main + release tags to Codeberg (read-only copy; issues/PRs stay on GitHub).
+name: mirror
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mirror
+jobs:
+  codeberg:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - name: push to codeberg
+        env:
+          TOKEN: ${{ secrets.CODEBERG_TOKEN }}
+        run: |
+          git push "https://tiagodocouto:${TOKEN}@codeberg.org/nott/n-memory.git" \
+            HEAD:refs/heads/main --tags
