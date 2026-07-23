@@ -135,12 +135,41 @@ The store lands at `$XDG_STATE_HOME/nmemory/memory.sqlite3` (override with `--db
 `NMEMORY_DB`); the binary prints the chosen path on startup. Unregister anytime with
 `claude mcp remove nmemory` — fully reversible.
 
+Or as a standard MCP config block (works in any MCP client):
+
+```json
+{
+  "mcpServers": {
+    "nmemory": {
+      "command": "nmemory",
+      "args": ["--project", "my-project"]
+    }
+  }
+}
+```
+
+Also on the official MCP registry as `io.github.menot-you/n-memory`, with `.mcpb`
+bundles attached to every release for one-click installs.
+
 First capture and recall (your agent does this over MCP; shown here as intent):
 
 ```
 ingest   → content + source + anchor         → stored, deduped by content hash
 retrieve → your caller-expanded search terms → grounded evidence, or an honest abstain
 ```
+
+## Tools
+
+21 tools over MCP stdio. The ones you'll use every day:
+
+- **memory_ingest** — capture with a birth certificate: no source + anchor, no storage.
+- **memory_retrieve** — recall as evidence: grounded, missing_evidence, or an honest abstain.
+- **memory_digest** — session-start projection: what you know, what's ready, what's blocked.
+- **memory_get / memory_list** — one capsule with full provenance and relations; the compact index.
+- **memory_relate** — declared edges: supersedes, derived_from, witnesses, blocks, and `falsifies` (a disproven fact stops grounding recall, but the evidence stays).
+- **memory_forget** — tombstones with audit, never silent deletion.
+
+The rest of the set: **memory_import** (CLAUDE.md/AGENTS.md, born tainted), **memory_extract** (propose candidates, stores nothing), **memory_classify**, **memory_alias** (teach recall synonyms), **memory_vector** (caller-fed embeddings, dormant until used), **memory_consolidate** (deterministic dedup/merge plan), **memory_outcome**, **memory_preference**, **memory_merge**, **memory_export** (deterministic, hash-chained), **memory_bootstrap**, **memory_session_start / memory_session_finish**, **memory_visual**.
 
 ### One store, two machines (SSH)
 
