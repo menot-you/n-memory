@@ -322,7 +322,8 @@ post({jsonrpc:'2.0',id:initializeId,method:'ui/initialize',params:{protocolVersi
 /// amber `#C88B32`, red `#E45A43`, mono type. The header carries the brand
 /// mark — the capsule glyph with the subscript n — as inline SVG (no xmlns:
 /// inline SVG in HTML needs none, and the resource stays URL-free).
-pub const VISUAL_HTML: &str = r##"<!doctype html>
+pub const VISUAL_HTML: &str = concat!(
+    r##"<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
 :root{color-scheme:light;--bg:#F5F1E9;--panel:#FAF7F1;--fg:#36332F;--strong:#4A4640;--muted:#8E8982;--border:#BBB3A8;--green:#698664;--amber:#C88B32;--red:#E45A43;--mono:"DejaVu Sans Mono","Noto Sans Mono",ui-monospace,monospace}
@@ -340,9 +341,12 @@ const notify=(method,params={})=>post({jsonrpc:'2.0',method,params});
 const render=result=>{const data=result&&result.structuredContent;view.className='';if(data&&typeof data.mermaid==='string'){view.textContent=data.mermaid}else{view.className='error';view.textContent='No structured Mermaid result was provided.'}resize()};
 const resize=()=>notify('ui/notifications/size-changed',{width:document.documentElement.scrollWidth,height:document.documentElement.scrollHeight});
 window.addEventListener('message',event=>{const m=event.data;if(!m||m.jsonrpc!=='2.0')return;if(m.id===1&&m.result){const vars=m.result.hostContext&&m.result.hostContext.styles&&m.result.hostContext.styles.variables;if(vars)for(const [k,v] of Object.entries(vars))if(typeof v==='string'&&k.startsWith('--'))document.documentElement.style.setProperty(k,v);notify('ui/notifications/initialized');resize()}else if(m.method==='ui/notifications/tool-result'){render(m.params)}else if(m.method==='ui/resource-teardown'&&m.id!=null){post({jsonrpc:'2.0',id:m.id,result:{}})}});
-post({jsonrpc:'2.0',id:nextId++,method:'ui/initialize',params:{protocolVersion:'2026-01-26',appInfo:{name:'nmemory-visual',version:'0.1.0'},appCapabilities:{availableDisplayModes:['inline']}}});
+post({jsonrpc:'2.0',id:nextId++,method:'ui/initialize',params:{protocolVersion:'2026-01-26',appInfo:{name:'nmemory-visual',version:'"##,
+    env!("CARGO_PKG_VERSION"),
+    r##"'},appCapabilities:{availableDisplayModes:['inline']}}});
 })();
-</script></body></html>"##;
+</script></body></html>"##
+);
 
 /// Closed resource set advertised by the server.
 pub const APP_RESOURCES: &[AppResource] = &[

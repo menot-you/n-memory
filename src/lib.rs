@@ -24,6 +24,7 @@ pub mod classify;
 pub mod consolidate;
 pub mod export;
 pub mod extract;
+pub mod git;
 pub mod ingest;
 pub mod journal;
 pub mod mcp_app;

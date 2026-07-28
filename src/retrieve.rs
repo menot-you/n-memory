@@ -1,12 +1,14 @@
-//! # Retrieve — FTS5+bm25 recall, grounded-or-ABSTAIN, evidence envelope
+//! # Retrieve — routed term/vector recall, grounded-or-ABSTAIN, evidence envelope
 //! (unit s4).
 //!
 //! The engine half of the LLM-first recall contract (`ARCHITECTURE.md` §0):
 //! the CALLER is the intelligent half and arrives with an already-expanded
-//! multi-term query (synonyms, aliases, rephrasings). This module does
-//! honest lexical work only — FTS5 `OR` across the quoted terms, bm25
-//! ranking, a deterministic tiebreak — and returns few, dense, layered
-//! results under an explicit token budget. No embedder, no network, and no
+//! multi-term query (synonyms, aliases, rephrasings) and, when requested, a
+//! caller-computed query embedding. This module does deterministic local term
+//! and caller-fed vector matching: the term lane uses FTS5 `OR` across quoted
+//! terms, the vector lane uses positive cosine similarity, and fused recall
+//! combines their independent ranks. It returns few, dense, layered results
+//! under an explicit token budget. There is no embedder, no network, and no
 //! clock read: `now` is injected at the surface boundary, exactly like the
 //! store's `created_at`.
 //!
@@ -14,15 +16,17 @@
 //!
 //! A query resolves to exactly one honest outcome:
 //!
-//! - [`RetrieveResponse::Grounded`] — at least one eligible capsule
-//!   survives every fence; unchanged shape.
-//! - [`RetrieveResponse::MissingEvidence`] — terms DID match stored
-//!   capsules (or named a forgotten one — below), but every match was
+//! - [`RetrieveResponse::Grounded`] — at least one eligible capsule from
+//!   an executed lane survives every fence; unchanged shape.
+//! - [`RetrieveResponse::MissingEvidence`] — an executed lane DID match
+//!   stored capsules (or a term named a forgotten one — below), but every match was
 //!   excluded by an eligibility fence (quarantined, falsified, archived,
-//!   superseded, expired, not-yet-valid, tombstoned — counted per
+//!   superseded, expired, not-yet-valid, outside the requested fact-time
+//!   window, undated under that window, or tombstoned — counted per
 //!   [`ExclusionReason`]): evidence exists (or existed), none of it may
 //!   ground recall.
-//! - [`RetrieveResponse::Abstain`] — zero raw matches: nothing to ground
+//! - [`RetrieveResponse::Abstain`] — zero raw matches in the executed
+//!   lanes and the lane-independent tombstone id probe: nothing to ground
 //!   and nothing to exclude.
 //!
 //! Nothing is ever invented. (Donor B's `RecallMode` names the SAME three
@@ -61,8 +65,10 @@
 //! `DATA` framing are UNFORGEABLE zero-sized fields — they serialize on
 //! every item and cannot be constructed with any other value — next to the
 //! capsule's own `instruction_taint` flag, provenance, freshness, authority
-//! class, confidence, and the match explain (`matched_terms` + a
-//! normalized `relevance` + the rounded `bm25` behind it).
+//! class, confidence, and lane-specific match explain: `matched_terms`,
+//! normalized `relevance`, and rounded `bm25` when the term lane matched;
+//! `vector_similarity` when the vector lane matched; and `fusion_rank` when
+//! vector-bearing ranking ran.
 //! Stored content is never rendered as directives and never inlined whole:
 //! the envelope carries only a `headline` (first line, at most
 //! [`HEADLINE_MAX_CHARS`] chars); the full capsule stays one `get` away
@@ -70,24 +76,27 @@
 //!
 //! ## Determinism (PLAN s4 tiebreak + h4 usage late key + w2 decay)
 //!
-//! Ranking is a pure function of stored fields plus the injected `now`:
-//! term coverage descending (w1d — a capsule matching more of the
-//! caller's term GROUPS outranks a higher-bm25 single-term match), then
-//! bm25 score ascending (SQLite's bm25 is smaller-is-better; scores are
-//! negative), then the ADVISORY decayed weight descending (w2 — its
-//! section below; it REPLACES the former raw-`confidence` key, and
-//! same-age capsules still order by confidence exactly as before), then
-//! `freshness.valid_from` descending, then — LATE, ordering full ties
-//! only — usage recency descending and `recall_count` descending (the h4
-//! sidecar; never-recalled sorts last), then id ascending (numeric `seq`
-//! order, so `cap-2` precedes `cap-10`). Usage is a tiebreak input and
-//! nothing more: it NEVER touches confidence or authority (ARCHITECTURE
-//! §1 law: usage is not success evidence), and no envelope field carries
-//! it. `now` decides WHICH capsules are currently valid and feeds the
-//! decay ages — nothing else: the same store state queried at the same
-//! `now` returns byte-identical JSON (the deliberate exceptions are
-//! `anchor_live` and `anchor_drift`, which read the live filesystem —
-//! their sections below).
+//! Ranking is a pure function of stored fields plus the injected `now`, with
+//! one explicit contract per effective lane. Term-only ranking uses coverage
+//! descending, then bm25 ascending (SQLite's smaller-is-better negative
+//! score), advisory decayed weight descending, `freshness.valid_from`
+//! descending, usage recency and count descending as late full-tie keys, then
+//! numeric `seq` ascending. Forced-vector ranking uses one-lane RRF over cosine
+//! rank (cosine descending, `seq` ascending). Fused ranking uses two-lane RRF
+//! over the independent term and vector ranks: the term input uses the full
+//! term-only comparator, the vector input uses cosine rank, their reciprocal
+//! ranks sum, and a fused tie uses `seq` ascending. `fusion_rank` records this
+//! pre-blend RRF position. An enabled feedback-weight blend may reorder only
+//! after the selected base ranking; it never changes lane membership or
+//! eligibility.
+//!
+//! Usage is a tiebreak input in the term rank and nothing more: it NEVER
+//! touches confidence or authority (ARCHITECTURE §1 law: usage is not success
+//! evidence), and no envelope field carries it. `now` decides WHICH capsules
+//! are currently valid and feeds the term-rank decay ages — nothing else: the
+//! same store state queried at the same `now` returns byte-identical JSON (the
+//! deliberate exceptions are `anchor_live` and `anchor_drift`, which read the
+//! live filesystem — their sections below).
 //! Returning results IS a store write, though: every returned id is
 //! counted ([`Store::record_recall`] at the injected `now`), so a
 //! repeated query may re-order exact ties — that is the late key doing
@@ -217,8 +226,9 @@ use time::OffsetDateTime;
 
 use crate::capsule::{AuthorityClass, Confidence, Freshness, Provenance, sha256_hex};
 use crate::store::{
-    CapsuleId, EpistemicsRecord, RecallMissOutcome, Store, StoreError, StoredCapsule,
-    StoredEmbedding, TombstoneRecord, UsageStat, fold_diacritic,
+    CapsuleId, CorroborationSummary, EpistemicsRecord, EventTimeRecord, FEEDBACK_NEUTRAL_WEIGHT,
+    LaneOverride, RecallMissOutcome, Store, StoreError, StoredCapsule, StoredEmbedding,
+    TombstoneRecord, UsageStat, fold_diacritic,
 };
 
 /// The literal advisory label carried by every recall result: recall
@@ -253,11 +263,20 @@ pub const DECAY_HALF_LIFE_DAYS: f64 = 90.0;
 /// order out.
 pub const RRF_K: f64 = 60.0;
 
-/// Default cap on the vector lane's candidate count (w3 u6a): with
-/// `query_embedding` present but no explicit `vector_k`, recall fuses the
-/// top-`DEFAULT_VECTOR_K` capsules by cosine similarity. Bounds the vector
-/// lane's reach the way `limit`/`token_budget` bound the returned set; the
-/// caller widens it via `vector_k`.
+/// S6 neutral corroboration weight — the midpoint a capsule ranks at when no
+/// git-witness corroboration is recorded (or the corroboration blend is
+/// dormant). `1.0` is fully corroborated, `0.0` fully drifted; `0.5` asserts
+/// nothing either way, so the blend factor `(1 + corroboration_blend × (c −
+/// CORROBORATION_NEUTRAL_WEIGHT))` is exactly `1.0` (a no-op) at neutral.
+const CORROBORATION_NEUTRAL_WEIGHT: f64 = 0.5;
+
+/// Default cap on the vector lane's candidate count (w3 u6a): when lane
+/// routing executes the vector lane and no explicit `vector_k` is supplied,
+/// the top-`DEFAULT_VECTOR_K` eligible capsules by cosine similarity enter
+/// ranking. An explicit fact-time window is evaluated before this cap; with
+/// no window the historical raw cosine top-K path stays unchanged. Bounds the
+/// vector lane's reach the way `limit`/`token_budget` bound the returned set;
+/// the caller widens it via `vector_k`.
 pub const DEFAULT_VECTOR_K: usize = 10;
 
 /// Zero-sized field that always serializes as the literal
@@ -385,6 +404,20 @@ pub enum ExclusionReason {
     Expired,
     /// The capsule's `valid_from` lies after the query instant `now`.
     NotYetValid,
+    /// A declared event range does not intersect the caller's inclusive
+    /// query window.
+    OutsideTimeWindow,
+    /// The caller supplied a time window but this capsule has no declared
+    /// fact time. It cannot claim membership and is counted explicitly.
+    Undated,
+    /// A standing proposal (b2 staged review): the capsule carries review
+    /// history whose latest verdict is not `ratified`, so it is fenced from
+    /// grounding by default (`include_staged: true` includes it). The LAST
+    /// eligibility fence before grounding — every quality fence (quarantined,
+    /// falsified, archived, superseded) and the currency/fact-time fences
+    /// DOMINATE it: a capsule that is both reports the stronger reason. Its
+    /// bytes are untouched, still reachable via `get`/`list`.
+    Proposed,
     /// A query term named a forgotten capsule id (`Store::forget_capsule`)
     /// — only the marker remains, reachable via `get`; the content can
     /// never match or ground again (module doc: the forgotten-id probe).
@@ -403,6 +436,9 @@ impl ExclusionReason {
             ExclusionReason::Falsified => "falsified",
             ExclusionReason::Expired => "expired",
             ExclusionReason::NotYetValid => "not_yet_valid",
+            ExclusionReason::OutsideTimeWindow => "outside_time_window",
+            ExclusionReason::Undated => "undated",
+            ExclusionReason::Proposed => "proposed",
             ExclusionReason::Tombstoned => "tombstoned",
         }
     }
@@ -430,21 +466,36 @@ use crate::store::Tier;
 /// base predates it, and so tests can drive the full pipeline with
 /// contract-true sidecar data.
 trait RecallStore {
-    /// [`Store::search_fts_scoped`] (`project_id` + w2 `project_prefix`
-    /// fences AND-compose).
+    /// [`Store::search_fts_effort`] (`project_id` + w2 `project_prefix` +
+    /// `session_id` fences AND-compose, plus the S3 effort membership fence).
+    /// `effort_ids` is `None` on every dormant (effort-free) recall, keeping
+    /// the term lane byte-identical to the pre-S3 engine.
     fn search_fts(
         &self,
         terms: &[String],
         project_id: Option<&str>,
         project_prefix: Option<&str>,
+        session_id: Option<&str>,
+        effort_ids: Option<&[String]>,
     ) -> Result<Vec<(StoredCapsule, f64)>, StoreError>;
     /// [`Store::get_tombstone`].
     fn get_tombstone(&self, id: &str) -> Result<Option<TombstoneRecord>, StoreError>;
+    /// [`Store::get_tombstone_for_session_label`].
+    fn get_tombstone_for_session_label(
+        &self,
+        id: &str,
+        session_id: &str,
+    ) -> Result<Option<TombstoneRecord>, StoreError>;
     /// [`Store::is_superseded`].
     fn is_superseded(&self, id: &str) -> Result<bool, StoreError>;
     /// [`Store::is_falsified`] (u6h): whether a `falsifies` edge names `id`
     /// as target — the eligibility fence between quarantine and archive.
     fn is_falsified(&self, id: &str) -> Result<bool, StoreError>;
+    /// [`Store::is_pinned`] (S1): whether `id`'s latest pin event set it
+    /// pinned. Read on the decay KEY only — a pinned capsule ranks by full
+    /// confidence (decay exempted at the call site), NEVER an eligibility
+    /// fence (the fences above run byte-unchanged).
+    fn is_pinned(&self, id: &str) -> Result<bool, StoreError>;
     /// [`Store::usage_of`].
     fn usage_of(&self, id: &str) -> Result<Option<UsageStat>, StoreError>;
     /// [`Store::record_recall`].
@@ -466,6 +517,8 @@ trait RecallStore {
         &self,
         project_id: Option<&str>,
         project_prefix: Option<&str>,
+        session_id: Option<&str>,
+        effort_ids: Option<&[String]>,
     ) -> Result<Vec<(StoredCapsule, StoredEmbedding)>, StoreError>;
     /// u-r2 contract: the capture-time anchored-file hash —
     /// [`Store::anchor_hash_of`]. `None` (every capsule the boundary could
@@ -474,6 +527,45 @@ trait RecallStore {
     /// u-r2 contract: the epistemic sidecar — [`Store::epistemics_of`].
     /// `None` (never annotated) omits the envelope's epistemic fields.
     fn epistemics_of(&self, id: &str) -> Result<Option<EpistemicsRecord>, StoreError>;
+    /// u04 advisory scored-outcome weight. Called ONLY when `weight_blend`
+    /// is greater than zero; the dormant path performs zero sidecar reads.
+    fn feedback_weight_of(&self, id: &str) -> Result<Option<f64>, StoreError>;
+    /// u06 caller-declared fact time. Called ONLY when the query carries a
+    /// [`TimeWindow`]; the absent-window path performs zero sidecar reads.
+    fn event_time_of(&self, id: &str) -> Result<Option<EventTimeRecord>, StoreError>;
+    /// b2 staged review: whether `id` is fenced by a standing proposal (its
+    /// latest review verdict is not `ratified`) — [`Store::review_fenced`].
+    /// The LAST eligibility fence; a store with no proposals answers `false`
+    /// for every candidate (byte-identical dormancy).
+    fn review_fenced(&self, id: &str) -> Result<bool, StoreError>;
+    /// b2 staged review: the standing review verdict of `id` when it carries
+    /// review history ([`Store::review_verdict`]) — read ONLY to stamp an
+    /// INCLUDED staged row's envelope, so the common (unfenced) path never
+    /// calls it.
+    fn review_verdict(&self, id: &str) -> Result<Option<String>, StoreError>;
+    /// S2 git witness lane: the newest git corroboration of `id` —
+    /// [`Store::latest_corroborations`]. `None` (never scanned) omits the
+    /// envelope's `corroboration` field. Read per RETURNED row, like
+    /// [`RecallStore::anchor_hash_of`]; a store-only SQL read, never a
+    /// process spawn.
+    fn latest_corroborations_of(
+        &self,
+        id: &str,
+    ) -> Result<Option<CorroborationSummary>, StoreError>;
+    /// S6 corroboration weight hook — the read-path seam for the git-witness
+    /// ranking blend. Called ONLY when `corroboration_blend` is greater than
+    /// zero; the dormant path performs zero corroboration-weight ranking
+    /// reads. The independent [`RecallStore::latest_corroborations_of`]
+    /// envelope explain still reads per returned row. `None` maps to the
+    /// neutral [`CORROBORATION_NEUTRAL_WEIGHT`] in the blend, so the default
+    /// (and every store without corroboration data) ranks byte-identically.
+    /// `id` is the typed [`CapsuleId`] so an integrator can key S2's
+    /// `latest_corroborations` directly. Infallible by contract: a
+    /// corroboration lookup failure fails OPEN to neutral, never failing the
+    /// whole recall.
+    fn corroboration_weight(&self, _id: &CapsuleId) -> Option<f64> {
+        None
+    }
 }
 
 impl RecallStore for Store {
@@ -483,17 +575,36 @@ impl RecallStore for Store {
         terms: &[String],
         project_id: Option<&str>,
         project_prefix: Option<&str>,
+        session_id: Option<&str>,
+        effort_ids: Option<&[String]>,
     ) -> Result<Vec<(StoredCapsule, f64)>, StoreError> {
-        Store::search_fts_scoped(self, terms, project_id, project_prefix)
+        Store::search_fts_effort(
+            self,
+            terms,
+            project_id,
+            project_prefix,
+            session_id,
+            effort_ids,
+        )
     }
     fn get_tombstone(&self, id: &str) -> Result<Option<TombstoneRecord>, StoreError> {
         Store::get_tombstone(self, id)
+    }
+    fn get_tombstone_for_session_label(
+        &self,
+        id: &str,
+        session_id: &str,
+    ) -> Result<Option<TombstoneRecord>, StoreError> {
+        Store::get_tombstone_for_session_label(self, id, session_id)
     }
     fn is_superseded(&self, id: &str) -> Result<bool, StoreError> {
         Store::is_superseded(self, id)
     }
     fn is_falsified(&self, id: &str) -> Result<bool, StoreError> {
         Store::is_falsified(self, id)
+    }
+    fn is_pinned(&self, id: &str) -> Result<bool, StoreError> {
+        Store::is_pinned(self, id)
     }
     fn usage_of(&self, id: &str) -> Result<Option<UsageStat>, StoreError> {
         Store::usage_of(self, id)
@@ -515,8 +626,16 @@ impl RecallStore for Store {
         &self,
         project_id: Option<&str>,
         project_prefix: Option<&str>,
+        session_id: Option<&str>,
+        effort_ids: Option<&[String]>,
     ) -> Result<Vec<(StoredCapsule, StoredEmbedding)>, StoreError> {
-        Store::embeddings_for_recall(self, project_id, project_prefix)
+        Store::embeddings_for_recall_effort(
+            self,
+            project_id,
+            project_prefix,
+            session_id,
+            effort_ids,
+        )
     }
 
     // u-r2 sidecar reads: pure delegation, like every read above.
@@ -526,6 +645,41 @@ impl RecallStore for Store {
     fn epistemics_of(&self, id: &str) -> Result<Option<EpistemicsRecord>, StoreError> {
         Store::epistemics_of(self, id)
     }
+    fn feedback_weight_of(&self, id: &str) -> Result<Option<f64>, StoreError> {
+        Store::feedback_weight_of(self, id)
+    }
+    fn event_time_of(&self, id: &str) -> Result<Option<EventTimeRecord>, StoreError> {
+        Store::event_time_of(self, id)
+    }
+    fn review_fenced(&self, id: &str) -> Result<bool, StoreError> {
+        Store::review_fenced(self, id)
+    }
+    fn review_verdict(&self, id: &str) -> Result<Option<String>, StoreError> {
+        Store::review_verdict(self, id)
+    }
+    fn latest_corroborations_of(
+        &self,
+        id: &str,
+    ) -> Result<Option<CorroborationSummary>, StoreError> {
+        Store::latest_corroborations(self, id)
+    }
+    /// S6→S2 wiring: the git-witness ranking signal reads the capsule's
+    /// newest `anchor_content` corroboration verdict — `corroborated` ranks
+    /// at full weight (`1.0`), `drifted` at zero (`0.0`); a capsule never
+    /// scanned (or carrying no `anchor_content` row) returns `None`, which the
+    /// blend treats as neutral. Infallible by contract: a sidecar read error
+    /// fails OPEN to neutral, never failing the whole recall.
+    fn corroboration_weight(&self, id: &CapsuleId) -> Option<f64> {
+        match Store::latest_corroborations(self, id.as_str()) {
+            Ok(Some(summary)) => match summary.anchor_content.as_deref() {
+                Some("corroborated") => Some(1.0),
+                Some("drifted") => Some(0.0),
+                _ => None,
+            },
+            Ok(None) => None,
+            Err(_) => None,
+        }
+    }
 }
 
 /// A recall request. Terms are caller-expanded: the LLM brings its own
@@ -534,6 +688,138 @@ impl RecallStore for Store {
 /// words (order/adjacency-insensitive), never as FTS5 syntax. The
 /// w2-store2 synonym sidecar additionally expands each term with its
 /// recorded aliases (module doc: Synonym expansion).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lane {
+    /// Choose `term` without an embedding and `fused` with one.
+    Auto,
+    /// Run only the FTS term lane.
+    Term,
+    /// Run only the caller-fed vector lane.
+    Vector,
+    /// Run both lanes and combine their ranks with RRF.
+    Fused,
+}
+
+impl Lane {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Lane::Auto => "auto",
+            Lane::Term => "term",
+            Lane::Vector => "vector",
+            Lane::Fused => "fused",
+        }
+    }
+}
+
+/// An optional-bounds caller query window. The constructor makes the two
+/// illegal states — no bounds and a backwards range — unrepresentable in a
+/// [`RetrieveQuery`]. Intersection with declared event ranges is inclusive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimeWindow {
+    from: Option<OffsetDateTime>,
+    to: Option<OffsetDateTime>,
+}
+
+impl TimeWindow {
+    /// Construct a nonempty, forward query window.
+    pub fn new(
+        from: Option<OffsetDateTime>,
+        to: Option<OffsetDateTime>,
+    ) -> Result<Self, TimeWindowError> {
+        if from.is_none() && to.is_none() {
+            return Err(TimeWindowError::Empty);
+        }
+        if let (Some(from), Some(to)) = (from, to)
+            && to < from
+        {
+            return Err(TimeWindowError::Backwards);
+        }
+        Ok(Self { from, to })
+    }
+
+    const fn from(&self) -> Option<OffsetDateTime> {
+        self.from
+    }
+
+    const fn to(&self) -> Option<OffsetDateTime> {
+        self.to
+    }
+}
+
+/// Why a wire-valid timestamp pair cannot become a [`TimeWindow`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum TimeWindowError {
+    /// Both optional bounds were omitted.
+    #[error("time_window needs at least one bound (from and/or to, RFC3339)")]
+    Empty,
+    /// The upper bound lies before the lower bound.
+    #[error("time_window.to lies before time_window.from — a window runs forward")]
+    Backwards,
+}
+
+/// S3 effort-lifecycle: the RESOLVED effort scope injected by the server
+/// after it validates `effort_id` (exists → not tombstoned → persisted kind
+/// `epic` → ≥ 1 member). The engine receives an ALREADY-VALID scope — every
+/// teaching rejection (`unknown_capsule` / `tombstoned_capsule` / not-an-epic
+/// / unclassified / zero-members) fires at the boundary before this is built,
+/// so a degenerate fence can never reach recall. `None` on the query keeps the
+/// entire engine byte-identical (dormancy).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffortScope {
+    /// The epic capsule id (`cap-<n>`) that names the effort.
+    pub epic_id: String,
+    /// The effort's members — the `from` side of every `part_of` edge INTO
+    /// the epic, GRAPH TRUTH (dead members included). The SQL fence is this
+    /// set ∪ `{epic_id}`; the echoed `member_total` is exactly its length,
+    /// identical to digest/bootstrap (cross-surface parity).
+    pub member_ids: Vec<String>,
+    /// Whether the epic is OPEN (`¬witnessed ∧ ¬superseded`; tombstoned
+    /// already refused at the boundary). A CLOSED effort stays queryable for
+    /// post-mortem recall — this flag rides the echo as `open:false`.
+    pub open: bool,
+}
+
+impl EffortScope {
+    /// The SQL membership fence id-set: members ∪ {epic}, deterministic order.
+    /// Built ONCE per recall and passed to both lanes.
+    fn fence_ids(&self) -> Vec<String> {
+        let mut ids = self.member_ids.clone();
+        if !ids.iter().any(|id| id == &self.epic_id) {
+            ids.push(self.epic_id.clone());
+        }
+        ids
+    }
+
+    /// Graph-truth membership size — the echoed `member_total`.
+    fn member_total(&self) -> usize {
+        self.member_ids.len()
+    }
+}
+
+/// S3 effort-lifecycle: the per-response echo of the resolved effort scope,
+/// so a caller sees WHICH effort fenced the recall (post-mortem included).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EffortEcho {
+    /// The epic capsule id the fence resolved.
+    pub epic_id: String,
+    /// Graph-truth member count (dead members included), identical to
+    /// digest/bootstrap.
+    pub member_total: usize,
+    /// Whether the epic is open; a closed effort answers `open:false` yet
+    /// still grounds.
+    pub open: bool,
+}
+
+/// S3 effort-lifecycle: a grounded row's relationship to the fencing effort.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EffortRole {
+    /// This row IS the effort's epic capsule.
+    Epic,
+    /// This row is a `part_of` member of the effort.
+    Member,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct RetrieveQuery {
     /// Caller-expanded search terms. A term's words are AND-matched
@@ -552,6 +838,14 @@ pub struct RetrieveQuery {
     /// `nott/x`, never `nottx`. AND-composes with `project_id`.
     /// Character-exact ([`crate::store::ListFilter::project_prefix`]).
     pub project_prefix: Option<String>,
+    /// Character-exact store-local capsule label fence. This is not a
+    /// globally unique bracket identity and performs no `sessions` lookup:
+    /// finished, orphaned, or merge-imported labels remain recallable.
+    pub session_id: Option<String>,
+    /// Optional inclusive fact-time fence. Applied after every state and
+    /// currency fence, before ranking. Undated capsules do not claim
+    /// membership: they are excluded and counted separately.
+    pub time_window: Option<TimeWindow>,
     /// Maximum number of results. `None` = no count cap (the token
     /// budget is the real guard). `Some(0)` is honored literally: a
     /// count-only probe — grounded outcome with `matched` filled and
@@ -565,11 +859,15 @@ pub struct RetrieveQuery {
     /// honored literally like `limit: 0`: a count-only probe, zero
     /// envelopes.
     pub token_budget: Option<usize>,
-    /// w3 u6a caller-fed semantic lane. `None` (the DORMANT default) →
-    /// recall is byte-identical to the FTS-only engine: no vector table is
-    /// read, no fusion runs, envelopes carry no vector fields. `Some(v)` →
-    /// the cosine-similarity vector lane runs and its ranks are RRF-fused
-    /// with the FTS term lane — admitting ONLY positively-similar
+    /// Optional recall-lane selector. Omitted or [`Lane::Auto`] preserves
+    /// the historical rule: term-only without `query_embedding`, fused
+    /// with it. Explicit term/vector/fused requests override that choice.
+    pub lane: Option<Lane>,
+    /// w3 u6a caller-fed query vector. Under an omitted/auto lane, `None`
+    /// preserves the historical FTS-only path and `Some(v)` selects fused
+    /// recall. An explicit term lane never reads stored vectors even when
+    /// this value is present; explicit vector/fused lanes require it. Any
+    /// executed vector lane admits ONLY positively-similar
     /// embeddings (cosine > 0; fleet-8 c7: an orthogonal or
     /// anti-correlated embedding never solely-grounds a result). The
     /// embedding is caller-supplied (no embedder dependency; the store
@@ -579,11 +877,47 @@ pub struct RetrieveQuery {
     /// ([`RetrieveError::InvalidQueryEmbedding`]).
     pub query_embedding: Option<Vec<f32>>,
     /// w3 u6a: cap on the vector lane's candidate count — the top
-    /// `vector_k` capsules by cosine feed fusion. `None` →
-    /// [`DEFAULT_VECTOR_K`]. Ignored entirely when `query_embedding` is
-    /// `None` (dormant). `Some(0)` yields an empty vector lane (fusion
-    /// degenerates to the FTS order).
+    /// `vector_k` eligible capsules by cosine feed vector-bearing ranking.
+    /// An explicit fact-time window runs before this cap; without one the
+    /// historical raw cosine top-K path is unchanged. `None` →
+    /// [`DEFAULT_VECTOR_K`]. Ignored entirely when routing does not execute
+    /// the vector lane. `Some(0)` yields an empty vector lane (a fused
+    /// request then degenerates to the FTS order).
     pub vector_k: Option<usize>,
+    /// Opt-in scored-outcome ranking blend in `0.0..=1.0`. Omitted or
+    /// `0.0` is structurally DORMANT: ranking bytes stay identical and the
+    /// feedback sidecar is never read. Above zero, the deterministic base
+    /// rank `r` is re-scored as `1/(60+r) × (1 + blend × (weight−0.5))`,
+    /// then sorted score-desc/sequence-asc. Ranking only: eligibility and
+    /// the three honest outcomes are unchanged.
+    pub weight_blend: Option<f64>,
+    /// b2 staged review: when `false` (the default), a standing proposal
+    /// (latest review verdict not `ratified`) is fenced from grounding and
+    /// counted under `excluded{proposed}`. `true` INCLUDES fenced proposals,
+    /// each carrying its `review_state` on the envelope. Dormant by default:
+    /// a store with no proposals is byte-identical either way.
+    pub include_staged: bool,
+    /// S6 opt-in corroboration ranking blend in `0.0..=1.0`. Omitted or
+    /// `0.0` is structurally DORMANT: ranking bytes stay identical and the
+    /// corroboration-weight ranking seam is never read. The independent
+    /// corroboration envelope explain still reads per returned row. Above
+    /// zero, the per-capsule corroboration weight `c`
+    /// ([`RecallStore::corroboration_weight`], a git-witness signal — `1.0`
+    /// corroborated, `0.0` drifted, `0.5` neutral) enters the ONE blend factor
+    /// beside `weight_blend`: `score = 1/(60+r) × (1 + weight_blend ×
+    /// (w−0.5)) × (1 + corroboration_blend × (c−0.5))`, then a single
+    /// re-sort. Ranking only: eligibility and the three honest outcomes are
+    /// unchanged; stored confidence is untouched.
+    pub corroboration_blend: Option<f64>,
+    /// S3 effort-lifecycle: the RESOLVED effort scope. `None` (the default)
+    /// is DORMANT — byte-identical to the pre-S3 engine, zero new reads.
+    /// `Some(scope)` fences BOTH lanes to the effort's members ∪ {epic} (an
+    /// AND-composed id-set, never a post-filter), echoes `effort{…}` on the
+    /// outcome, stamps `effort_role` on each grounded row, and names the
+    /// effort in the honest-empty fence label. SCOPE only — downstream
+    /// eligibility is untouched, so a fenced-in dead member still surfaces
+    /// under `excluded{…}`.
+    pub effort: Option<EffortScope>,
 }
 
 /// One recall result wrapped as DATA — the evidence envelope
@@ -647,6 +981,12 @@ pub struct Evidence {
     /// evaluates it, ever. Omitted when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stale_if: Option<String>,
+    /// b2 staged review: the standing review verdict (`"proposed"` /
+    /// `"rejected"`) of an INCLUDED staged row — present ONLY when
+    /// `include_staged` surfaced a fenced proposal, so a plain live row (no
+    /// review history, or a ratified one) omits it and stays byte-identical.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_state: Option<String>,
     /// Validity window (RFC3339), for the caller's own staleness
     /// judgment.
     pub freshness: Freshness,
@@ -686,14 +1026,84 @@ pub struct Evidence {
     /// authority — fusion orders by rank, not by this magnitude.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vector_similarity: Option<f64>,
-    /// w3 u6a fusion explain: this row's 1-based position in the
-    /// RRF-fused ranking — present on EVERY returned row of a fused query
-    /// (so the caller can read the fused order), absent in a dormant
-    /// (FTS-only) query. A row with `fusion_rank` but no
-    /// `vector_similarity` was ranked by fusion but matched only the term
-    /// lane. Advisory explain, never authority.
+    /// w3 u6a rank explain: this row's 1-based position in the RRF ranking
+    /// — present on EVERY returned row whenever the vector lane executes
+    /// (one-lane RRF for forced vector, two-lane RRF for fused), absent when
+    /// only the term lane executes. In fused recall, a row with
+    /// `fusion_rank` but no `vector_similarity` matched only the term lane.
+    /// The opt-in feedback blend may reorder the final list;
+    /// `fusion_rank` keeps naming this PRE-blend RRF position. Advisory
+    /// explain, never authority.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fusion_rank: Option<usize>,
+    /// u04 advisory scored-outcome weight, rounded to 2 decimals. Present
+    /// only when `weight_blend > 0`; omitted on the byte-identical dormant
+    /// path. Ranking explain only, never eligibility or authority.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub feedback_weight: Option<f64>,
+    /// S2 git witness lane: the newest git corroboration of THIS row's
+    /// anchors and mentions ([`crate::store::CorroborationSummary`]) — the
+    /// derived explain from the `corroborations` sidecar, read per returned
+    /// row like the anchor-drift hash. Omitted when the capsule was never
+    /// scanned (the byte-identical dormant path). ADVISORY explain, never
+    /// authority: a witness observes, it never mutates confidence or ranks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub corroboration: Option<CorroborationWire>,
+    /// S6 advisory corroboration weight, rounded to 2 decimals — the
+    /// git-witness signal (`1.0` corroborated, `0.0` drifted, `0.5` neutral)
+    /// that fed the ranking blend. Present ONLY when `corroboration_blend >
+    /// 0`; omitted on the byte-identical dormant path. Ranking explain only,
+    /// never eligibility or authority; stored confidence is untouched by it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub corroboration_weight: Option<f64>,
+    /// S3 effort-lifecycle: this row's role in the fencing effort —
+    /// `"epic"` for the effort's epic capsule, `"member"` for a `part_of`
+    /// member. Present ONLY when the query carried an `effort_id`; omitted on
+    /// the byte-identical dormant path. Explain data, never authority.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort_role: Option<EffortRole>,
+}
+
+/// The wire form of a capsule's newest git corroboration (S2 git witness
+/// lane) — the retrieve envelope's `corroboration` explain. Field order IS
+/// the JSON order. Every optional field is omitted when absent, so a capsule
+/// probed for only some kinds shows only those (and a never-scanned capsule
+/// omits the whole envelope). ADVISORY DATA, never authority.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CorroborationWire {
+    /// The witness source (currently only `"git"`).
+    pub source: String,
+    /// The scan `HEAD` the newest verdict was observed at, when recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_ref: Option<String>,
+    /// Latest `anchor_path` verdict (`corroborated` / `missing`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Latest `anchor_sha` verdict (`corroborated` / `missing`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha: Option<String>,
+    /// Latest `anchor_content` verdict (`corroborated` / `drifted`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    /// How many commit mentions cite this capsule, when any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mentions: Option<usize>,
+    /// The newest verdict instant (RFC3339).
+    pub at: String,
+}
+
+impl From<CorroborationSummary> for CorroborationWire {
+    fn from(summary: CorroborationSummary) -> Self {
+        CorroborationWire {
+            source: summary.source,
+            git_ref: summary.git_ref,
+            path: summary.anchor_path,
+            sha: summary.anchor_sha,
+            content: summary.anchor_content,
+            mentions: (summary.mentions > 0).then_some(summary.mentions),
+            at: summary.at,
+        }
+    }
 }
 
 /// The recall outcome — serializes cleanly to JSON (tag `outcome`, wire
@@ -708,8 +1118,8 @@ pub enum RetrieveResponse {
     Grounded {
         /// Ranked evidence envelopes, best match first.
         results: Vec<Evidence>,
-        /// Grounded matches (lexical, not superseded, currently valid)
-        /// before limit/budget trimming.
+        /// Eligible matches from the executed lane(s), before limit/budget
+        /// trimming.
         matched: usize,
         /// Envelopes actually returned (`results.len()`).
         returned: usize,
@@ -725,19 +1135,33 @@ pub enum RetrieveResponse {
         token_budget: usize,
         /// Matches that ALSO occurred but were excluded by an eligibility
         /// fence (superseded / archived / quarantined / expired /
-        /// not_yet_valid / tombstoned-id probe), by reason — present only
-        /// when nonzero, so a grounded outcome no longer hides that
-        /// ineligible evidence existed.
+        /// not_yet_valid / outside_time_window / undated /
+        /// tombstoned-id probe), by reason — present only when nonzero,
+        /// so a grounded outcome no longer hides that ineligible evidence
+        /// existed.
         #[serde(skip_serializing_if = "BTreeMap::is_empty")]
         excluded: BTreeMap<ExclusionReason, usize>,
+        /// Persisted address of this grounded response's returned capsule ids.
+        /// Minted by the PUBLIC [`retrieve`] wrapper on every grounded
+        /// outcome, including a count-only response with zero returned
+        /// envelopes. `None` exists only on the engine-direct test seam, so
+        /// engine differentials keep their pre-receipt bytes.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        receipt_id: Option<String>,
+        /// S3 effort-lifecycle: the resolved effort scope echo, present ONLY
+        /// when the query carried an `effort_id` (omitted on the dormant
+        /// path). A closed effort still grounds, echoing `open:false`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        effort: Option<EffortEcho>,
     },
-    /// Terms DID match stored capsules, but every match was excluded by
-    /// an eligibility fence — evidence exists, none of it may ground
+    /// One or more executed lanes (or the tombstone id probe) DID match
+    /// stored capsules, but every match was excluded by an eligibility
+    /// fence — evidence exists, none of it may ground
     /// recall. Distinct from [`RetrieveResponse::Abstain`]: the caller
     /// learns that relevant-but-ineligible capsules exist (reachable via
     /// `get`/`list`) while not one excluded byte reaches the response.
     MissingEvidence {
-        /// Raw matches excluded — lexical matches plus terms naming a
+        /// Raw matches excluded across executed lanes plus terms naming a
         /// forgotten id (equals the sum over `excluded`).
         excluded_count: usize,
         /// Exclusion breakdown by reason, e.g. `{"superseded": 2}`.
@@ -746,13 +1170,25 @@ pub enum RetrieveResponse {
         /// Honest human-readable account — counts per reason plus the
         /// `get`/`list` escape hatch. Pure function of the counts.
         reason: String,
+        /// S3 effort-lifecycle: the resolved effort scope echo, present ONLY
+        /// when the query carried an `effort_id`. The fenced-in dead members
+        /// that produced this outcome are still named per-reason in `excluded`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        effort: Option<EffortEcho>,
     },
     /// Nothing matched at all — the honest empty answer, never a
     /// fabricated one.
     Abstain {
-        /// Why recall abstained: zero raw lexical matches (matched-but-
-        /// excluded is [`RetrieveResponse::MissingEvidence`] instead).
+        /// Why recall abstained: zero raw matches in the executed lanes and
+        /// tombstone id probe (matched-but-excluded is
+        /// [`RetrieveResponse::MissingEvidence`] instead).
         reason: String,
+        /// S3 effort-lifecycle: the resolved effort scope echo, present ONLY
+        /// when the query carried an `effort_id`. The `reason` text already
+        /// names the effort in its composed fence label; this is the machine
+        /// twin. A fenced zero-match ABSTAINS (never floored).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        effort: Option<EffortEcho>,
     },
 }
 
@@ -766,6 +1202,11 @@ pub enum RetrieveError {
         "retrieve rejected: query has no searchable term (each term needs at least one alphanumeric character)"
     )]
     EmptyQuery,
+    /// An explicitly selected vector-bearing lane had no query vector.
+    #[error(
+        "retrieve rejected: lane \"{0}\" requires query_embedding (attach vectors via memory_vector and pass query_embedding, or use lane \"term\"/\"auto\")"
+    )]
+    LaneNeedsEmbedding(&'static str),
     /// The store failed underneath.
     #[error("retrieve: {0}")]
     Store(#[from] StoreError),
@@ -794,40 +1235,56 @@ pub enum RetrieveError {
         /// deterministic, concrete anchor for the mismatch.
         capsule_id: String,
     },
+    /// `weight_blend` was non-finite or outside its closed range.
+    #[error("retrieve rejected: weight_blend {0}")]
+    InvalidWeightBlend(String),
+    /// `corroboration_blend` was non-finite or outside its closed range.
+    #[error("retrieve rejected: corroboration_blend {0}")]
+    InvalidCorroborationBlend(String),
 }
 
 /// Run one recall pass over the store at the injected instant `now`.
 ///
-/// Pipeline: validate terms → synonym expansion into per-term OR-groups
-/// (module doc; `aliases_for` on the w2-store2 seam) → FTS5 `OR` match
-/// via [`Store::search_fts`] (project-fenced) + the forgotten-id probe
-/// (module doc; each caller term that names a tombstoned id counts one
-/// [`ExclusionReason::Tombstoned`] raw match); zero of either →
-/// [`RetrieveResponse::Abstain`] → eligibility fences, each exclusion
-/// counted per [`ExclusionReason`] under the FIRST fence that caught
-/// it: lifecycle tier (quarantined, then archived — retired from
-/// grounding by default; the module-doc dominance law), then superseded
-/// (replaced capsules never ground recall; the live successor speaks),
-/// then currency at `now` (expired / not-yet-valid) — all of them stay
-/// reachable via `get`/`list`;
-/// every match excluded → [`RetrieveResponse::MissingEvidence`] with
-/// the counts → deterministic sort (module doc: coverage, bm25, the w2
-/// decay key, valid_from, the usage late key, id) → `limit` +
-/// token-budget trim → envelope build (incl. `decayed_weight` and the
-/// `anchor_live` probe) → recall counting on the RETURNED ids
-/// ([`Store::record_recall`] at `now` — the reason for `&mut`) →
+/// Pipeline: validate terms and every supplied query embedding → choose the
+/// effective lane (omitted/auto picks term without an embedding and fused
+/// with one) → execute the selected lane(s): term performs alias expansion
+/// and project-fenced FTS5 `OR`; vector performs project-fenced positive
+/// cosine matching; the lane-independent forgotten-id probe always runs → no
+/// selected-lane candidate and no tombstone hit yields
+/// [`RetrieveResponse::Abstain`] → apply the same eligibility fences to every
+/// candidate, counting the FIRST fence that caught it (an explicit fact-time
+/// window runs before the vector lane's `vector_k`; no window preserves the
+/// historical raw cosine top-K path) → every candidate
+/// excluded yields [`RetrieveResponse::MissingEvidence`] → rank under the
+/// effective lane's complete contract. Term-only ranking uses coverage
+/// descending, then bm25 ascending, advisory decay, freshness, usage late
+/// keys, then `seq`. Forced-vector ranking uses one-lane RRF over cosine rank.
+/// Fused ranking uses two-lane RRF over the independent term and vector ranks.
+/// An enabled feedback blend runs only after that base rank → `limit` and
+/// token-budget trim → build lane-specific evidence envelopes → count only
+/// RETURNED ids via [`Store::record_recall`] at `now` →
 /// [`RetrieveResponse::Grounded`].
 ///
-/// u-r5 miss-ledger: AFTER the response is computed, an ungrounded outcome
-/// (`missing_evidence` / `abstain`) records its query terms to the
-/// recall-miss ledger ([`Store::record_recall_miss`]) — misses teach
-/// vocabulary. A `grounded` outcome records nothing. The record is
+/// u03 receipt ledger: AFTER the engine returns a grounded response, the
+/// public wrapper persists its raw caller terms and response-ordered ids via
+/// [`Store::record_recall_receipt`], then attaches the minted id. This write
+/// is FAIL-CLOSED and precedes the fail-open miss telemetry below: a surfaced
+/// receipt id always resolves. Engine-direct calls retain `receipt_id: None`.
+///
+/// u-r5 miss-ledger: AFTER the response is computed, the term lane's
+/// PRE-TRIM observation controls the recall-miss ledger
+/// ([`Store::record_recall_miss`]) — `missing_evidence` / `abstain` teach
+/// vocabulary; a term hit records nothing even if limit/budget removes every
+/// envelope. When FTS did not execute there is no term-lane observation and
+/// no miss row, regardless of the overall vector result. The record is
 /// FAIL-OPEN telemetry: the write error is SWALLOWED here so a ledger
 /// failure can never fail or delay recall — the ONE deliberate exception
 /// to the crate's fail-closed default, sound because a lost miss row costs
 /// only an advisory alias hint, never a canonical byte. The recording runs
 /// on the concrete [`Store`] (not the [`RecallStore`] recall seam) so the
-/// pure recall algorithm stays untouched.
+/// pure recall algorithm stays untouched. Successful explicit choices that
+/// differ from auto are recorded separately as fail-open lane telemetry;
+/// rejected requests and choices equal to auto write none.
 ///
 /// `anchor_root` is the base the `anchor_live`/`anchor_drift` probes
 /// resolve `path:line` anchors against — boot-injected by the caller
@@ -840,28 +1297,44 @@ pub fn retrieve(
     now: OffsetDateTime,
     anchor_root: &Path,
 ) -> Result<RetrieveResponse, RetrieveError> {
-    let response = retrieve_core(store, query, now, anchor_root)?;
-    // Map the ungrounded outcomes to a ledger entry; grounded records
-    // nothing. Recording uses the RAW caller terms — the store folds and
-    // deduplicates them (the alias-key normalization).
-    let miss_outcome = match &response {
-        RetrieveResponse::MissingEvidence { .. } => Some(RecallMissOutcome::MissingEvidence),
-        RetrieveResponse::Abstain { .. } => Some(RecallMissOutcome::Abstain),
-        // fleet-8 c7 F1: a vector-grounded answer whose TERM lane matched
-        // nothing still records its terms as an abstain — the terms DID
-        // miss (only the embedding hit), and the R5 vocabulary loop must
-        // not be silently disabled by the very lane its evidence gates.
-        RetrieveResponse::Grounded { results, .. }
-            if results.iter().all(|r| r.matched_terms.is_empty()) =>
-        {
-            Some(RecallMissOutcome::Abstain)
-        }
-        RetrieveResponse::Grounded { .. } => None,
-    };
+    let RetrieveExecution {
+        mut response,
+        term_lane,
+        lane_override,
+    } = retrieve_observed(store, query, now, anchor_root)?;
+    if let RetrieveResponse::Grounded {
+        receipt_id,
+        results,
+        ..
+    } = &mut response
+    {
+        let returned: Vec<&str> = results.iter().map(|e| e.id.as_str()).collect();
+        let minted = store.record_recall_receipt(
+            &query.terms,
+            &returned,
+            query.project_id.as_deref(),
+            query.project_prefix.as_deref(),
+            query.session_id.as_deref(),
+            now,
+        )?;
+        *receipt_id = Some(minted);
+    }
+    // Miss classification is the TERM lane's pre-trim observation, never
+    // the returned envelope list: limit/budget trimming cannot turn a hit
+    // into a vocabulary miss, and a vector-only request has no term-lane
+    // observation to record. Recording uses the RAW caller terms — the
+    // store folds and deduplicates them (the alias-key normalization).
+    let miss_outcome = term_lane.and_then(TermLaneObservation::miss_outcome);
     if let Some(outcome) = miss_outcome {
         // FAIL-OPEN: swallow the ledger write error — telemetry never
         // fails or delays the retrieve.
         let _ = store.record_recall_miss(&query.terms, outcome, now);
+    }
+    if let Some(override_) = lane_override {
+        // FAIL-OPEN advisory telemetry. This point is reachable only after
+        // the engine and the fail-closed grounded receipt write succeeded,
+        // so rejected or otherwise failed requests never record an override.
+        let _ = store.record_lane_override(override_, now);
     }
     Ok(response)
 }
@@ -875,6 +1348,95 @@ struct TermGroup {
     /// folded form within the group; an alias that only re-spells its
     /// own term is dropped).
     aliases: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LaneDecision {
+    effective: Lane,
+    run_fts: bool,
+    run_vector: bool,
+    override_: Option<LaneOverride>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoPick {
+    Term,
+    Fused,
+}
+
+impl AutoPick {
+    const fn lane(self) -> Lane {
+        match self {
+            AutoPick::Term => Lane::Term,
+            AutoPick::Fused => Lane::Fused,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TermLaneObservation {
+    Grounded,
+    MissingEvidence,
+    Abstain,
+}
+
+impl TermLaneObservation {
+    const fn miss_outcome(self) -> Option<RecallMissOutcome> {
+        match self {
+            TermLaneObservation::Grounded => None,
+            TermLaneObservation::MissingEvidence => Some(RecallMissOutcome::MissingEvidence),
+            TermLaneObservation::Abstain => Some(RecallMissOutcome::Abstain),
+        }
+    }
+}
+
+struct RetrieveExecution {
+    response: RetrieveResponse,
+    term_lane: Option<TermLaneObservation>,
+    lane_override: Option<LaneOverride>,
+}
+
+fn lane_decision(
+    requested: Option<Lane>,
+    has_embedding: bool,
+) -> Result<LaneDecision, RetrieveError> {
+    let auto_pick = if has_embedding {
+        AutoPick::Fused
+    } else {
+        AutoPick::Term
+    };
+    let effective = match requested.unwrap_or(Lane::Auto) {
+        Lane::Auto => auto_pick.lane(),
+        Lane::Term => Lane::Term,
+        lane @ (Lane::Vector | Lane::Fused) if !has_embedding => {
+            return Err(RetrieveError::LaneNeedsEmbedding(lane.as_str()));
+        }
+        lane @ (Lane::Vector | Lane::Fused) => lane,
+    };
+    let override_ = match (requested, auto_pick) {
+        (None | Some(Lane::Auto), _) => None,
+        (Some(Lane::Term), AutoPick::Term) => None,
+        (Some(Lane::Term), AutoPick::Fused) => Some(LaneOverride::TermOverFused),
+        (Some(Lane::Vector), AutoPick::Term) => Some(LaneOverride::VectorOverTerm),
+        (Some(Lane::Vector), AutoPick::Fused) => Some(LaneOverride::VectorOverFused),
+        (Some(Lane::Fused), AutoPick::Term) => Some(LaneOverride::FusedOverTerm),
+        (Some(Lane::Fused), AutoPick::Fused) => None,
+    };
+    Ok(LaneDecision {
+        effective,
+        run_fts: matches!(effective, Lane::Term | Lane::Fused),
+        run_vector: matches!(effective, Lane::Vector | Lane::Fused),
+        override_,
+    })
+}
+
+/// The lane evidence attached to one raw match before eligibility fences.
+/// Keeping the pair together makes it impossible to swap the FTS and vector
+/// slots at a call site.
+#[derive(Debug, Clone, Copy)]
+struct LaneMatch {
+    score: Option<f64>,
+    cosine: Option<f64>,
 }
 
 /// One fence-surviving match with every precomputed rank key. A candidate
@@ -898,19 +1460,53 @@ struct Candidate {
     /// 1-based position in the RRF-fused ranking (w3 u6a). `None` in a
     /// dormant query; set on every candidate once fusion has run.
     fusion_rank: Option<usize>,
+    /// Advisory scored-outcome weight, loaded only for an enabled blend.
+    feedback_weight: Option<f64>,
+    /// S6 advisory corroboration weight (raw), loaded only when the
+    /// corroboration blend is enabled; the envelope rounds it to 2 decimals.
+    corroboration_weight: Option<f64>,
     usage: Option<UsageStat>,
+    /// b2 staged review: the standing verdict of an INCLUDED staged row
+    /// (`include_staged: true` surfaced a fenced proposal) — `None` for a
+    /// plain live row, so the envelope omits `review_state`.
+    review_state: Option<String>,
 }
 
 /// The engine behind [`retrieve`], generic over the [`RecallStore`]
 /// contract seam; `anchor_root` is injected so tests probe liveness
 /// against a hermetic temp root instead of the boot-injected production
 /// root ([`crate::server::BoundaryConfig::anchor_root`]).
+#[cfg(test)]
 fn retrieve_core<S: RecallStore>(
     store: &mut S,
     query: &RetrieveQuery,
     now: OffsetDateTime,
     anchor_root: &Path,
 ) -> Result<RetrieveResponse, RetrieveError> {
+    Ok(retrieve_observed(store, query, now, anchor_root)?.response)
+}
+
+/// Engine execution plus the pre-trim term-lane observation and successful
+/// explicit override needed by the public wrapper's advisory ledgers. The
+/// wire response itself stays unchanged.
+fn retrieve_observed<S: RecallStore>(
+    store: &mut S,
+    query: &RetrieveQuery,
+    now: OffsetDateTime,
+    anchor_root: &Path,
+) -> Result<RetrieveExecution, RetrieveError> {
+    let blend = query.weight_blend.unwrap_or(0.0);
+    if !blend.is_finite() || !(0.0..=1.0).contains(&blend) {
+        return Err(RetrieveError::InvalidWeightBlend(format!(
+            "must be finite and within 0.0..=1.0 (got {blend:?})"
+        )));
+    }
+    let corroboration_blend = query.corroboration_blend.unwrap_or(0.0);
+    if !corroboration_blend.is_finite() || !(0.0..=1.0).contains(&corroboration_blend) {
+        return Err(RetrieveError::InvalidCorroborationBlend(format!(
+            "must be finite and within 0.0..=1.0 (got {corroboration_blend:?})"
+        )));
+    }
     // Usable terms: trimmed, tokenizable, deduplicated (order-preserving).
     let mut terms: Vec<String> = Vec::new();
     for term in &query.terms {
@@ -922,6 +1518,7 @@ fn retrieve_core<S: RecallStore>(
     if terms.is_empty() {
         return Err(RetrieveError::EmptyQuery);
     }
+    let lane = lane_decision(query.lane, query.query_embedding.is_some())?;
 
     // Synonym expansion (module doc): each term becomes an OR-group of
     // itself plus its recorded aliases; the flattened list feeds ONE
@@ -932,34 +1529,50 @@ fn retrieve_core<S: RecallStore>(
     let mut groups: Vec<TermGroup> = Vec::with_capacity(terms.len());
     let mut search_terms: Vec<String> = terms.clone();
     let mut alias_count = 0usize;
-    for term in &terms {
-        let term_fold = folded(term);
-        let mut aliases: Vec<String> = Vec::new();
-        for alias in store.aliases_for(term)? {
-            let alias = alias.trim();
-            if !alias.chars().any(char::is_alphanumeric) {
-                continue;
+    if lane.run_fts {
+        for term in &terms {
+            let term_fold = folded(term);
+            let mut aliases: Vec<String> = Vec::new();
+            for alias in store.aliases_for(term)? {
+                let alias = alias.trim();
+                if !alias.chars().any(char::is_alphanumeric) {
+                    continue;
+                }
+                let fold = folded(alias);
+                if fold == term_fold || aliases.iter().any(|a| folded(a) == fold) {
+                    continue;
+                }
+                if !search_terms.iter().any(|s| folded(s) == fold) {
+                    search_terms.push(alias.to_string());
+                }
+                aliases.push(alias.to_string());
+                alias_count += 1;
             }
-            let fold = folded(alias);
-            if fold == term_fold || aliases.iter().any(|a| folded(a) == fold) {
-                continue;
-            }
-            if !search_terms.iter().any(|s| folded(s) == fold) {
-                search_terms.push(alias.to_string());
-            }
-            aliases.push(alias.to_string());
-            alias_count += 1;
+            groups.push(TermGroup {
+                term: term.clone(),
+                aliases,
+            });
         }
-        groups.push(TermGroup {
-            term: term.clone(),
-            aliases,
-        });
     }
+
+    // S3 effort-lifecycle: the resolved effort scope (already valid — every
+    // teaching rejection fired at the boundary). Compute its SQL fence id-set
+    // (members ∪ {epic}) ONCE; both lanes AND-compose it onto the project/
+    // session fences. `None` keeps `effort_ids` `None`, so the store queries
+    // and their bytes are byte-identical to the pre-S3 engine (dormancy). The
+    // echo is built once and shared by all three honest outcomes.
+    let effort_fence_ids: Option<Vec<String>> = query.effort.as_ref().map(EffortScope::fence_ids);
+    let effort_ids: Option<&[String]> = effort_fence_ids.as_deref();
+    let effort_echo = query.effort.as_ref().map(|scope| EffortEcho {
+        epic_id: scope.epic_id.clone(),
+        member_total: scope.member_total(),
+        open: scope.open,
+    });
 
     // Fence label for the honest empty answers (w2-fix): BOTH scope
     // fences are named — an empty recall caused by a project_prefix must
     // blame the fence, never the terms (symmetric with project_id).
-    let fence = match (&query.project_id, &query.project_prefix) {
+    let mut fence = match (&query.project_id, &query.project_prefix) {
         (Some(project), Some(prefix)) => {
             format!(" within project '{project}' and subtree '{prefix}'")
         }
@@ -967,12 +1580,40 @@ fn retrieve_core<S: RecallStore>(
         (None, Some(prefix)) => format!(" within project subtree '{prefix}'"),
         (None, None) => String::new(),
     };
+    if let Some(session_id) = &query.session_id {
+        if fence.is_empty() {
+            fence = format!(" within store-local capsule label '{session_id}'");
+        } else {
+            fence.push_str(&format!(" and store-local capsule label '{session_id}'"));
+        }
+    }
+    // S3: the effort clause LEADS the composed fence label (the contract
+    // example: ` within effort 'cap-42' (7 members) and project 'nott'`). It
+    // AND-composes with whatever project/session fence already built above;
+    // an effort-free query leaves `fence` byte-identical.
+    if let Some(scope) = &query.effort {
+        let effort_clause = format!(
+            "effort '{}' ({} members)",
+            scope.epic_id,
+            scope.member_total()
+        );
+        fence = match fence.strip_prefix(" within ") {
+            Some(rest) => format!(" within {effort_clause} and {rest}"),
+            None => format!(" within {effort_clause}"),
+        };
+    }
 
-    let matches = store.search_fts(
-        &search_terms,
-        query.project_id.as_deref(),
-        query.project_prefix.as_deref(),
-    )?;
+    let matches = if lane.run_fts {
+        store.search_fts(
+            &search_terms,
+            query.project_id.as_deref(),
+            query.project_prefix.as_deref(),
+            query.session_id.as_deref(),
+            effort_ids,
+        )?
+    } else {
+        Vec::new()
+    };
     let lexical = matches.len();
 
     // Forgotten-id probe (module doc): a CALLER term that exactly names
@@ -983,28 +1624,43 @@ fn retrieve_core<S: RecallStore>(
     // once; aliases are store-derived data and never probe.
     let mut tombstone_hits = 0usize;
     for term in &terms {
-        if store.get_tombstone(term)?.is_some() {
+        let tombstone = match query.session_id.as_deref() {
+            Some(session_id) => store.get_tombstone_for_session_label(term, session_id)?,
+            None => store.get_tombstone(term)?,
+        };
+        if tombstone.is_some() {
             tombstone_hits += 1;
         }
     }
 
-    // w3 u6a caller-fed vector lane. DORMANT when `query_embedding` is
-    // absent: `vector_scored` stays empty, `fused` is false, and every
-    // branch below collapses to the exact FTS-only engine (proven
-    // byte-identical by the dormant differential). PRESENT: the caller's
-    // embedding is validated, cosine similarity is computed against every
-    // LIVE in-scope stored embedding (the store computes NO embedding —
-    // zero embedder dependency), and the top `vector_k` by cosine become
-    // the vector lane's raw matches. The dimension check names both sides
-    // on a mismatch, at the first (lowest-seq) offender — deterministic.
-    let fused = query.query_embedding.is_some();
+    // w3 u6a caller-fed vector lane. Omitted/auto preserves the historical
+    // presence rule; an explicit term lane keeps this path dormant even
+    // when a query vector is present. When routing executes the vector lane,
+    // the caller's embedding is validated and cosine similarity is computed
+    // against every LIVE in-scope stored embedding (the store computes NO
+    // embedding — zero embedder dependency). With no fact-time window, the
+    // top `vector_k` by cosine become the historical raw matches. With one,
+    // the ordered candidates are fenced first and only eligible candidates
+    // consume that cap. The dimension check names both sides on a mismatch,
+    // at the first (lowest-seq) offender — deterministic.
+    let rank_with_rrf = lane.run_vector;
     let mut vector_scored: Vec<(StoredCapsule, f64)> = Vec::new();
+    let mut positive_vector_matches = 0usize;
     if let Some(query_embedding) = query.query_embedding.as_deref() {
         validate_query_embedding(query_embedding)?;
+    }
+    if lane.run_vector {
+        let query_embedding = query
+            .query_embedding
+            .as_deref()
+            .ok_or(RetrieveError::LaneNeedsEmbedding(lane.effective.as_str()))?;
         let vector_k = query.vector_k.unwrap_or(DEFAULT_VECTOR_K);
-        for (stored, embedding) in store
-            .embeddings_for_recall(query.project_id.as_deref(), query.project_prefix.as_deref())?
-        {
+        for (stored, embedding) in store.embeddings_for_recall(
+            query.project_id.as_deref(),
+            query.project_prefix.as_deref(),
+            query.session_id.as_deref(),
+            effort_ids,
+        )? {
             if embedding.dimension != query_embedding.len() {
                 return Err(RetrieveError::DimensionMismatch {
                     query: query_embedding.len(),
@@ -1024,13 +1680,59 @@ fn retrieve_core<S: RecallStore>(
                 vector_scored.push((stored, cosine));
             }
         }
-        // Vector-lane raw matches: the top `vector_k` by cosine desc, ties
-        // broken by seq asc (deterministic). Truncated BEFORE the fences
-        // so `vector_k` caps the lane's reach; the eligibility fences then
-        // apply to these top-K exactly as they do to the FTS matches.
+        positive_vector_matches = vector_scored.len();
+        // Vector-lane raw order: cosine desc, ties by seq asc
+        // (deterministic). With no fact-time window the historical path is
+        // preserved byte-for-byte: truncate before the fences. A window is
+        // different by contract — its full dominance-ordered predicate runs
+        // before top-K, so keep the ordered candidates for the fence pass
+        // below to scan until `vector_k` eligible rows survive.
         vector_scored.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.seq.cmp(&b.0.seq)));
-        vector_scored.truncate(vector_k);
+        if query.time_window.is_none() || vector_k == 0 {
+            vector_scored.truncate(vector_k);
+        }
     }
+
+    let empty_lane_reason = || {
+        if lane.effective == Lane::Vector {
+            if positive_vector_matches > 0 {
+                let vector_k = query.vector_k.unwrap_or(DEFAULT_VECTOR_K);
+                format!(
+                    "the forced vector lane found {positive_vector_matches} positively similar \
+                     stored capsule(s){fence}, but vector_k={vector_k} excluded every candidate \
+                     before ranking; abstaining instead of fabricating"
+                )
+            } else {
+                format!(
+                    "the forced vector lane found no stored capsule{fence} with a positively \
+                     similar embedding; abstaining instead of fabricating"
+                )
+            }
+        } else {
+            let alias_note = if alias_count > 0 {
+                format!(" (terms expanded with {alias_count} store-fed alias(es))")
+            } else {
+                String::new()
+            };
+            let vector_note = if positive_vector_matches > 0 {
+                let vector_k = query.vector_k.unwrap_or(DEFAULT_VECTOR_K);
+                format!(
+                    " ({positive_vector_matches} positively similar stored embedding \
+                     candidate(s) were excluded by vector_k={vector_k} before ranking)"
+                )
+            } else if lane.run_vector {
+                " (no stored embedding was available to compare with positive similarity)"
+                    .to_string()
+            } else {
+                String::new()
+            };
+            format!(
+                "no stored capsule matched any of the {} query term(s){fence}{alias_note}{vector_note}; \
+                 abstaining instead of fabricating",
+                terms.len()
+            )
+        }
+    };
 
     // Abstain only when BOTH lanes (and the tombstone probe) are empty —
     // an honest empty answer, never fabricated. DORMANT reduces to the
@@ -1039,30 +1741,21 @@ fn retrieve_core<S: RecallStore>(
     // note is empty). FUSED adds the note only when a vector lane ran but
     // found no in-scope embedding to compare.
     if lexical == 0 && tombstone_hits == 0 && vector_scored.is_empty() {
-        let alias_note = if alias_count > 0 {
-            format!(" (terms expanded with {alias_count} store-fed alias(es))")
-        } else {
-            String::new()
-        };
-        let vector_note = if fused {
-            " (no stored embedding was available to compare with positive similarity)".to_string()
-        } else {
-            String::new()
-        };
-        return Ok(RetrieveResponse::Abstain {
-            reason: format!(
-                "no stored capsule matched any of the {} query term(s){fence}{alias_note}{vector_note}; \
-                 abstaining instead of fabricating",
-                terms.len()
-            ),
+        return Ok(RetrieveExecution {
+            response: RetrieveResponse::Abstain {
+                reason: empty_lane_reason(),
+                effort: effort_echo,
+            },
+            term_lane: lane.run_fts.then_some(TermLaneObservation::Abstain),
+            lane_override: lane.override_,
         });
     }
 
     // Eligibility fences (W1 tri-state + w2 tier + u6h falsified): each raw
     // match either survives into `current` or is counted under the FIRST
     // fence that caught it — quarantined, then FALSIFIED, then archived,
-    // then superseded (h4), then currency. Precedence is a LAW, not an
-    // accident (w2-fix + u6h): quarantine dominates everything (the taint
+    // then superseded (h4), then currency, then the optional fact-time
+    // window. Precedence is a LAW, not an accident (w2-fix + u6h): quarantine dominates everything (the taint
     // signal must never disappear — the planner's own dominance rule);
     // falsified (u6h) dominates archived AND superseded (a falsified fact
     // must never hide behind a softer lifecycle bucket); archived dominates
@@ -1076,6 +1769,8 @@ fn retrieve_core<S: RecallStore>(
     // `ExclusionReason` variant order == wire order. A new fence is one
     // variant plus one arm in `fence_candidate` (tombstoned landed as the
     // term-probe above — content matches are structurally impossible for it).
+    // u06: fact time is last and query-shaped, so every stored-state and
+    // currency reason remains dominant and an absent window stays dormant.
     let mut excluded: BTreeMap<ExclusionReason, usize> = BTreeMap::new();
     if tombstone_hits > 0 {
         excluded.insert(ExclusionReason::Tombstoned, tombstone_hits);
@@ -1094,24 +1789,52 @@ fn retrieve_core<S: RecallStore>(
         seen.insert(seq);
         if let Some(candidate) = fence_candidate(
             stored,
-            Some(score),
-            None,
+            LaneMatch {
+                score: Some(score),
+                cosine: None,
+            },
             store,
             &groups,
             now,
+            query.time_window.as_ref(),
+            query.include_staged,
             &mut excluded,
         )? {
             survivor_idx.insert(seq, current.len());
             current.push(candidate);
         }
     }
-    // Vector lane fence pass (fused only): annotate a both-lanes survivor
+    let term_survivors = current.len();
+    let term_lane = if lane.run_fts {
+        Some(if term_survivors > 0 {
+            TermLaneObservation::Grounded
+        } else if lexical + tombstone_hits > 0 {
+            TermLaneObservation::MissingEvidence
+        } else {
+            TermLaneObservation::Abstain
+        })
+    } else {
+        None
+    };
+    // Vector lane fence pass: annotate a both-lanes survivor in fused mode
     // with its cosine, skip an already-fenced capsule (dominance holds),
-    // and fence a brand-new vector-only match through the SAME gate.
+    // and fence a brand-new vector-only match through the SAME gate. Under
+    // a fact-time window this is the PRE-RANKING top-K scan: rejected rows
+    // do not consume K, so a lower-cosine eligible row can still enter the
+    // lane; once K eligible rows survive, lower-ranked vectors remain beyond
+    // the lane's reach and are neither read nor counted. With no window the
+    // vec was already truncated above, preserving historical behavior.
+    let pre_rank_time_window = query.time_window.is_some();
+    let vector_k = query.vector_k.unwrap_or(DEFAULT_VECTOR_K);
+    let mut vector_survivors = 0usize;
     for (stored, cosine) in vector_scored {
+        if pre_rank_time_window && vector_survivors >= vector_k {
+            break;
+        }
         let seq = stored.seq;
         if let Some(&idx) = survivor_idx.get(&seq) {
             current[idx].cosine = Some(cosine);
+            vector_survivors += 1;
             continue;
         }
         if seen.contains(&seq) {
@@ -1120,25 +1843,52 @@ fn retrieve_core<S: RecallStore>(
         seen.insert(seq);
         if let Some(candidate) = fence_candidate(
             stored,
-            None,
-            Some(cosine),
+            LaneMatch {
+                score: None,
+                cosine: Some(cosine),
+            },
             store,
             &groups,
             now,
+            query.time_window.as_ref(),
+            query.include_staged,
             &mut excluded,
         )? {
             survivor_idx.insert(seq, current.len());
             current.push(candidate);
+            vector_survivors += 1;
         }
     }
     if current.is_empty() {
         // Every distinct match was excluded; the count is the sum over the
         // reason map (== `lexical + tombstone_hits` in the dormant case,
         // where FTS matches are the only distinct candidates).
-        return Ok(missing_evidence(excluded.values().sum(), excluded, &fence));
+        let total = excluded.values().sum();
+        let match_clause = if lane.effective == Lane::Vector {
+            if tombstone_hits == 0 {
+                format!("matched the forced vector lane{fence}")
+            } else if tombstone_hits == total {
+                format!(
+                    "were identified by the lane-independent tombstone id probe while the forced \
+                     vector lane ran{fence}"
+                )
+            } else {
+                format!(
+                    "matched the forced vector lane or were identified by its lane-independent \
+                     tombstone id probe{fence}"
+                )
+            }
+        } else {
+            format!("matched{fence}")
+        };
+        return Ok(RetrieveExecution {
+            response: missing_evidence(total, excluded, &match_clause, effort_echo),
+            term_lane,
+            lane_override: lane.override_,
+        });
     }
 
-    if fused {
+    if rank_with_rrf {
         // Reciprocal Rank Fusion (w3 u6a): rank each lane independently,
         // then fuse by `sum 1/(RRF_K + rank)`. The FTS lane ranks by the
         // SAME deterministic key the dormant engine sorts by
@@ -1193,6 +1943,65 @@ fn retrieve_core<S: RecallStore>(
         current.sort_by(fts_rank_key);
     }
 
+    // Preserve the PRE-blend relevance anchor. In dormant FTS mode this is
+    // exactly the former base leader (coverage-first, then bm25); in fused
+    // mode it is the strongest FTS score independent of final order.
+    let top_score = if rank_with_rrf {
+        current
+            .iter()
+            .filter_map(|candidate| candidate.score)
+            .reduce(f64::min)
+            .unwrap_or(0.0)
+    } else {
+        current
+            .first()
+            .map_or(0.0, |candidate| candidate.score.unwrap_or(0.0))
+    };
+
+    // u04 + S6 opt-in ranking blend: decorate only AFTER every eligibility
+    // fence and the deterministic base ranking. The base position is the
+    // only rank input, so FTS and fused lanes share one mechanism; an RRF
+    // `fusion_rank` above remains the PRE-blend explain. Crucially, the
+    // entire block is skipped when BOTH blends are zero — zero feedback or
+    // corroboration RANKING-weight reads and byte-identical order/envelopes
+    // on the default path. The independent corroboration summary is still
+    // read later per returned envelope. Each blend reads its OWN ranking
+    // sidecar only when active, so a dormant blend leaves its ranking explain
+    // field absent; when one blend is zero its factor is exactly `1.0`,
+    // preserving the other blend's byte-identical behavior.
+    if blend != 0.0 || corroboration_blend != 0.0 {
+        let mut decorated: Vec<(f64, Candidate)> = Vec::with_capacity(current.len());
+        for (rank0, mut candidate) in current.drain(..).enumerate() {
+            let weight = if blend != 0.0 {
+                let weight = store
+                    .feedback_weight_of(candidate.stored.id.as_str())?
+                    .unwrap_or(FEEDBACK_NEUTRAL_WEIGHT);
+                candidate.feedback_weight = Some(weight);
+                weight
+            } else {
+                FEEDBACK_NEUTRAL_WEIGHT
+            };
+            let corroboration = if corroboration_blend != 0.0 {
+                let corroboration = store
+                    .corroboration_weight(&candidate.stored.id)
+                    .unwrap_or(CORROBORATION_NEUTRAL_WEIGHT);
+                candidate.corroboration_weight = Some(corroboration);
+                corroboration
+            } else {
+                CORROBORATION_NEUTRAL_WEIGHT
+            };
+            let score = (1.0 / (RRF_K + rank0 as f64 + 1.0))
+                * (1.0 + blend * (weight - FEEDBACK_NEUTRAL_WEIGHT))
+                * (1.0 + corroboration_blend * (corroboration - CORROBORATION_NEUTRAL_WEIGHT));
+            decorated.push((score, candidate));
+        }
+        decorated.sort_by(|a, b| {
+            b.0.total_cmp(&a.0)
+                .then_with(|| a.1.stored.seq.cmp(&b.1.stored.seq))
+        });
+        current.extend(decorated.into_iter().map(|(_, candidate)| candidate));
+    }
+
     let token_budget = query.token_budget.unwrap_or(DEFAULT_TOKEN_BUDGET);
     // Anchor of the relevance scale (FTS-lane explain): the strongest
     // (most negative) bm25 score present. DORMANT: this is the top-ranked
@@ -1200,15 +2009,6 @@ fn retrieve_core<S: RecallStore>(
     // within the top coverage tier). FUSED: the min over FTS-matched rows,
     // so FTS relevance stays a sane 0..1 even when a vector-only row leads
     // the fused order. `current` is non-empty here.
-    let top_score = if fused {
-        current
-            .iter()
-            .filter_map(|c| c.score)
-            .reduce(f64::min)
-            .unwrap_or(0.0)
-    } else {
-        current.first().map_or(0.0, |c| c.score.unwrap_or(0.0))
-    };
     let mut results: Vec<Evidence> = Vec::new();
     let mut used_tokens = 0usize;
     let mut trimmed_by_limit = 0usize;
@@ -1233,6 +2033,22 @@ fn retrieve_core<S: RecallStore>(
         // the epistemic record rides the envelope when present.
         let capture_hash = store.anchor_hash_of(candidate.stored.id.as_str())?;
         let epistemics = store.epistemics_of(candidate.stored.id.as_str())?;
+        // S2 git witness lane: the newest corroboration decorates the
+        // envelope, read per RETURNED row like the anchor-drift hash — a
+        // store-only SQL read (the serve path spawns no git). `None` (never
+        // scanned) omits the field, so a store with zero rows is
+        // byte-identical.
+        let corroboration = store.latest_corroborations_of(candidate.stored.id.as_str())?;
+        // S3 effort-lifecycle: stamp this row's role in the fencing effort —
+        // the epic itself vs a `part_of` member. Only reachable when the query
+        // carried an effort scope; `None` keeps the envelope byte-identical.
+        let effort_role = query.effort.as_ref().map(|scope| {
+            if candidate.stored.id.as_str() == scope.epic_id {
+                EffortRole::Epic
+            } else {
+                EffortRole::Member
+            }
+        });
         let envelope = evidence_for(
             candidate,
             top_score,
@@ -1240,6 +2056,8 @@ fn retrieve_core<S: RecallStore>(
             anchor_root,
             capture_hash.as_deref(),
             epistemics,
+            corroboration,
+            effort_role,
         );
         let serialized = serde_json::to_string(&envelope)
             .map_err(|e| RetrieveError::Serialize(e.to_string()))?;
@@ -1266,15 +2084,21 @@ fn retrieve_core<S: RecallStore>(
 
     let matched = current.len();
     let returned = results.len();
-    Ok(RetrieveResponse::Grounded {
-        results,
-        matched,
-        returned,
-        trimmed: matched - returned,
-        trimmed_by_limit,
-        trimmed_by_budget,
-        token_budget,
-        excluded,
+    Ok(RetrieveExecution {
+        response: RetrieveResponse::Grounded {
+            results,
+            matched,
+            returned,
+            trimmed: matched - returned,
+            trimmed_by_limit,
+            trimmed_by_budget,
+            token_budget,
+            excluded,
+            receipt_id: None,
+            effort: effort_echo,
+        },
+        term_lane,
+        lane_override: lane.override_,
     })
 }
 
@@ -1285,15 +2109,16 @@ fn usage_key(usage: Option<UsageStat>) -> (Option<OffsetDateTime>, i64) {
     usage.map_or((None, 0), |u| (Some(u.last_recalled_at), u.recall_count))
 }
 
-/// Build the [`RetrieveResponse::MissingEvidence`] outcome: every raw
-/// match (lexical, or a term naming a forgotten id) was excluded by an
+/// Build the [`RetrieveResponse::MissingEvidence`] outcome: every raw match
+/// from the executed lane(s) or the tombstone id probe was excluded by an
 /// eligibility fence. Pure function of the exclusion counts and the
-/// query's fence label — deterministic bytes: the map and the prose both
-/// walk [`ExclusionReason`] variant order.
+/// caller-supplied match clause — deterministic bytes: the map and the prose
+/// both walk [`ExclusionReason`] variant order.
 fn missing_evidence(
     total: usize,
     excluded: BTreeMap<ExclusionReason, usize>,
-    fence: &str,
+    match_clause: &str,
+    effort: Option<EffortEcho>,
 ) -> RetrieveResponse {
     let detail: Vec<String> = excluded
         .iter()
@@ -1302,7 +2127,8 @@ fn missing_evidence(
     // Reachability clause, accurate PER EXCLUSION CLASS present (w1d
     // stress fix: tombstoned capsules are absent from list — claiming
     // get/list for them was false): every non-tombstoned exclusion
-    // (superseded / archived / quarantined / expired / not-yet-valid)
+    // (superseded / archived / quarantined / expired / not-yet-valid /
+    // outside-time-window / undated)
     // stays reachable via get/list; a tombstoned id answers get only,
     // with its marker.
     let has_tombstoned = excluded.contains_key(&ExclusionReason::Tombstoned);
@@ -1316,7 +2142,7 @@ fn missing_evidence(
         _ => "(they remain reachable via get/list)",
     };
     let reason = format!(
-        "{total} capsule(s) matched{fence} but every one is excluded from \
+        "{total} capsule(s) {match_clause} but every one is excluded from \
          recall ({}); reporting missing evidence instead of recalling ineligible \
          capsules {reachability}",
         detail.join(", ")
@@ -1325,6 +2151,7 @@ fn missing_evidence(
         excluded_count: total,
         excluded,
         reason,
+        effort,
     }
 }
 
@@ -1349,6 +2176,7 @@ fn currency_exclusion(freshness: Freshness, now: OffsetDateTime) -> Option<Exclu
 /// probe root (module doc); `capture_hash` is the capsule's recorded
 /// capture-time anchored-file hash (`None` → drift `"unknown"`), and
 /// `epistemics` its optional sidecar annotations (omitted when `None`).
+#[allow(clippy::too_many_arguments)]
 fn evidence_for(
     candidate: &Candidate,
     top: f64,
@@ -1356,6 +2184,8 @@ fn evidence_for(
     anchor_root: &Path,
     capture_hash: Option<&str>,
     epistemics: Option<EpistemicsRecord>,
+    corroboration: Option<CorroborationSummary>,
+    effort_role: Option<EffortRole>,
 ) -> Evidence {
     let stored = &candidate.stored;
     let capsule = &stored.capsule;
@@ -1378,6 +2208,7 @@ fn evidence_for(
         evidence_state,
         proof_hint,
         stale_if,
+        review_state: candidate.review_state.clone(),
         freshness: capsule.freshness(),
         matched_terms: matched_groups(capsule.content(), groups),
         // FTS-lane explain: present iff the term lane matched this row. In
@@ -1390,6 +2221,12 @@ fn evidence_for(
         // query. Fusion rank is present on every row of a fused query.
         vector_similarity: candidate.cosine.map(round4),
         fusion_rank: candidate.fusion_rank,
+        feedback_weight: candidate.feedback_weight.map(round2),
+        // S2 git witness lane: skip-if-none, so a never-scanned capsule's
+        // envelope bytes are unchanged.
+        corroboration: corroboration.map(CorroborationWire::from),
+        corroboration_weight: candidate.corroboration_weight.map(round2),
+        effort_role,
     }
 }
 
@@ -1664,17 +2501,23 @@ fn validate_query_embedding(embedding: &[f32]) -> Result<(), RetrieveError> {
 
 /// Apply the eligibility fences to ONE raw match — the LANE-AGNOSTIC gate
 /// (w3 u6a): the SAME dominance (quarantined, then falsified, then
-/// archived, then superseded, then currency) runs for an FTS match and a
-/// vector match, so a fenced capsule can never surface via either lane.
+/// archived, then superseded, then currency, then optional fact time) runs
+/// for an FTS match and a vector match, so a fenced capsule can never surface
+/// via either lane.
 /// Returns the built [`Candidate`] when the match survives, or `None` after
 /// counting the exclusion under the first fence that caught it.
+// The fence pipeline threads the raw match, the store seam, and the four
+// query-shaped inputs (now, time_window, include_staged, the excluded tally)
+// through one gate; bundling them would only rename the same eight values.
+#[allow(clippy::too_many_arguments)]
 fn fence_candidate<S: RecallStore>(
     stored: StoredCapsule,
-    score: Option<f64>,
-    cosine: Option<f64>,
+    lane_match: LaneMatch,
     store: &S,
     groups: &[TermGroup],
     now: OffsetDateTime,
+    time_window: Option<&TimeWindow>,
+    include_staged: bool,
     excluded: &mut BTreeMap<ExclusionReason, usize>,
 ) -> Result<Option<Candidate>, RetrieveError> {
     // Dominance-ordered fences (u6h-extended law): the tier is read once
@@ -1710,43 +2553,101 @@ fn fence_candidate<S: RecallStore>(
         *excluded.entry(reason).or_insert(0) += 1;
         return Ok(None);
     }
+    // Fact-time fence (LAST): state and currency always dominate this
+    // query-shaped filter. A range intersects inclusively; only a strict
+    // gap excludes it. An undated capsule cannot claim membership in a
+    // caller-supplied window, so it gets its own visible count.
+    if let Some(window) = time_window {
+        let Some(event) = store.event_time_of(stored.id.as_str())? else {
+            *excluded.entry(ExclusionReason::Undated).or_insert(0) += 1;
+            return Ok(None);
+        };
+        let starts_after = window.to().is_some_and(|to| event.event_from() > to);
+        let ends_before = window.from().is_some_and(|from| event.event_to() < from);
+        if starts_after || ends_before {
+            *excluded
+                .entry(ExclusionReason::OutsideTimeWindow)
+                .or_insert(0) += 1;
+            return Ok(None);
+        }
+    }
+    // Staged-review fence (b2, ABSOLUTE LAST): a standing proposal (latest
+    // review verdict not `ratified`) is fenced from grounding unless the
+    // caller opted into `include_staged`; every quality and query fence above
+    // DOMINATES it. `review_fenced` reads a cheap indexed projection per
+    // candidate (like is_superseded / is_falsified), so a store with no
+    // proposals answers `false` for all and the output stays byte-identical.
+    // An INCLUDED proposal surfaces its standing verdict on the envelope — a
+    // second, rare read only on the included branch.
+    let review_state = if store.review_fenced(stored.id.as_str())? {
+        if !include_staged {
+            *excluded.entry(ExclusionReason::Proposed).or_insert(0) += 1;
+            return Ok(None);
+        }
+        store.review_verdict(stored.id.as_str())?
+    } else {
+        None
+    };
     let usage = store.usage_of(stored.id.as_str())?;
     let coverage = matched_groups(stored.capsule.content(), groups).len();
-    let decayed = decay_weight(
-        stored.capsule.confidence().value(),
-        stored.capsule.freshness().valid_from,
-        now,
-    );
+    // Pin decay-exemption AT THE CALL SITE (S1): a pinned capsule ranks by
+    // its FULL confidence — decay never erodes a load-bearing anchor. This
+    // is NOT eligibility: every fence above already ran, so a pinned+
+    // superseded/quarantined/falsified capsule is already excluded; a pinned
+    // row that reaches here passed the SAME gate as any other. `decay_weight`
+    // stays byte-untouched (shared with bootstrap ranking, u-r9 "never a
+    // drifting second copy"). Zero pins ⇒ the else-arm exactly as before
+    // (byte-identical dormancy). Unpin resumes decay from `valid_from`.
+    let decayed = if store.is_pinned(stored.id.as_str())? {
+        stored.capsule.confidence().value()
+    } else {
+        decay_weight(
+            stored.capsule.confidence().value(),
+            stored.capsule.freshness().valid_from,
+            now,
+        )
+    };
     Ok(Some(Candidate {
         coverage,
         decayed,
         stored,
-        score,
-        cosine,
+        score: lane_match.score,
+        cosine: lane_match.cosine,
         fusion_rank: None,
+        feedback_weight: None,
+        corroboration_weight: None,
         usage,
+        review_state,
     }))
 }
 
 /// First line of `content`, capped at [`HEADLINE_MAX_CHARS`] chars, with
 /// `…` appended whenever anything (rest of the line or further lines)
-/// was left out. A lone trailing line terminator is not content — it
-/// never earns the ellipsis (w3 review: false `…` on `"x\n"`).
+/// was left out. The line boundary set is CRLF plus the Unicode newline
+/// controls LF, CR, VT, FF, NEL, LS, and PS. A lone trailing boundary is
+/// not content, so it never earns the ellipsis (w3 review: false `…` on
+/// `"x\n"`).
 ///
 /// `pub(crate)`: the ONE headline law across surfaces — `export` renders
 /// through this same fn (v7 convergence), so the two windows can never
 /// tell two stories about one first line.
 pub(crate) fn headline_of(content: &str) -> String {
-    let content = content
-        .strip_suffix("\r\n")
-        .or_else(|| content.strip_suffix('\n'))
-        .unwrap_or(content);
-    let first_line = content.lines().next().unwrap_or("");
+    let boundary = content.char_indices().find_map(|(index, ch)| {
+        let boundary_len = match ch {
+            '\r' if content[index..].starts_with("\r\n") => 2,
+            '\n' | '\r' | '\u{000b}' | '\u{000c}' | '\u{0085}' | '\u{2028}' | '\u{2029}' => {
+                ch.len_utf8()
+            }
+            _ => return None,
+        };
+        Some((index, boundary_len))
+    });
+    let (first_line, more_content) = match boundary {
+        Some((index, boundary_len)) => (&content[..index], index + boundary_len < content.len()),
+        None => (content, false),
+    };
     let headline: String = first_line.chars().take(HEADLINE_MAX_CHARS).collect();
     let cut_line = first_line.chars().count() > HEADLINE_MAX_CHARS;
-    // `first_line` is a prefix slice of `content`, so a byte-length
-    // comparison exactly answers "is there content beyond it".
-    let more_content = content.len() > first_line.len();
     if cut_line || more_content {
         format!("{headline}…")
     } else {
@@ -1820,8 +2721,8 @@ mod tests {
 
     use super::*;
     use crate::capsule::{Capsule, Scope, sha256_hex};
-    use crate::store::RelationKind;
-    use crate::store::TombstoneMode;
+    use crate::store::{EventTimeRange, RelationKind, TombstoneMode};
+    use std::cell::Cell;
     use time::macros::datetime;
 
     /// Injected query instant — retrieve reads no clock.
@@ -1887,6 +2788,57 @@ mod tests {
         }
     }
 
+    #[test]
+    fn module_and_pipeline_docs_pin_all_lane_ranking_contracts() {
+        let source = include_str!("retrieve.rs");
+        let module_docs = source
+            .split("\nuse std::")
+            .next()
+            .expect("module documentation prefix");
+        let pipeline_docs = source
+            .split("/// Run one recall pass over the store")
+            .nth(1)
+            .and_then(|tail| tail.split("pub fn retrieve(").next())
+            .expect("public retrieve pipeline documentation");
+        let normalize = |docs: &str| {
+            docs.replace("//!", " ")
+                .replace("///", " ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let module_docs = normalize(module_docs);
+        let pipeline_docs = normalize(pipeline_docs);
+
+        assert!(module_docs.contains(concat!(
+            "deterministic local term and caller-fed ",
+            "vector matching"
+        )));
+        for statement in [
+            concat!(
+                "Term-only ranking uses coverage descending, then ",
+                "bm25 ascending"
+            ),
+            concat!(
+                "Forced-vector ranking uses one-lane RRF over ",
+                "cosine rank"
+            ),
+            concat!(
+                "Fused ranking uses two-lane RRF over the independent ",
+                "term and vector ranks"
+            ),
+        ] {
+            assert!(
+                module_docs.contains(statement),
+                "module docs omit {statement:?}"
+            );
+            assert!(
+                pipeline_docs.contains(statement),
+                "pipeline docs omit {statement:?}"
+            );
+        }
+    }
+
     fn grounded_ids(response: &RetrieveResponse) -> Vec<String> {
         match response {
             RetrieveResponse::Grounded { results, .. } => {
@@ -1905,6 +2857,10 @@ mod tests {
         inner: Store,
         aliases: BTreeMap<String, Vec<String>>,
         tiers: BTreeMap<String, Tier>,
+        event_time_reads: Cell<usize>,
+        reject_event_time_reads: bool,
+        corroboration_weights: BTreeMap<String, f64>,
+        corroboration_ranking_reads: Cell<usize>,
     }
 
     impl ContractStore {
@@ -1913,6 +2869,10 @@ mod tests {
                 inner,
                 aliases: BTreeMap::new(),
                 tiers: BTreeMap::new(),
+                event_time_reads: Cell::new(0),
+                reject_event_time_reads: false,
+                corroboration_weights: BTreeMap::new(),
+                corroboration_ranking_reads: Cell::new(0),
             }
         }
     }
@@ -1923,18 +2883,32 @@ mod tests {
             terms: &[String],
             project_id: Option<&str>,
             project_prefix: Option<&str>,
+            session_id: Option<&str>,
+            effort_ids: Option<&[String]>,
         ) -> Result<Vec<(StoredCapsule, f64)>, StoreError> {
             self.inner
-                .search_fts_scoped(terms, project_id, project_prefix)
+                .search_fts_effort(terms, project_id, project_prefix, session_id, effort_ids)
         }
         fn get_tombstone(&self, id: &str) -> Result<Option<TombstoneRecord>, StoreError> {
             self.inner.get_tombstone(id)
+        }
+        fn get_tombstone_for_session_label(
+            &self,
+            id: &str,
+            session_id: &str,
+        ) -> Result<Option<TombstoneRecord>, StoreError> {
+            self.inner.get_tombstone_for_session_label(id, session_id)
         }
         fn is_superseded(&self, id: &str) -> Result<bool, StoreError> {
             self.inner.is_superseded(id)
         }
         fn is_falsified(&self, id: &str) -> Result<bool, StoreError> {
             self.inner.is_falsified(id)
+        }
+        fn is_pinned(&self, id: &str) -> Result<bool, StoreError> {
+            // Real delegation (S1): the pin sidecar lives on the inner Store,
+            // so the decay-exemption seam reads it exactly as production.
+            self.inner.is_pinned(id)
         }
         fn usage_of(&self, id: &str) -> Result<Option<UsageStat>, StoreError> {
             self.inner.usage_of(id)
@@ -1954,11 +2928,18 @@ mod tests {
             &self,
             project_id: Option<&str>,
             project_prefix: Option<&str>,
+            session_id: Option<&str>,
+            effort_ids: Option<&[String]>,
         ) -> Result<Vec<(StoredCapsule, StoredEmbedding)>, StoreError> {
             // Real delegation: the vector sidecar lives on the inner Store,
             // so contract tests populate it with `inner.put_embedding` and
             // the engine reads it through this seam exactly as production.
-            self.inner.embeddings_for_recall(project_id, project_prefix)
+            self.inner.embeddings_for_recall_effort(
+                project_id,
+                project_prefix,
+                session_id,
+                effort_ids,
+            )
         }
         fn anchor_hash_of(&self, id: &str) -> Result<Option<String>, StoreError> {
             // Real delegation (u-r2): the sidecar lives on the inner Store.
@@ -1966,6 +2947,41 @@ mod tests {
         }
         fn epistemics_of(&self, id: &str) -> Result<Option<EpistemicsRecord>, StoreError> {
             self.inner.epistemics_of(id)
+        }
+        fn feedback_weight_of(&self, id: &str) -> Result<Option<f64>, StoreError> {
+            self.inner.feedback_weight_of(id)
+        }
+        fn event_time_of(&self, id: &str) -> Result<Option<EventTimeRecord>, StoreError> {
+            self.event_time_reads
+                .set(self.event_time_reads.get().saturating_add(1));
+            if self.reject_event_time_reads {
+                return Err(StoreError::Backend(
+                    "event_time must not be read on this path".to_string(),
+                ));
+            }
+            self.inner.event_time_of(id)
+        }
+        fn review_fenced(&self, id: &str) -> Result<bool, StoreError> {
+            self.inner.review_fenced(id)
+        }
+        fn review_verdict(&self, id: &str) -> Result<Option<String>, StoreError> {
+            self.inner.review_verdict(id)
+        }
+        fn latest_corroborations_of(
+            &self,
+            id: &str,
+        ) -> Result<Option<CorroborationSummary>, StoreError> {
+            // Real delegation (S2): the sidecar lives on the inner Store.
+            self.inner.latest_corroborations(id)
+        }
+        // S6 counting seam: every corroboration read is tallied so the
+        // dormant-path tests can prove zero reads, and the fixture map lets a
+        // test inject known git-witness weights (drifted 0.0 / corroborated
+        // 1.0 / absent → None → neutral).
+        fn corroboration_weight(&self, id: &CapsuleId) -> Option<f64> {
+            self.corroboration_ranking_reads
+                .set(self.corroboration_ranking_reads.get().saturating_add(1));
+            self.corroboration_weights.get(id.as_str()).copied()
         }
     }
 
@@ -2130,7 +3146,7 @@ mod tests {
             .unwrap();
 
         let response = retrieve(&mut store, &query(&["zzz", "qqq"]), NOW).unwrap();
-        let RetrieveResponse::Abstain { reason } = &response else {
+        let RetrieveResponse::Abstain { reason, .. } = &response else {
             panic!("expected abstain, got: {response:?}");
         };
         assert!(
@@ -2149,6 +3165,138 @@ mod tests {
             value.get("excluded_count").is_none() && value.get("excluded").is_none(),
             "abstain carries no exclusion fields"
         );
+    }
+
+    #[test]
+    fn grounded_recall_mints_a_resolvable_receipt() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append(
+                &cap("sqlite recall receipt alpha", "nott", 0.9, VF, None),
+                APPENDED,
+            )
+            .unwrap();
+        store
+            .append(
+                &cap("sqlite recall receipt beta", "nott", 0.9, VF, None),
+                APPENDED,
+            )
+            .unwrap();
+        let response = retrieve(&mut store, &query(&["sqlite", "receipt"]), NOW).unwrap();
+        let RetrieveResponse::Grounded {
+            receipt_id,
+            results,
+            ..
+        } = &response
+        else {
+            panic!("expected grounded, got: {response:?}");
+        };
+        assert_eq!(receipt_id.as_deref(), Some("rcpt-1"));
+        let returned: Vec<String> = results
+            .iter()
+            .map(|result| result.id.as_str().to_string())
+            .collect();
+        assert_eq!(
+            store.receipt_returned_ids("rcpt-1").unwrap(),
+            Some(returned),
+            "the public response id resolves to its exact returned capsule order"
+        );
+    }
+
+    #[test]
+    fn ungrounded_outcomes_mint_no_receipt() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append(
+                &cap(
+                    "expired receipt probe",
+                    "nott",
+                    0.9,
+                    datetime!(2026-07-01 00:00:00 UTC),
+                    Some(datetime!(2026-07-10 00:00:00 UTC)),
+                ),
+                APPENDED,
+            )
+            .unwrap();
+
+        let abstain = retrieve(&mut store, &query(&["never-stored"]), NOW).unwrap();
+        let missing = retrieve(&mut store, &query(&["expired", "probe"]), NOW).unwrap();
+        assert!(matches!(abstain, RetrieveResponse::Abstain { .. }));
+        assert!(matches!(missing, RetrieveResponse::MissingEvidence { .. }));
+        for response in [&abstain, &missing] {
+            let raw = serde_json::to_string(response).unwrap();
+            assert!(
+                !raw.contains("receipt_id"),
+                "ungrounded response must remain receipt-dormant: {raw}"
+            );
+        }
+        assert_eq!(
+            store.receipt_returned_ids("rcpt-1").unwrap(),
+            None,
+            "neither ungrounded outcome mints a receipt"
+        );
+    }
+
+    #[test]
+    fn zero_result_grounded_still_mints_a_receipt() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append(
+                &cap("zero result receipt probe", "nott", 0.9, VF, None),
+                APPENDED,
+            )
+            .unwrap();
+        let mut probe = query(&["receipt", "probe"]);
+        probe.limit = Some(0);
+
+        let response = retrieve(&mut store, &probe, NOW).unwrap();
+        let RetrieveResponse::Grounded {
+            receipt_id,
+            results,
+            matched,
+            returned,
+            ..
+        } = &response
+        else {
+            panic!("expected grounded count-only probe, got: {response:?}");
+        };
+        assert_eq!(receipt_id.as_deref(), Some("rcpt-1"));
+        assert_eq!((*matched, *returned), (1, 0));
+        assert!(results.is_empty());
+        assert_eq!(
+            store.receipt_returned_ids("rcpt-1").unwrap(),
+            Some(Vec::new()),
+            "zero-result grounded receipt resolves to the empty returned-id array"
+        );
+    }
+
+    #[test]
+    fn engine_direct_grounded_stays_receipt_dormant() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append(
+                &cap("engine direct receipt probe", "nott", 0.9, VF, None),
+                APPENDED,
+            )
+            .unwrap();
+
+        let response = retrieve_core(
+            &mut store,
+            &query(&["receipt", "probe"]),
+            NOW,
+            Path::new("/nmemory-hermetic-test-anchor-root"),
+        )
+        .unwrap();
+        let RetrieveResponse::Grounded { receipt_id, .. } = &response else {
+            panic!("expected grounded, got: {response:?}");
+        };
+        assert_eq!(receipt_id, &None);
+        assert!(
+            !serde_json::to_string(&response)
+                .unwrap()
+                .contains("receipt_id")
+        );
+        assert_eq!(store.receipt_returned_ids("rcpt-1").unwrap(), None);
     }
 
     #[test]
@@ -2186,6 +3334,7 @@ mod tests {
             excluded_count,
             excluded,
             reason,
+            ..
         } = &response
         else {
             panic!("expected missing_evidence, got: {response:?}");
@@ -2324,6 +3473,7 @@ mod tests {
             excluded_count,
             excluded,
             reason,
+            ..
         } = &response
         else {
             panic!("expected missing_evidence, got: {response:?}");
@@ -2481,6 +3631,44 @@ mod tests {
     }
 
     #[test]
+    fn headline_is_single_line_across_every_unicode_line_boundary() {
+        let separators = [
+            ("LF", "\n"),
+            ("CRLF", "\r\n"),
+            ("CR", "\r"),
+            ("VT", "\u{000b}"),
+            ("FF", "\u{000c}"),
+            ("NEL", "\u{0085}"),
+            ("LS", "\u{2028}"),
+            ("PS", "\u{2029}"),
+        ];
+        for (name, separator) in separators {
+            assert_eq!(
+                headline_of(&format!("ordinary{separator}hidden")),
+                "ordinary…",
+                "{name} must terminate the visible line"
+            );
+            assert_eq!(
+                headline_of(&format!("ordinary{separator}")),
+                "ordinary",
+                "a terminal {name} carries no elided content"
+            );
+        }
+
+        let long = "é".repeat(HEADLINE_MAX_CHARS + 1);
+        assert_eq!(
+            headline_of(&long),
+            format!("{}…", "é".repeat(HEADLINE_MAX_CHARS)),
+            "the character bound and ellipsis stay intact"
+        );
+        assert_eq!(
+            headline_of("ordinary café\tbytes"),
+            "ordinary café\tbytes",
+            "ordinary single-line bytes stay unchanged"
+        );
+    }
+
+    #[test]
     fn tiebreak_confidence_desc_when_scores_equal() {
         let mut store = Store::open_in_memory().unwrap();
         // Same token shape (tf and doc length equal) → identical bm25.
@@ -2593,7 +3781,9 @@ mod tests {
             .unwrap();
 
         let q = query(&["derived", "sqlite"]);
-        let before = serde_json::to_string(&retrieve(&mut store, &q, NOW).unwrap()).unwrap();
+        let mut before = serde_json::to_value(retrieve(&mut store, &q, NOW).unwrap()).unwrap();
+        assert_eq!(before["receipt_id"], "rcpt-1");
+        before.as_object_mut().unwrap().remove("receipt_id");
 
         // Drop the derived table out from under the store.
         let raw = rusqlite::Connection::open(&path).unwrap();
@@ -2601,12 +3791,15 @@ mod tests {
         drop(raw);
 
         assert_eq!(store.rebuild_fts().unwrap(), 3);
-        let after = serde_json::to_string(&retrieve(&mut store, &q, NOW).unwrap()).unwrap();
+        let mut after = serde_json::to_value(retrieve(&mut store, &q, NOW).unwrap()).unwrap();
+        assert_eq!(after["receipt_id"], "rcpt-2");
+        after.as_object_mut().unwrap().remove("receipt_id");
         assert_eq!(
-            before, after,
-            "recall must be byte-identical after drop→rebuild"
+            serde_json::to_vec(&before).unwrap(),
+            serde_json::to_vec(&after).unwrap(),
+            "recall except its fresh receipt id must be byte-identical after drop→rebuild"
         );
-        assert!(before.contains("\"outcome\":\"grounded\""));
+        assert_eq!(before["outcome"], "grounded");
     }
 
     #[test]
@@ -2633,6 +3826,7 @@ mod tests {
             trimmed_by_budget,
             token_budget,
             excluded,
+            ..
         } = retrieve(&mut store, &q, NOW).unwrap()
         else {
             panic!("expected grounded");
@@ -2766,7 +3960,7 @@ mod tests {
         let mut nowhere = query(&["fence"]);
         nowhere.project_id = Some("proj-c".to_string());
         let response = retrieve(&mut store, &nowhere, NOW).unwrap();
-        let RetrieveResponse::Abstain { reason } = response else {
+        let RetrieveResponse::Abstain { reason, .. } = response else {
             panic!("expected abstain");
         };
         assert!(
@@ -2847,6 +4041,7 @@ mod tests {
             excluded_count,
             excluded,
             reason,
+            ..
         } = &response
         else {
             panic!("expected missing_evidence, got: {response:?}");
@@ -3291,7 +4486,7 @@ mod tests {
             Path::new("/nonexistent-root"),
         )
         .unwrap();
-        let RetrieveResponse::Abstain { reason } = &response else {
+        let RetrieveResponse::Abstain { reason, .. } = &response else {
             panic!("expected abstain, got: {response:?}");
         };
         assert!(
@@ -3673,6 +4868,7 @@ mod tests {
             excluded_count,
             excluded,
             reason,
+            ..
         } = &response
         else {
             panic!("expected missing_evidence, got: {response:?}");
@@ -3809,6 +5005,68 @@ mod tests {
         );
     }
 
+    #[test]
+    fn corroboration_wire_is_dormant_without_rows_and_present_with_them() {
+        // S2 git witness lane: the envelope's `corroboration` field is
+        // read per returned row from the store (never a process spawn) and
+        // omitted when the capsule was never scanned — byte-identical
+        // dormancy — then folds the latest verdict per kind when present.
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append(
+                &cap("git witness anchor probe", "nott", 0.9, VF, None),
+                APPENDED,
+            )
+            .unwrap();
+
+        let response = retrieve(&mut store, &query(&["witness"]), NOW).unwrap();
+        let RetrieveResponse::Grounded { results, .. } = &response else {
+            panic!("expected grounded, got: {response:?}");
+        };
+        let dormant = serde_json::to_value(&results[0]).unwrap();
+        assert!(
+            dormant.get("corroboration").is_none(),
+            "a never-scanned capsule omits the corroboration field: {dormant}"
+        );
+
+        store
+            .append_corroboration(
+                "cap-1",
+                "git",
+                "anchor_path",
+                "PLAN.md",
+                "corroborated",
+                Some("head1"),
+                APPENDED,
+            )
+            .unwrap();
+        store
+            .append_corroboration(
+                "cap-1",
+                "git",
+                "mention",
+                "commitX",
+                "corroborated",
+                Some("head1"),
+                APPENDED,
+            )
+            .unwrap();
+        let response = retrieve(&mut store, &query(&["witness"]), NOW).unwrap();
+        let RetrieveResponse::Grounded { results, .. } = &response else {
+            panic!("expected grounded, got: {response:?}");
+        };
+        let decorated = serde_json::to_value(&results[0]).unwrap();
+        let corr = decorated
+            .get("corroboration")
+            .expect("a scanned capsule carries the corroboration field");
+        assert_eq!(corr["source"], "git");
+        assert_eq!(corr["path"], "corroborated");
+        assert_eq!(corr["git_ref"], "head1");
+        assert_eq!(corr["mentions"], 1);
+        // A kind never probed stays absent (skip-if-none within the wire).
+        assert!(corr.get("content").is_none());
+    }
+
     // ── u6h falsified-fence crux: real-Store regression net ──────────────
     // These drive the PUBLIC `retrieve(&mut Store, …)` against a REAL store
     // (a mock is disqualified — it could hand-set `is_falsified` and prove
@@ -3842,11 +5100,13 @@ mod tests {
                 "session:2026-07-19",
                 Some("ci://run/4821"),
                 Some("cap-1"),
+                None,
+                None,
                 APPENDED,
             )
             .unwrap();
-        assert_eq!(outcome.id, "out-1");
-        assert_eq!(outcome.capsule_id.as_deref(), Some("cap-1"));
+        assert_eq!(outcome.record.id, "out-1");
+        assert_eq!(outcome.record.capsule_id.as_deref(), Some("cap-1"));
         // The guard, at the store seam: the outcome alone set no fence.
         assert!(!store.is_falsified("cap-1").unwrap());
 
@@ -4053,7 +5313,7 @@ mod tests {
             NOW,
         )
         .unwrap();
-        let RetrieveResponse::Abstain { reason } = &abstain else {
+        let RetrieveResponse::Abstain { reason, .. } = &abstain else {
             panic!("expected abstain, got: {abstain:?}");
         };
         assert!(
@@ -4073,7 +5333,7 @@ mod tests {
             NOW,
         )
         .unwrap();
-        let RetrieveResponse::Abstain { reason } = &both else {
+        let RetrieveResponse::Abstain { reason, .. } = &both else {
             panic!("expected abstain, got: {both:?}");
         };
         assert!(
@@ -4096,6 +5356,105 @@ mod tests {
         }
     }
 
+    /// u05 regression: miss telemetry observes the term lane before result
+    /// trimming. A count-only response still grounded on the term lane and
+    /// therefore must not teach its query term as missing vocabulary.
+    #[test]
+    fn count_only_term_hit_does_not_record_a_recall_miss() {
+        for (limit, token_budget) in [(Some(0), None), (None, Some(0))] {
+            let mut store = seeded_store();
+            let response = retrieve(
+                &mut store,
+                &RetrieveQuery {
+                    terms: vec!["alpha".to_string()],
+                    limit,
+                    token_budget,
+                    ..RetrieveQuery::default()
+                },
+                NOW,
+            )
+            .unwrap();
+            assert!(
+                matches!(
+                    response,
+                    RetrieveResponse::Grounded {
+                        matched: 1,
+                        returned: 0,
+                        ..
+                    }
+                ),
+                "count-only retrieve remains grounded: {response:?}"
+            );
+            assert_eq!(
+                store.count_recall_misses().unwrap(),
+                0,
+                "pre-trim term evidence is not a vocabulary miss"
+            );
+        }
+    }
+
+    /// u05 regression: an explicitly forced vector lane never runs FTS.
+    /// Its empty answer names the lane actually executed and cannot teach
+    /// the unused term lane's query as missing vocabulary.
+    #[test]
+    fn forced_vector_empty_names_vector_lane_and_records_no_term_miss() {
+        let mut store = seeded_store();
+        let response = retrieve(
+            &mut store,
+            &RetrieveQuery {
+                terms: vec!["alpha".to_string()],
+                lane: Some(Lane::Vector),
+                query_embedding: Some(vec![1.0, 0.0, 0.0]),
+                ..RetrieveQuery::default()
+            },
+            NOW,
+        )
+        .unwrap();
+        let RetrieveResponse::Abstain { reason, .. } = response else {
+            panic!("forced vector with no stored vectors must abstain: {response:?}");
+        };
+        let misses = store.count_recall_misses().unwrap();
+        assert!(
+            reason.contains("forced vector lane") && !reason.contains("query term") && misses == 0,
+            "reason={reason:?}; recall_miss_rows={misses}"
+        );
+    }
+
+    /// Review regression: `vector_k = 0` is a valid cap, not evidence that
+    /// the store had no positively similar vector. The forced-vector empty
+    /// reason names the cap that removed the observed candidate and still
+    /// says nothing about the unexecuted term lane.
+    #[test]
+    fn forced_vector_k_zero_names_the_cap_not_a_false_vector_miss() {
+        let mut store = seeded_store();
+        store
+            .put_embedding("cap-2", &[1.0, 0.0, 0.0], "m", APPENDED)
+            .unwrap();
+        let response = retrieve(
+            &mut store,
+            &RetrieveQuery {
+                terms: vec!["alpha".to_string()],
+                lane: Some(Lane::Vector),
+                query_embedding: Some(vec![1.0, 0.0, 0.0]),
+                vector_k: Some(0),
+                ..RetrieveQuery::default()
+            },
+            NOW,
+        )
+        .unwrap();
+        let RetrieveResponse::Abstain { reason, .. } = response else {
+            panic!("zero-cap forced vector must abstain: {response:?}");
+        };
+        assert!(
+            reason.contains("found 1 positively similar stored capsule")
+                && reason.contains("vector_k=0 excluded every candidate")
+                && !reason.contains("found no stored capsule")
+                && !reason.contains("query term"),
+            "reason={reason:?}"
+        );
+        assert_eq!(store.count_recall_misses().unwrap(), 0);
+    }
+
     /// Build a store with three planted capsules; caller decides embeddings.
     fn seeded_store() -> Store {
         let mut store = Store::open_in_memory().unwrap();
@@ -4109,6 +5468,996 @@ mod tests {
             .append(&cap("gamma vector fusion", "nott", 0.9, VF, None), APPENDED)
             .unwrap();
         store
+    }
+
+    fn seeded_store_with_vectors() -> Store {
+        let mut store = seeded_store();
+        store
+            .put_embedding("cap-1", &[1.0, 0.0, 0.0], "m", APPENDED)
+            .unwrap();
+        store
+            .put_embedding("cap-2", &[0.2, 0.8, 0.0], "m", APPENDED)
+            .unwrap();
+        store
+    }
+
+    #[test]
+    fn omitted_auto_and_explicit_fused_preserve_historical_response_bytes() {
+        // No embedding: omitted and auto both choose the historical term
+        // path byte-for-byte.
+        let mut omitted = seeded_store();
+        let mut auto = seeded_store();
+        let base = retrieve_core(
+            &mut omitted,
+            &query(&["alpha", "gravity"]),
+            NOW,
+            Path::new(NO_ROOT),
+        )
+        .unwrap();
+        let auto_response = retrieve_core(
+            &mut auto,
+            &RetrieveQuery {
+                terms: vec!["alpha".to_string(), "gravity".to_string()],
+                lane: Some(Lane::Auto),
+                ..RetrieveQuery::default()
+            },
+            NOW,
+            Path::new(NO_ROOT),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_vec(&base).unwrap(),
+            serde_json::to_vec(&auto_response).unwrap()
+        );
+
+        // Embedding present: omitted, auto, and explicitly fused all choose
+        // the historical fused path byte-for-byte.
+        let request = || RetrieveQuery {
+            terms: vec!["alpha".to_string(), "gravity".to_string()],
+            query_embedding: Some(vec![1.0, 0.0, 0.0]),
+            ..RetrieveQuery::default()
+        };
+        let mut omitted = seeded_store_with_vectors();
+        let mut auto = seeded_store_with_vectors();
+        let mut fused = seeded_store_with_vectors();
+        let base = retrieve_core(&mut omitted, &request(), NOW, Path::new(NO_ROOT)).unwrap();
+        let auto_response = retrieve_core(
+            &mut auto,
+            &RetrieveQuery {
+                lane: Some(Lane::Auto),
+                ..request()
+            },
+            NOW,
+            Path::new(NO_ROOT),
+        )
+        .unwrap();
+        let fused_response = retrieve_core(
+            &mut fused,
+            &RetrieveQuery {
+                lane: Some(Lane::Fused),
+                ..request()
+            },
+            NOW,
+            Path::new(NO_ROOT),
+        )
+        .unwrap();
+        let bytes = serde_json::to_vec(&base).unwrap();
+        assert_eq!(bytes, serde_json::to_vec(&auto_response).unwrap());
+        assert_eq!(bytes, serde_json::to_vec(&fused_response).unwrap());
+    }
+
+    #[test]
+    fn forced_term_with_embedding_never_reads_vectors_and_matches_term_only_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.sqlite3");
+        let mut without_vector_table = Store::open(&path).unwrap();
+        without_vector_table
+            .append(&cap("alpha token budget", "nott", 0.9, VF, None), APPENDED)
+            .unwrap();
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch("DROP TABLE embeddings")
+            .unwrap();
+
+        let with_embedding = retrieve_core(
+            &mut without_vector_table,
+            &RetrieveQuery {
+                terms: vec!["alpha".to_string()],
+                lane: Some(Lane::Term),
+                query_embedding: Some(vec![1.0, 0.0, 0.0]),
+                ..RetrieveQuery::default()
+            },
+            NOW,
+            Path::new(NO_ROOT),
+        )
+        .unwrap();
+        let mut term_only_store = Store::open_in_memory().unwrap();
+        term_only_store
+            .append(&cap("alpha token budget", "nott", 0.9, VF, None), APPENDED)
+            .unwrap();
+        let term_only = retrieve_core(
+            &mut term_only_store,
+            &RetrieveQuery {
+                terms: vec!["alpha".to_string()],
+                lane: Some(Lane::Term),
+                ..RetrieveQuery::default()
+            },
+            NOW,
+            Path::new(NO_ROOT),
+        )
+        .unwrap();
+        let bytes = serde_json::to_vec(&with_embedding).unwrap();
+        assert_eq!(bytes, serde_json::to_vec(&term_only).unwrap());
+        let text = String::from_utf8(bytes).unwrap();
+        assert!(!text.contains("vector_similarity") && !text.contains("fusion_rank"));
+    }
+
+    #[test]
+    fn forced_term_rejects_intrinsically_invalid_embedding_without_vector_read_or_telemetry() {
+        for bad in [vec![], vec![1.0, f32::NAN], vec![0.0, 0.0]] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("memory.sqlite3");
+            let mut store = Store::open(&path).unwrap();
+            store
+                .append(&cap("alpha token budget", "nott", 0.9, VF, None), APPENDED)
+                .unwrap();
+            rusqlite::Connection::open(&path)
+                .unwrap()
+                .execute_batch("DROP TABLE embeddings")
+                .unwrap();
+
+            assert!(matches!(
+                retrieve(
+                    &mut store,
+                    &RetrieveQuery {
+                        terms: vec!["alpha".to_string()],
+                        lane: Some(Lane::Term),
+                        query_embedding: Some(bad),
+                        ..RetrieveQuery::default()
+                    },
+                    NOW,
+                ),
+                Err(RetrieveError::InvalidQueryEmbedding(_))
+            ));
+            assert!(store.lane_override_totals().unwrap().is_empty());
+            assert_eq!(store.count_recall_misses().unwrap(), 0);
+            assert_eq!(store.receipt_returned_ids("rcpt-1").unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn forced_vector_never_reads_fts_and_weight_blend_cannot_reintroduce_term_only_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.sqlite3");
+        let mut store = Store::open(&path).unwrap();
+        store
+            .append(&cap("alpha term only", "nott", 0.9, VF, None), APPENDED)
+            .unwrap(); // cap-1: term-only
+        store
+            .append(&cap("beta vector only", "nott", 0.9, VF, None), APPENDED)
+            .unwrap(); // cap-2: vector-only
+        store
+            .put_embedding("cap-2", &[1.0, 0.0], "m", APPENDED)
+            .unwrap();
+        store.apply_feedback(&["cap-1"], 1.0, APPENDED).unwrap();
+        store.apply_feedback(&["cap-2"], 0.0, APPENDED).unwrap();
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch("DROP TABLE capsules_fts; DROP TABLE synonyms")
+            .unwrap();
+
+        let response = retrieve_core(
+            &mut store,
+            &RetrieveQuery {
+                terms: vec!["alpha".to_string()],
+                lane: Some(Lane::Vector),
+                query_embedding: Some(vec![1.0, 0.0]),
+                weight_blend: Some(1.0),
+                ..RetrieveQuery::default()
+            },
+            NOW,
+            Path::new(NO_ROOT),
+        )
+        .unwrap();
+        let RetrieveResponse::Grounded { results, .. } = response else {
+            panic!("forced vector must ground on cap-2: {response:?}");
+        };
+        assert_eq!(results.len(), 1);
+        let row = &results[0];
+        assert_eq!(row.id.as_str(), "cap-2");
+        assert!(row.matched_terms.is_empty());
+        assert_eq!(row.vector_similarity, Some(1.0));
+        assert_eq!(row.fusion_rank, Some(1));
+        assert_eq!(row.feedback_weight, Some(0.45));
+        assert!(row.relevance.is_none() && row.bm25.is_none());
+    }
+
+    #[test]
+    fn fused_limit_trimming_a_term_hit_does_not_create_a_false_miss() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append(&cap("beta vector leader", "nott", 0.9, VF, None), APPENDED)
+            .unwrap(); // cap-1 wins the one-lane RRF tie by seq
+        store
+            .append(&cap("alpha term survivor", "nott", 0.9, VF, None), APPENDED)
+            .unwrap();
+        store
+            .put_embedding("cap-1", &[1.0, 0.0], "m", APPENDED)
+            .unwrap();
+        let response = retrieve(
+            &mut store,
+            &RetrieveQuery {
+                terms: vec!["alpha".to_string()],
+                lane: Some(Lane::Fused),
+                query_embedding: Some(vec![1.0, 0.0]),
+                limit: Some(1),
+                ..RetrieveQuery::default()
+            },
+            NOW,
+        )
+        .unwrap();
+        let RetrieveResponse::Grounded {
+            results, matched, ..
+        } = response
+        else {
+            panic!("expected grounded response: {response:?}");
+        };
+        assert_eq!(matched, 2);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].matched_terms.is_empty());
+        assert_eq!(store.count_recall_misses().unwrap(), 0);
+    }
+
+    #[test]
+    fn forced_vector_keeps_the_lane_independent_tombstone_probe_honest() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append(
+                &cap("forgotten vector host", "nott", 0.9, VF, None),
+                APPENDED,
+            )
+            .unwrap();
+        store
+            .forget_capsule("cap-1", TombstoneMode::Purged, "test", b"key", APPENDED)
+            .unwrap();
+        let response = retrieve(
+            &mut store,
+            &RetrieveQuery {
+                terms: vec!["cap-1".to_string()],
+                lane: Some(Lane::Vector),
+                query_embedding: Some(vec![1.0, 0.0]),
+                ..RetrieveQuery::default()
+            },
+            NOW,
+        )
+        .unwrap();
+        let RetrieveResponse::MissingEvidence {
+            excluded, reason, ..
+        } = response
+        else {
+            panic!("tombstone id probe must report missing evidence: {response:?}");
+        };
+        assert_eq!(excluded.get(&ExclusionReason::Tombstoned), Some(&1));
+        assert!(reason.contains("forced vector lane") && reason.contains("tombstone id probe"));
+        assert_eq!(store.count_recall_misses().unwrap(), 0);
+    }
+
+    #[test]
+    fn only_successful_explicit_disagreements_record_override_telemetry() {
+        let mut store = seeded_store();
+        let term_override = RetrieveQuery {
+            terms: vec!["alpha".to_string()],
+            lane: Some(Lane::Term),
+            query_embedding: Some(vec![1.0, 0.0, 0.0]),
+            ..RetrieveQuery::default()
+        };
+        retrieve(&mut store, &term_override, NOW).unwrap();
+        let vector_override = RetrieveQuery {
+            terms: vec!["no-vector-row".to_string()],
+            lane: Some(Lane::Vector),
+            query_embedding: Some(vec![1.0, 0.0, 0.0]),
+            ..RetrieveQuery::default()
+        };
+        retrieve(&mut store, &vector_override, NOW).unwrap();
+
+        // Explicit choices equal to auto are not overrides.
+        retrieve(
+            &mut store,
+            &RetrieveQuery {
+                terms: vec!["alpha".to_string()],
+                lane: Some(Lane::Term),
+                ..RetrieveQuery::default()
+            },
+            NOW,
+        )
+        .unwrap();
+        retrieve(
+            &mut store,
+            &RetrieveQuery {
+                terms: vec!["alpha".to_string()],
+                lane: Some(Lane::Fused),
+                query_embedding: Some(vec![1.0, 0.0, 0.0]),
+                ..RetrieveQuery::default()
+            },
+            NOW,
+        )
+        .unwrap();
+        retrieve(
+            &mut store,
+            &RetrieveQuery {
+                terms: vec!["alpha".to_string()],
+                lane: Some(Lane::Auto),
+                query_embedding: Some(vec![1.0, 0.0, 0.0]),
+                ..RetrieveQuery::default()
+            },
+            NOW,
+        )
+        .unwrap();
+
+        // Rejected vector-bearing lanes record nothing.
+        for lane in [Lane::Vector, Lane::Fused] {
+            let error = retrieve(
+                &mut store,
+                &RetrieveQuery {
+                    terms: vec!["alpha".to_string()],
+                    lane: Some(lane),
+                    ..RetrieveQuery::default()
+                },
+                NOW,
+            )
+            .unwrap_err();
+            assert_eq!(
+                error,
+                RetrieveError::LaneNeedsEmbedding(lane.as_str()),
+                "lane {lane:?} teaches the missing vector"
+            );
+        }
+        assert_eq!(
+            store.lane_override_totals().unwrap(),
+            vec![
+                ("term".to_string(), "fused".to_string(), 1),
+                ("vector".to_string(), "fused".to_string(), 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn missing_override_table_never_fails_a_successful_retrieve() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.sqlite3");
+        let mut store = Store::open(&path).unwrap();
+        store
+            .append(
+                &cap("alpha telemetry host", "nott", 0.9, VF, None),
+                APPENDED,
+            )
+            .unwrap();
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch("DROP TABLE lane_overrides")
+            .unwrap();
+        let response = retrieve(
+            &mut store,
+            &RetrieveQuery {
+                terms: vec!["alpha".to_string()],
+                lane: Some(Lane::Term),
+                query_embedding: Some(vec![1.0, 0.0]),
+                ..RetrieveQuery::default()
+            },
+            NOW,
+        )
+        .unwrap();
+        assert!(matches!(response, RetrieveResponse::Grounded { .. }));
+    }
+
+    #[test]
+    fn weight_blend_reorders_by_feedback_weight() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append(
+                &cap("feedback blend alpha one", "nott", 0.9, VF, None),
+                APPENDED,
+            )
+            .unwrap();
+        store
+            .append(
+                &cap("feedback blend alpha two", "nott", 0.9, VF, None),
+                APPENDED,
+            )
+            .unwrap();
+
+        let base = retrieve_core(
+            &mut store,
+            &query(&["feedback blend alpha"]),
+            NOW,
+            Path::new(NO_ROOT),
+        )
+        .unwrap();
+        assert_eq!(grounded_ids(&base), ["cap-1", "cap-2"]);
+        store.apply_feedback(&["cap-2"], 1.0, APPENDED).unwrap();
+
+        let blended = retrieve_core(
+            &mut store,
+            &RetrieveQuery {
+                terms: vec!["feedback blend alpha".to_string()],
+                weight_blend: Some(1.0),
+                ..RetrieveQuery::default()
+            },
+            NOW,
+            Path::new(NO_ROOT),
+        )
+        .unwrap();
+        assert_eq!(grounded_ids(&blended), ["cap-2", "cap-1"]);
+        let RetrieveResponse::Grounded { results, .. } = blended else {
+            panic!("expected grounded response");
+        };
+        assert_eq!(results[0].feedback_weight, Some(0.55));
+        assert_eq!(results[1].feedback_weight, Some(0.5));
+    }
+
+    #[test]
+    fn weight_blend_reorders_fused_results_but_keeps_preblend_fusion_rank() {
+        let mut store = Store::open_in_memory().unwrap();
+        for content in ["fused feedback alpha one", "fused feedback alpha two"] {
+            store
+                .append(&cap(content, "nott", 0.9, VF, None), APPENDED)
+                .unwrap();
+        }
+        for id in ["cap-1", "cap-2"] {
+            store
+                .put_embedding(id, &[1.0, 0.0], "feedback-model", APPENDED)
+                .unwrap();
+        }
+        store.apply_feedback(&["cap-2"], 1.0, APPENDED).unwrap();
+
+        let response = retrieve_core(
+            &mut store,
+            &RetrieveQuery {
+                terms: vec!["fused feedback alpha".to_string()],
+                query_embedding: Some(vec![1.0, 0.0]),
+                weight_blend: Some(1.0),
+                ..RetrieveQuery::default()
+            },
+            NOW,
+            Path::new(NO_ROOT),
+        )
+        .unwrap();
+        let RetrieveResponse::Grounded { results, .. } = response else {
+            panic!("expected grounded response");
+        };
+        assert_eq!(
+            results
+                .iter()
+                .map(|result| result.id.as_str())
+                .collect::<Vec<_>>(),
+            ["cap-2", "cap-1"]
+        );
+        assert_eq!(
+            results
+                .iter()
+                .map(|result| result.fusion_rank)
+                .collect::<Vec<_>>(),
+            [Some(2), Some(1)],
+            "fusion_rank names the pre-blend RRF order"
+        );
+    }
+
+    #[test]
+    fn weight_blend_zero_is_a_mathematical_noop_with_no_weight_table() {
+        fn seeded_without_weights() -> (tempfile::TempDir, Store) {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("memory.sqlite3");
+            let mut store = Store::open(&path).unwrap();
+            store
+                .append(
+                    &cap("dormant feedback alpha one", "nott", 0.9, VF, None),
+                    APPENDED,
+                )
+                .unwrap();
+            store
+                .append(
+                    &cap("dormant feedback alpha two", "nott", 0.9, VF, None),
+                    APPENDED,
+                )
+                .unwrap();
+            rusqlite::Connection::open(&path)
+                .unwrap()
+                .execute_batch("DROP TABLE feedback_weights")
+                .unwrap();
+            (dir, store)
+        }
+
+        let (_none_dir, mut none_store) = seeded_without_weights();
+        let (_zero_dir, mut zero_store) = seeded_without_weights();
+        let none = retrieve_core(
+            &mut none_store,
+            &query(&["dormant feedback alpha"]),
+            NOW,
+            Path::new(NO_ROOT),
+        )
+        .unwrap();
+        let zero = retrieve_core(
+            &mut zero_store,
+            &RetrieveQuery {
+                terms: vec!["dormant feedback alpha".to_string()],
+                weight_blend: Some(0.0),
+                ..RetrieveQuery::default()
+            },
+            NOW,
+            Path::new(NO_ROOT),
+        )
+        .unwrap();
+        let none_bytes = serde_json::to_vec(&none).unwrap();
+        let zero_bytes = serde_json::to_vec(&zero).unwrap();
+        assert_eq!(none_bytes, zero_bytes);
+        assert!(
+            !String::from_utf8(none_bytes)
+                .unwrap()
+                .contains("feedback_weight")
+        );
+    }
+
+    #[test]
+    fn weight_blend_rejects_non_finite_and_out_of_range_before_store_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.sqlite3");
+        let mut store = Store::open(&path).unwrap();
+        store
+            .append(&cap("valid term", "nott", 0.9, VF, None), APPENDED)
+            .unwrap();
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch("DROP TABLE feedback_weights")
+            .unwrap();
+        for blend in [-0.01, 1.01, f64::NAN, f64::INFINITY] {
+            let error = retrieve_core(
+                &mut store,
+                &RetrieveQuery {
+                    terms: vec!["valid term".to_string()],
+                    weight_blend: Some(blend),
+                    ..RetrieveQuery::default()
+                },
+                NOW,
+                Path::new(NO_ROOT),
+            )
+            .unwrap_err();
+            assert!(matches!(error, RetrieveError::InvalidWeightBlend(_)));
+        }
+    }
+
+    /// S6 fixture seam: a REAL inner store (real FTS + ranking) plus injected
+    /// git-witness corroboration weights, so the blend is driven with S2
+    /// semantics before S2 lands. Base order is deterministic ([cap-1,
+    /// cap-2]) for two symmetric capsules — the append-order tiebreak.
+    fn corroboration_fixture(contents: [&str; 2], weights: [(&str, f64); 2]) -> ContractStore {
+        let mut inner = Store::open_in_memory().unwrap();
+        for content in contents {
+            inner
+                .append(&cap(content, "nott", 0.9, VF, None), APPENDED)
+                .unwrap();
+        }
+        let mut store = ContractStore::new(inner);
+        for (id, weight) in weights {
+            store.corroboration_weights.insert(id.to_string(), weight);
+        }
+        store
+    }
+
+    /// S6 red-test 1 — DORMANCY: an omitted `corroboration_blend` and an
+    /// explicit `0.0` produce byte-identical envelopes AND perform zero
+    /// corroboration RANKING-weight reads, even though the independent
+    /// envelope explain may read real corroboration data. The
+    /// `corroboration_weight` field never reaches the wire.
+    #[test]
+    fn corroboration_blend_dormant_is_byte_identical_without_ranking_reads() {
+        let contents = [
+            "corroboration dormant alpha one",
+            "corroboration dormant alpha two",
+        ];
+        let weights = [("cap-1", 0.0), ("cap-2", 1.0)];
+
+        let mut omitted = corroboration_fixture(contents, weights);
+        let base = retrieve_core(
+            &mut omitted,
+            &query(&["corroboration dormant alpha"]),
+            NOW,
+            Path::new(NO_ROOT),
+        )
+        .unwrap();
+        assert_eq!(
+            omitted.corroboration_ranking_reads.get(),
+            0,
+            "omitted corroboration_blend reads no corroboration ranking weight"
+        );
+
+        let mut zeroed = corroboration_fixture(contents, weights);
+        let zero = retrieve_core(
+            &mut zeroed,
+            &RetrieveQuery {
+                terms: vec!["corroboration dormant alpha".to_string()],
+                corroboration_blend: Some(0.0),
+                ..RetrieveQuery::default()
+            },
+            NOW,
+            Path::new(NO_ROOT),
+        )
+        .unwrap();
+        assert_eq!(
+            zeroed.corroboration_ranking_reads.get(),
+            0,
+            "corroboration_blend 0.0 reads no corroboration ranking weight"
+        );
+
+        let base_bytes = serde_json::to_vec(&base).unwrap();
+        let zero_bytes = serde_json::to_vec(&zero).unwrap();
+        assert_eq!(
+            base_bytes, zero_bytes,
+            "dormant envelopes are byte-identical"
+        );
+        assert!(
+            !String::from_utf8(zero_bytes)
+                .unwrap()
+                .contains("corroboration_weight"),
+            "the dormant path never serializes corroboration_weight"
+        );
+    }
+
+    /// S6 red-test 2 — cb>0 with every corroboration weight ABSENT (all
+    /// `None`) leaves the base order untouched (every factor is neutral 1.0)
+    /// and stamps `corroboration_weight: 0.5` (neutral) on each envelope.
+    #[test]
+    fn corroboration_blend_with_absent_weights_is_neutral_and_present() {
+        let mut store = corroboration_fixture(
+            [
+                "corroboration neutral alpha one",
+                "corroboration neutral alpha two",
+            ],
+            [("cap-other", 1.0), ("cap-none", 0.0)],
+        );
+        let base = retrieve_core(
+            &mut store,
+            &query(&["corroboration neutral alpha"]),
+            NOW,
+            Path::new(NO_ROOT),
+        )
+        .unwrap();
+        assert_eq!(grounded_ids(&base), ["cap-1", "cap-2"]);
+
+        let blended = retrieve_core(
+            &mut store,
+            &RetrieveQuery {
+                terms: vec!["corroboration neutral alpha".to_string()],
+                corroboration_blend: Some(1.0),
+                ..RetrieveQuery::default()
+            },
+            NOW,
+            Path::new(NO_ROOT),
+        )
+        .unwrap();
+        assert_eq!(
+            grounded_ids(&blended),
+            ["cap-1", "cap-2"],
+            "all-absent corroboration weights preserve the base order"
+        );
+        let RetrieveResponse::Grounded { results, .. } = blended else {
+            panic!("expected grounded response");
+        };
+        assert_eq!(results[0].corroboration_weight, Some(0.5));
+        assert_eq!(results[1].corroboration_weight, Some(0.5));
+    }
+
+    /// S6 red-test 3 — a DRIFTED top hit (corroboration weight `0.0`) with
+    /// `corroboration_blend: 1.0` re-ranks BELOW a corroborated peer (weight
+    /// `1.0`); `corroboration_blend: 0.0` restores the base order and performs
+    /// no corroboration ranking-weight reads.
+    #[test]
+    fn corroboration_blend_demotes_drifted_below_corroborated_peer() {
+        let contents = [
+            "corroboration rank alpha one",
+            "corroboration rank alpha two",
+        ];
+        // cap-1 leads the base order but is drifted; cap-2 trails but is
+        // corroborated.
+        let weights = [("cap-1", 0.0), ("cap-2", 1.0)];
+
+        let mut base_store = corroboration_fixture(contents, weights);
+        let base = retrieve_core(
+            &mut base_store,
+            &query(&["corroboration rank alpha"]),
+            NOW,
+            Path::new(NO_ROOT),
+        )
+        .unwrap();
+        assert_eq!(
+            grounded_ids(&base),
+            ["cap-1", "cap-2"],
+            "base order: cap-1 leads"
+        );
+
+        let mut blended_store = corroboration_fixture(contents, weights);
+        let blended = retrieve_core(
+            &mut blended_store,
+            &RetrieveQuery {
+                terms: vec!["corroboration rank alpha".to_string()],
+                corroboration_blend: Some(1.0),
+                ..RetrieveQuery::default()
+            },
+            NOW,
+            Path::new(NO_ROOT),
+        )
+        .unwrap();
+        assert_eq!(
+            grounded_ids(&blended),
+            ["cap-2", "cap-1"],
+            "cb=1.0 demotes the drifted top hit below its corroborated peer"
+        );
+        let RetrieveResponse::Grounded { results, .. } = &blended else {
+            panic!("expected grounded response");
+        };
+        assert_eq!(results[0].corroboration_weight, Some(1.0));
+        assert_eq!(results[1].corroboration_weight, Some(0.0));
+
+        let mut restore_store = corroboration_fixture(contents, weights);
+        let restored = retrieve_core(
+            &mut restore_store,
+            &RetrieveQuery {
+                terms: vec!["corroboration rank alpha".to_string()],
+                corroboration_blend: Some(0.0),
+                ..RetrieveQuery::default()
+            },
+            NOW,
+            Path::new(NO_ROOT),
+        )
+        .unwrap();
+        assert_eq!(
+            grounded_ids(&restored),
+            ["cap-1", "cap-2"],
+            "cb=0.0 restores the base order"
+        );
+        assert_eq!(
+            restore_store.corroboration_ranking_reads.get(),
+            0,
+            "cb=0.0 reads no corroboration ranking weight"
+        );
+    }
+
+    /// S6→S2 integration proof (the deferred join): the REAL
+    /// `impl RecallStore for Store::corroboration_weight` reads a capsule's
+    /// newest `anchor_content` verdict from S2's `corroborations` sidecar —
+    /// `corroborated` → `1.0`, `drifted` → `0.0`, a never-scanned capsule
+    /// (no `anchor_content` row) → `None` (neutral). Then a
+    /// `corroboration_blend: 1.0` retrieve over REAL store data demotes the
+    /// drifted capsule below its corroborated peer. The fixture double could
+    /// only inject weights; this exercises the actual sidecar read.
+    #[test]
+    fn corroboration_weight_reads_real_anchor_content_verdict_and_demotes() {
+        let mut store = Store::open_in_memory().unwrap();
+        let corroborated = store
+            .append(
+                &cap("realwitness weight alpha one", "nott", 0.9, VF, None),
+                APPENDED,
+            )
+            .unwrap();
+        let drifted = store
+            .append(
+                &cap("realwitness weight alpha two", "nott", 0.9, VF, None),
+                APPENDED,
+            )
+            .unwrap();
+        let unscanned = store
+            .append(
+                &cap("realwitness weight alpha three", "nott", 0.9, VF, None),
+                APPENDED,
+            )
+            .unwrap();
+        store
+            .append_corroboration(
+                corroborated.as_str(),
+                "git",
+                "anchor_content",
+                "a.rs",
+                "corroborated",
+                Some("head1"),
+                APPENDED,
+            )
+            .unwrap();
+        store
+            .append_corroboration(
+                drifted.as_str(),
+                "git",
+                "anchor_content",
+                "b.rs",
+                "drifted",
+                Some("head1"),
+                APPENDED,
+            )
+            .unwrap();
+
+        // Direct wiring: the newest anchor_content verdict maps to the ranking
+        // weight; a never-scanned capsule stays None (never a fabricated 0.5).
+        assert_eq!(
+            RecallStore::corroboration_weight(&store, &corroborated),
+            Some(1.0)
+        );
+        assert_eq!(
+            RecallStore::corroboration_weight(&store, &drifted),
+            Some(0.0)
+        );
+        assert_eq!(RecallStore::corroboration_weight(&store, &unscanned), None);
+
+        // Base order (dormant): append order, cap-2 (drifted) ranks mid.
+        let base = retrieve_core(
+            &mut store,
+            &query(&["realwitness weight alpha"]),
+            NOW,
+            Path::new(NO_ROOT),
+        )
+        .unwrap();
+        assert_eq!(grounded_ids(&base), ["cap-1", "cap-2", "cap-3"]);
+
+        // cb=1.0 over REAL sidecar rows: the drifted cap-2 (weight 0.0) sinks
+        // BELOW the corroborated cap-1 (1.0) and the neutral cap-3 (None→0.5).
+        let blended = retrieve_core(
+            &mut store,
+            &RetrieveQuery {
+                terms: vec!["realwitness weight alpha".to_string()],
+                corroboration_blend: Some(1.0),
+                ..RetrieveQuery::default()
+            },
+            NOW,
+            Path::new(NO_ROOT),
+        )
+        .unwrap();
+        assert_eq!(
+            grounded_ids(&blended),
+            ["cap-1", "cap-3", "cap-2"],
+            "cb=1.0 demotes the drifted capsule below its corroborated peer using REAL store data"
+        );
+        let RetrieveResponse::Grounded { results, .. } = &blended else {
+            panic!("expected grounded response, got: {blended:?}");
+        };
+        assert_eq!(
+            results[0].corroboration_weight,
+            Some(1.0),
+            "cap-1 corroborated"
+        );
+        assert_eq!(
+            results[1].corroboration_weight,
+            Some(0.5),
+            "cap-3 never-scanned → neutral"
+        );
+        assert_eq!(results[2].corroboration_weight, Some(0.0), "cap-2 drifted");
+    }
+
+    /// S6 red-test 4 (engine) — an out-of-range or non-finite
+    /// `corroboration_blend` is rejected by the engine BEFORE any store read,
+    /// mirroring the `weight_blend` guard.
+    #[test]
+    fn corroboration_blend_rejects_non_finite_and_out_of_range_before_store_reads() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append(&cap("valid term", "nott", 0.9, VF, None), APPENDED)
+            .unwrap();
+        for blend in [-0.01, 1.01, f64::NAN, f64::INFINITY] {
+            let error = retrieve_core(
+                &mut store,
+                &RetrieveQuery {
+                    terms: vec!["valid term".to_string()],
+                    corroboration_blend: Some(blend),
+                    ..RetrieveQuery::default()
+                },
+                NOW,
+                Path::new(NO_ROOT),
+            )
+            .unwrap_err();
+            assert!(matches!(error, RetrieveError::InvalidCorroborationBlend(_)));
+        }
+    }
+
+    /// S6 red-test 5 — both blends set COMPOSE multiplicatively in ONE
+    /// re-sort, each reading its OWN sidecar (independence). Opposing signals:
+    /// feedback favors cap-1 (0.55), corroboration favors cap-2 (1.0 vs 0.0).
+    /// weight_blend alone keeps cap-1 on top; corroboration_blend alone (and
+    /// the composed product) flips to cap-2 — and both explain weights ride
+    /// the envelope only when their blend is active.
+    #[test]
+    fn both_blends_compose_multiplicatively_in_one_sort() {
+        fn seeded() -> ContractStore {
+            let mut inner = Store::open_in_memory().unwrap();
+            for content in ["compose blend alpha one", "compose blend alpha two"] {
+                inner
+                    .append(&cap(content, "nott", 0.9, VF, None), APPENDED)
+                    .unwrap();
+            }
+            // Feedback nudges cap-1 up to 0.55 (EMA alpha 0.1 from 0.5).
+            inner.apply_feedback(&["cap-1"], 1.0, APPENDED).unwrap();
+            let mut store = ContractStore::new(inner);
+            store.corroboration_weights.insert("cap-1".to_string(), 0.0);
+            store.corroboration_weights.insert("cap-2".to_string(), 1.0);
+            store
+        }
+
+        // weight_blend ALONE: feedback keeps cap-1 leading; corroboration
+        // ranking-weight seam untouched, corroboration_weight absent.
+        let mut wb_only = seeded();
+        let wb = retrieve_core(
+            &mut wb_only,
+            &RetrieveQuery {
+                terms: vec!["compose blend alpha".to_string()],
+                weight_blend: Some(1.0),
+                ..RetrieveQuery::default()
+            },
+            NOW,
+            Path::new(NO_ROOT),
+        )
+        .unwrap();
+        assert_eq!(grounded_ids(&wb), ["cap-1", "cap-2"]);
+        assert_eq!(
+            wb_only.corroboration_ranking_reads.get(),
+            0,
+            "weight_blend alone reads no corroboration ranking weight"
+        );
+        let RetrieveResponse::Grounded { results, .. } = &wb else {
+            panic!("expected grounded response");
+        };
+        assert_eq!(results[0].feedback_weight, Some(0.55));
+        assert_eq!(
+            results[0].corroboration_weight, None,
+            "corroboration_weight is absent when its blend is dormant"
+        );
+
+        // corroboration_blend ALONE: flips to cap-2; feedback dormant/absent.
+        let mut cb_only = seeded();
+        let cb = retrieve_core(
+            &mut cb_only,
+            &RetrieveQuery {
+                terms: vec!["compose blend alpha".to_string()],
+                corroboration_blend: Some(1.0),
+                ..RetrieveQuery::default()
+            },
+            NOW,
+            Path::new(NO_ROOT),
+        )
+        .unwrap();
+        assert_eq!(grounded_ids(&cb), ["cap-2", "cap-1"]);
+        let RetrieveResponse::Grounded { results, .. } = &cb else {
+            panic!("expected grounded response");
+        };
+        assert_eq!(results[0].corroboration_weight, Some(1.0));
+        assert_eq!(
+            results[0].feedback_weight, None,
+            "feedback_weight is absent when its blend is dormant"
+        );
+
+        // BOTH: the two factors multiply in ONE sort; corroboration's swing
+        // wins the product, and BOTH explain weights ride the envelope.
+        let mut both = seeded();
+        let composed = retrieve_core(
+            &mut both,
+            &RetrieveQuery {
+                terms: vec!["compose blend alpha".to_string()],
+                weight_blend: Some(1.0),
+                corroboration_blend: Some(1.0),
+                ..RetrieveQuery::default()
+            },
+            NOW,
+            Path::new(NO_ROOT),
+        )
+        .unwrap();
+        assert_eq!(
+            grounded_ids(&composed),
+            ["cap-2", "cap-1"],
+            "the multiplied factors re-sort once: cap-2 leads"
+        );
+        let RetrieveResponse::Grounded { results, .. } = &composed else {
+            panic!("expected grounded response");
+        };
+        // cap-2 leads: feedback neutral 0.5, corroboration 1.0.
+        assert_eq!(results[0].feedback_weight, Some(0.5));
+        assert_eq!(results[0].corroboration_weight, Some(1.0));
+        // cap-1 trails: feedback 0.55, corroboration 0.0.
+        assert_eq!(results[1].feedback_weight, Some(0.55));
+        assert_eq!(results[1].corroboration_weight, Some(0.0));
     }
 
     /// RED (dormant differential): with `query_embedding` ABSENT the
@@ -4385,7 +6734,7 @@ mod tests {
         // No embeddings stored; the term matches nothing.
         let q = query_vec(&["zzznomatch"], vec![1.0, 0.0, 0.0]);
         let response = retrieve_core(&mut store, &q, NOW, Path::new(NO_ROOT)).unwrap();
-        let RetrieveResponse::Abstain { reason } = &response else {
+        let RetrieveResponse::Abstain { reason, .. } = &response else {
             panic!("expected abstain, got {response:?}");
         };
         assert!(
@@ -4431,5 +6780,1218 @@ mod tests {
         let ids: Vec<&str> = results.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, vec!["cap-1"]);
         assert!(results[0].vector_similarity.is_none());
+    }
+
+    fn vector_time_window_starvation_store() -> Store {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append_with_event_time(
+                &cap("vector-window higher cosine outside", "nott", 0.9, VF, None),
+                &event_range(VF, VF),
+                APPENDED,
+            )
+            .unwrap(); // cap-1
+        store
+            .append_with_event_time(
+                &cap("vector-window lower cosine eligible", "nott", 0.9, VF, None),
+                &event_range(NOW, NOW),
+                APPENDED,
+            )
+            .unwrap(); // cap-2
+        store
+            .put_embedding("cap-1", &[1.0, 0.0], "event-test", APPENDED)
+            .unwrap();
+        store
+            .put_embedding("cap-2", &[0.8, 0.6], "event-test", APPENDED)
+            .unwrap();
+        store
+    }
+
+    fn vector_time_window_starvation_query(lane: Lane) -> RetrieveQuery {
+        RetrieveQuery {
+            // Matches only the higher-cosine OUTSIDE row. The eligible row
+            // can enter a fused response only through the vector lane, while
+            // the shared outside row must be excluded exactly once.
+            terms: vec!["higher cosine outside".to_string()],
+            lane: Some(lane),
+            query_embedding: Some(vec![1.0, 0.0]),
+            vector_k: Some(1),
+            time_window: Some(TimeWindow::new(Some(NOW), Some(NOW)).unwrap()),
+            ..RetrieveQuery::default()
+        }
+    }
+
+    fn assert_lower_cosine_window_survivor(response: &RetrieveResponse, lane: Lane) {
+        let RetrieveResponse::Grounded {
+            results, excluded, ..
+        } = response
+        else {
+            panic!("{lane:?}: eligible lower-cosine row must ground, got {response:?}");
+        };
+        assert_eq!(results.len(), 1, "{lane:?}: vector_k=1 stays a hard cap");
+        assert_eq!(results[0].id.as_str(), "cap-2");
+        assert_eq!(results[0].vector_similarity, Some(0.8));
+        assert!(
+            results[0].matched_terms.is_empty(),
+            "{lane:?}: result came from the vector lane, not a lexical escape"
+        );
+        assert_eq!(
+            excluded,
+            &BTreeMap::from([(ExclusionReason::OutsideTimeWindow, 1)]),
+            "{lane:?}: the higher-cosine rejected row remains visible exactly once"
+        );
+    }
+
+    #[test]
+    fn forced_vector_time_window_filters_before_vector_k() {
+        let mut store = vector_time_window_starvation_store();
+        let response = retrieve(
+            &mut store,
+            &vector_time_window_starvation_query(Lane::Vector),
+            NOW,
+        )
+        .unwrap();
+        assert_lower_cosine_window_survivor(&response, Lane::Vector);
+    }
+
+    #[test]
+    fn fused_time_window_filters_vector_lane_before_vector_k() {
+        let mut store = vector_time_window_starvation_store();
+        let response = retrieve(
+            &mut store,
+            &vector_time_window_starvation_query(Lane::Fused),
+            NOW,
+        )
+        .unwrap();
+        assert_lower_cosine_window_survivor(&response, Lane::Fused);
+    }
+
+    #[test]
+    fn omitted_time_window_preserves_vector_k_bytes_and_reads_no_fact_time() {
+        let build = |dated: bool| {
+            let mut store = Store::open_in_memory().unwrap();
+            for (content, event) in [
+                ("vector-window omitted leader", VF),
+                ("vector-window omitted runner-up", NOW),
+            ] {
+                let capsule = cap(content, "nott", 0.9, VF, None);
+                if dated {
+                    store
+                        .append_with_event_time(&capsule, &event_range(event, event), APPENDED)
+                        .unwrap();
+                } else {
+                    store.append(&capsule, APPENDED).unwrap();
+                }
+            }
+            store
+                .put_embedding("cap-1", &[1.0, 0.0], "event-test", APPENDED)
+                .unwrap();
+            store
+                .put_embedding("cap-2", &[0.8, 0.6], "event-test", APPENDED)
+                .unwrap();
+            let mut contract = ContractStore::new(store);
+            contract.reject_event_time_reads = true;
+            contract
+        };
+        for lane in [Lane::Vector, Lane::Fused] {
+            let query = RetrieveQuery {
+                terms: vec!["qzx-no-lexical-match".to_string()],
+                lane: Some(lane),
+                query_embedding: Some(vec![1.0, 0.0]),
+                vector_k: Some(1),
+                ..RetrieveQuery::default()
+            };
+            let mut plain = build(false);
+            let mut dated = build(true);
+            let plain_response =
+                retrieve_core(&mut plain, &query, NOW, Path::new(NO_ROOT)).unwrap();
+            let dated_response =
+                retrieve_core(&mut dated, &query, NOW, Path::new(NO_ROOT)).unwrap();
+            assert_eq!(
+                serde_json::to_vec(&plain_response).unwrap(),
+                serde_json::to_vec(&dated_response).unwrap(),
+                "{lane:?}: omitting time_window leaves historical vector bytes unchanged"
+            );
+            assert_eq!(grounded_ids(&dated_response), ["cap-1"]);
+            assert_eq!(plain.event_time_reads.get(), 0);
+            assert_eq!(dated.event_time_reads.get(), 0);
+        }
+    }
+
+    fn event_range(from: OffsetDateTime, to: OffsetDateTime) -> EventTimeRange {
+        EventTimeRange::new(from, to).unwrap()
+    }
+
+    #[test]
+    fn time_window_grounds_only_intersecting_ranges_and_never_changes_decay() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append_with_event_time(
+                &cap("chronoprobe intersects at boundary", "nott", 0.9, VF, None),
+                &event_range(NOW - time::Duration::HOUR, NOW),
+                APPENDED,
+            )
+            .unwrap(); // cap-1
+        store
+            .append_with_event_time(
+                &cap("chronoprobe ends one tick early", "nott", 0.9, VF, None),
+                &event_range(NOW - time::Duration::HOUR, NOW - time::Duration::NANOSECOND),
+                APPENDED,
+            )
+            .unwrap(); // cap-2
+        store
+            .append(
+                &cap("chronoprobe has no fact time", "nott", 0.9, VF, None),
+                APPENDED,
+            )
+            .unwrap(); // cap-3
+
+        let without = retrieve(&mut store, &query(&["chronoprobe"]), NOW).unwrap();
+        let baseline_decay = match &without {
+            RetrieveResponse::Grounded { results, .. } => {
+                results
+                    .iter()
+                    .find(|result| result.id.as_str() == "cap-1")
+                    .unwrap()
+                    .decayed_weight
+            }
+            other => panic!("expected grounded baseline, got {other:?}"),
+        };
+        let response = retrieve(
+            &mut store,
+            &RetrieveQuery {
+                terms: vec!["chronoprobe".to_string()],
+                time_window: Some(TimeWindow::new(Some(NOW), Some(NOW)).unwrap()),
+                ..RetrieveQuery::default()
+            },
+            NOW,
+        )
+        .unwrap();
+        let RetrieveResponse::Grounded {
+            results, excluded, ..
+        } = &response
+        else {
+            panic!("expected grounded, got {response:?}");
+        };
+        assert_eq!(grounded_ids(&response), ["cap-1"]);
+        assert_eq!(
+            excluded,
+            &BTreeMap::from([
+                (ExclusionReason::OutsideTimeWindow, 1),
+                (ExclusionReason::Undated, 1),
+            ])
+        );
+        assert_eq!(
+            results[0].decayed_weight, baseline_decay,
+            "fact-time is a fence only, never a decay input"
+        );
+    }
+
+    #[test]
+    fn open_time_window_bounds_are_inclusive_to_one_tick() {
+        let build = || {
+            let mut store = Store::open_in_memory().unwrap();
+            for (content, instant) in [
+                ("openbound before", NOW - time::Duration::NANOSECOND),
+                ("openbound equal", NOW),
+                ("openbound after", NOW + time::Duration::NANOSECOND),
+            ] {
+                store
+                    .append_with_event_time(
+                        &cap(content, "nott", 0.9, VF, None),
+                        &event_range(instant, instant),
+                        APPENDED,
+                    )
+                    .unwrap();
+            }
+            store
+        };
+
+        let mut lower = build();
+        let from_now = retrieve(
+            &mut lower,
+            &RetrieveQuery {
+                terms: vec!["openbound".to_string()],
+                time_window: Some(TimeWindow::new(Some(NOW), None).unwrap()),
+                ..RetrieveQuery::default()
+            },
+            NOW,
+        )
+        .unwrap();
+        let mut ids = grounded_ids(&from_now);
+        ids.sort();
+        assert_eq!(ids, ["cap-2", "cap-3"]);
+
+        let mut upper = build();
+        let to_now = retrieve(
+            &mut upper,
+            &RetrieveQuery {
+                terms: vec!["openbound".to_string()],
+                time_window: Some(TimeWindow::new(None, Some(NOW)).unwrap()),
+                ..RetrieveQuery::default()
+            },
+            NOW,
+        )
+        .unwrap();
+        let mut ids = grounded_ids(&to_now);
+        ids.sort();
+        assert_eq!(ids, ["cap-1", "cap-2"]);
+    }
+
+    #[test]
+    fn time_window_is_last_fence_in_term_vector_and_fused_lanes() {
+        for lane in [Lane::Term, Lane::Vector, Lane::Fused] {
+            let mut store = Store::open_in_memory().unwrap();
+            store
+                .append_with_event_time(
+                    &cap("dominanceprobe quarantined", "nott", 0.9, VF, None),
+                    &event_range(VF, VF),
+                    APPENDED,
+                )
+                .unwrap(); // cap-1
+            store
+                .append_with_event_time(
+                    &cap("dominanceprobe falsified", "nott", 0.9, VF, None),
+                    &event_range(VF, VF),
+                    APPENDED,
+                )
+                .unwrap(); // cap-2
+            store
+                .append_with_event_time(
+                    &cap("dominanceprobe archived", "nott", 0.9, VF, None),
+                    &event_range(VF, VF),
+                    APPENDED,
+                )
+                .unwrap(); // cap-3
+            store
+                .append_with_event_time(
+                    &cap("dominanceprobe superseded", "nott", 0.9, VF, None),
+                    &event_range(VF, VF),
+                    APPENDED,
+                )
+                .unwrap(); // cap-4
+            store
+                .append_with_event_time(
+                    &cap(
+                        "dominanceprobe expired",
+                        "nott",
+                        0.9,
+                        VF,
+                        Some(NOW - time::Duration::SECOND),
+                    ),
+                    &event_range(VF, VF),
+                    APPENDED,
+                )
+                .unwrap(); // cap-5
+            store
+                .append_with_event_time(
+                    &cap(
+                        "dominanceprobe not yet valid",
+                        "nott",
+                        0.9,
+                        NOW + time::Duration::hours(2),
+                        None,
+                    ),
+                    &event_range(VF, VF),
+                    APPENDED,
+                )
+                .unwrap(); // cap-6
+            store
+                .append_with_event_time(
+                    &cap("dominanceprobe outside", "nott", 0.9, VF, None),
+                    &event_range(VF, VF),
+                    APPENDED,
+                )
+                .unwrap(); // cap-7
+            store
+                .append(
+                    &cap("dominanceprobe undated", "nott", 0.9, VF, None),
+                    APPENDED,
+                )
+                .unwrap(); // cap-8
+            store
+                .append(&cap("dominance actor", "nott", 0.9, VF, None), APPENDED)
+                .unwrap(); // cap-9; matches neither lane
+            store
+                .set_tier("cap-1", Tier::Quarantined, APPENDED)
+                .unwrap();
+            store
+                .upsert_relation(RelationKind::Falsifies, "cap-9", "cap-2", APPENDED)
+                .unwrap();
+            store.set_tier("cap-3", Tier::Archived, APPENDED).unwrap();
+            store.supersede("cap-4", "cap-9", APPENDED).unwrap();
+            for id in [
+                "cap-1", "cap-2", "cap-3", "cap-4", "cap-5", "cap-6", "cap-7", "cap-8",
+            ] {
+                store
+                    .put_embedding(id, &[1.0, 0.0], "event-test", APPENDED)
+                    .unwrap();
+            }
+            let vector =
+                matches!(lane, Lane::Vector | Lane::Fused).then_some(vec![1.0_f32, 0.0_f32]);
+            let response = retrieve(
+                &mut store,
+                &RetrieveQuery {
+                    terms: vec!["dominanceprobe".to_string()],
+                    lane: Some(lane),
+                    query_embedding: vector,
+                    time_window: Some(
+                        TimeWindow::new(
+                            Some(NOW + time::Duration::HOUR),
+                            Some(NOW + time::Duration::HOUR),
+                        )
+                        .unwrap(),
+                    ),
+                    ..RetrieveQuery::default()
+                },
+                NOW,
+            )
+            .unwrap();
+            let RetrieveResponse::MissingEvidence { excluded, .. } = response else {
+                panic!("{lane:?}: expected missing_evidence, got {response:?}");
+            };
+            assert_eq!(
+                excluded,
+                BTreeMap::from([
+                    (ExclusionReason::Quarantined, 1),
+                    (ExclusionReason::Falsified, 1),
+                    (ExclusionReason::Archived, 1),
+                    (ExclusionReason::Superseded, 1),
+                    (ExclusionReason::Expired, 1),
+                    (ExclusionReason::NotYetValid, 1),
+                    (ExclusionReason::OutsideTimeWindow, 1),
+                    (ExclusionReason::Undated, 1),
+                ]),
+                "lane {lane:?} must apply the same dominance"
+            );
+        }
+    }
+
+    #[test]
+    fn every_time_window_match_excluded_reports_both_fact_time_reasons() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append_with_event_time(
+                &cap("factmiss dated", "nott", 0.9, VF, None),
+                &event_range(VF, VF),
+                APPENDED,
+            )
+            .unwrap();
+        store
+            .append(&cap("factmiss undated", "nott", 0.9, VF, None), APPENDED)
+            .unwrap();
+        let response = retrieve(
+            &mut store,
+            &RetrieveQuery {
+                terms: vec!["factmiss".to_string()],
+                time_window: Some(TimeWindow::new(Some(NOW), None).unwrap()),
+                ..RetrieveQuery::default()
+            },
+            NOW,
+        )
+        .unwrap();
+        let RetrieveResponse::MissingEvidence {
+            excluded_count,
+            excluded,
+            reason,
+            ..
+        } = &response
+        else {
+            panic!("expected missing_evidence, got {response:?}");
+        };
+        assert_eq!(*excluded_count, 2);
+        assert_eq!(
+            excluded,
+            &BTreeMap::from([
+                (ExclusionReason::OutsideTimeWindow, 1),
+                (ExclusionReason::Undated, 1),
+            ])
+        );
+        assert!(reason.contains("outside_time_window") && reason.contains("undated"));
+        let wire = serde_json::to_string(&response).unwrap();
+        assert!(wire.contains(r#""outside_time_window":1"#));
+        assert!(wire.contains(r#""undated":1"#));
+    }
+
+    #[test]
+    fn absent_time_window_is_byte_identical_and_performs_zero_sidecar_reads() {
+        let capsule = cap("inerttime same capsule", "nott", 0.9, VF, None);
+        let mut plain_inner = Store::open_in_memory().unwrap();
+        plain_inner.append(&capsule, APPENDED).unwrap();
+        let mut dated_inner = Store::open_in_memory().unwrap();
+        dated_inner
+            .append_with_event_time(&capsule, &event_range(VF, NOW), APPENDED)
+            .unwrap();
+        let mut plain = ContractStore::new(plain_inner);
+        let mut dated = ContractStore::new(dated_inner);
+        plain.reject_event_time_reads = true;
+        dated.reject_event_time_reads = true;
+
+        let a = retrieve_core(&mut plain, &query(&["inerttime"]), NOW, Path::new(NO_ROOT)).unwrap();
+        let b = retrieve_core(&mut dated, &query(&["inerttime"]), NOW, Path::new(NO_ROOT)).unwrap();
+        assert_eq!(
+            serde_json::to_vec(&a).unwrap(),
+            serde_json::to_vec(&b).unwrap()
+        );
+        assert_eq!(plain.event_time_reads.get(), 0);
+        assert_eq!(dated.event_time_reads.get(), 0);
+    }
+
+    #[test]
+    fn tombstone_id_probe_never_claims_fact_time_membership() {
+        let mut inner = Store::open_in_memory().unwrap();
+        inner
+            .append_with_event_time(
+                &cap("forgotten timed content", "nott", 0.9, VF, None),
+                &event_range(VF, NOW),
+                APPENDED,
+            )
+            .unwrap();
+        inner
+            .forget_capsule(
+                "cap-1",
+                TombstoneMode::Purged,
+                "event tombstone test",
+                b"key",
+                APPENDED,
+            )
+            .unwrap();
+        let mut store = ContractStore::new(inner);
+        store.reject_event_time_reads = true;
+        let response = retrieve_core(
+            &mut store,
+            &RetrieveQuery {
+                terms: vec!["cap-1".to_string()],
+                time_window: Some(TimeWindow::new(Some(NOW), None).unwrap()),
+                ..RetrieveQuery::default()
+            },
+            NOW,
+            Path::new(NO_ROOT),
+        )
+        .unwrap();
+        let RetrieveResponse::MissingEvidence { excluded, .. } = response else {
+            panic!("expected tombstone missing_evidence, got {response:?}");
+        };
+        assert_eq!(excluded, BTreeMap::from([(ExclusionReason::Tombstoned, 1)]));
+        assert_eq!(store.event_time_reads.get(), 0);
+    }
+
+    #[test]
+    fn session_label_and_project_time_fences_compose_in_every_lane_before_top_k() {
+        for lane in [Lane::Term, Lane::Vector, Lane::Fused] {
+            let mut store = Store::open_in_memory().unwrap();
+            store.open_session("sess-selected", APPENDED).unwrap();
+            store.open_session("sess-other", APPENDED).unwrap();
+            store
+                .append_with_session_and_event_time(
+                    &cap("sessioncompose selected", "nott/sub", 0.9, VF, None),
+                    "sess-selected",
+                    &event_range(NOW, NOW),
+                    APPENDED,
+                )
+                .unwrap(); // cap-1
+            store
+                .append_with_session_and_event_time(
+                    &cap("sessioncompose wrong project", "other", 0.9, VF, None),
+                    "sess-selected",
+                    &event_range(NOW, NOW),
+                    APPENDED,
+                )
+                .unwrap(); // cap-2
+            store
+                .append_with_session_and_event_time(
+                    &cap("sessioncompose outside time", "nott/sub", 0.9, VF, None),
+                    "sess-selected",
+                    &event_range(VF, VF),
+                    APPENDED,
+                )
+                .unwrap(); // cap-3
+            store
+                .append_with_session_and_event_time(
+                    &cap("sessioncompose wrong session", "nott/sub", 0.9, VF, None),
+                    "sess-other",
+                    &event_range(NOW, NOW),
+                    APPENDED,
+                )
+                .unwrap(); // cap-4
+            // The selected row deliberately has the weakest cosine. The
+            // other-session/project rows must be SQL-filtered before decode
+            // and the outside-time row must not consume vector_k=1.
+            for (id, vector) in [
+                ("cap-1", [0.6, 0.8]),
+                ("cap-2", [1.0, 0.0]),
+                ("cap-3", [1.0, 0.0]),
+                ("cap-4", [1.0, 0.0]),
+            ] {
+                store
+                    .put_embedding(id, &vector, "session-test", APPENDED)
+                    .unwrap();
+            }
+            let response = retrieve(
+                &mut store,
+                &RetrieveQuery {
+                    terms: vec!["sessioncompose".to_string()],
+                    project_id: Some("nott/sub".to_string()),
+                    project_prefix: Some("nott".to_string()),
+                    session_id: Some("sess-selected".to_string()),
+                    time_window: Some(TimeWindow::new(Some(NOW), Some(NOW)).unwrap()),
+                    lane: Some(lane),
+                    query_embedding: matches!(lane, Lane::Vector | Lane::Fused)
+                        .then_some(vec![1.0, 0.0]),
+                    vector_k: Some(1),
+                    ..RetrieveQuery::default()
+                },
+                NOW,
+            )
+            .unwrap();
+            let RetrieveResponse::Grounded {
+                results, excluded, ..
+            } = response
+            else {
+                panic!("{lane:?}: expected grounded, got {response:?}");
+            };
+            let ids: Vec<&str> = results.iter().map(|row| row.id.as_str()).collect();
+            assert_eq!(ids, ["cap-1"], "lane {lane:?}");
+            assert_eq!(
+                excluded,
+                BTreeMap::from([(ExclusionReason::OutsideTimeWindow, 1)]),
+                "wrong-project/session rows are non-matches, never exclusions ({lane:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn session_label_tombstone_probe_is_private_and_absence_is_legacy_global() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.open_session("sess-a", APPENDED).unwrap();
+        store.open_session("sess-b", APPENDED).unwrap();
+        store
+            .append_with_session(
+                &cap("session-private forgotten", "nott", 0.9, VF, None),
+                "sess-a",
+                APPENDED,
+            )
+            .unwrap();
+        store
+            .forget_capsule(
+                "cap-1",
+                TombstoneMode::Purged,
+                "session privacy",
+                b"key",
+                APPENDED,
+            )
+            .unwrap();
+
+        for (session_id, tombstoned) in [
+            (Some("sess-a"), true),
+            (Some("sess-b"), false),
+            (None, true),
+        ] {
+            let response = retrieve(
+                &mut store,
+                &RetrieveQuery {
+                    terms: vec!["cap-1".to_string()],
+                    session_id: session_id.map(str::to_string),
+                    ..RetrieveQuery::default()
+                },
+                NOW,
+            )
+            .unwrap();
+            if tombstoned {
+                let RetrieveResponse::MissingEvidence { excluded, .. } = response else {
+                    panic!("{session_id:?}: expected missing_evidence, got {response:?}");
+                };
+                assert_eq!(excluded, BTreeMap::from([(ExclusionReason::Tombstoned, 1)]));
+            } else {
+                let RetrieveResponse::Abstain { reason, .. } = response else {
+                    panic!("{session_id:?}: expected abstain, got {response:?}");
+                };
+                assert!(reason.contains("store-local capsule label 'sess-b'"));
+                assert!(!reason.contains("unknown session"));
+            }
+        }
+    }
+
+    #[test]
+    fn grounded_receipt_records_the_exact_supplied_session_label() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("receipt.sqlite3");
+        let exact = " Sess-\u{00e9}\0 ";
+        let mut store = Store::open(&path).unwrap();
+        store.open_session(exact, APPENDED).unwrap();
+        store
+            .append_with_session(
+                &cap("receipt exact label", "nott", 0.9, VF, None),
+                exact,
+                APPENDED,
+            )
+            .unwrap();
+        store.finish_session(exact, None, APPENDED).unwrap();
+        let response = retrieve(
+            &mut store,
+            &RetrieveQuery {
+                terms: vec!["receipt exact".to_string()],
+                session_id: Some(exact.to_string()),
+                ..RetrieveQuery::default()
+            },
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(grounded_ids(&response), ["cap-1"]);
+        drop(store);
+
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let recorded: Option<String> = conn
+            .query_row(
+                "SELECT session_id FROM recall_receipts WHERE id = 'rcpt-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(recorded.as_deref(), Some(exact));
+    }
+
+    #[test]
+    fn finished_orphaned_and_colliding_merged_session_labels_remain_recallable() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_path = dir.path().join("local.sqlite3");
+        let incoming_path = dir.path().join("incoming.sqlite3");
+        {
+            let mut local = Store::open(&local_path).unwrap();
+            local.open_session("sess-1", APPENDED).unwrap();
+            local
+                .append_with_session(
+                    &cap("merge label local", "nott", 0.9, VF, None),
+                    "sess-1",
+                    APPENDED,
+                )
+                .unwrap();
+            local.finish_session("sess-1", None, APPENDED).unwrap();
+        }
+        {
+            let mut incoming = Store::open(&incoming_path).unwrap();
+            incoming.open_session("sess-1", APPENDED).unwrap();
+            incoming.open_session("import-only", APPENDED).unwrap();
+            incoming
+                .append_with_session(
+                    &cap("merge label incoming", "nott", 0.9, VF, None),
+                    "sess-1",
+                    APPENDED,
+                )
+                .unwrap();
+            incoming
+                .append_with_session(
+                    &cap("merge label orphan", "nott", 0.9, VF, None),
+                    "import-only",
+                    APPENDED,
+                )
+                .unwrap();
+        }
+
+        let mut local = Store::open(&local_path).unwrap();
+        local.merge_from(&incoming_path, b"local-key").unwrap();
+        assert!(
+            local
+                .get_session("sess-1")
+                .unwrap()
+                .unwrap()
+                .finished_at
+                .is_some(),
+            "the finished local bracket stays closed"
+        );
+        assert!(
+            local.get_session("import-only").unwrap().is_none(),
+            "merge preserves capsule labels but does not import session rows"
+        );
+        let collision = retrieve(
+            &mut local,
+            &RetrieveQuery {
+                terms: vec!["merge label".to_string()],
+                session_id: Some("sess-1".to_string()),
+                ..RetrieveQuery::default()
+            },
+            NOW + time::Duration::days(365),
+        )
+        .unwrap();
+        assert_eq!(grounded_ids(&collision), ["cap-1", "cap-2"]);
+        let orphan = retrieve(
+            &mut local,
+            &RetrieveQuery {
+                terms: vec!["merge label".to_string()],
+                session_id: Some("import-only".to_string()),
+                ..RetrieveQuery::default()
+            },
+            NOW + time::Duration::days(365),
+        )
+        .unwrap();
+        assert_eq!(grounded_ids(&orphan), ["cap-3"]);
+    }
+
+    #[test]
+    fn absent_session_label_is_byte_identical_across_term_vector_and_fused() {
+        for lane in [Lane::Term, Lane::Vector, Lane::Fused] {
+            let build = |labeled: bool| {
+                let mut store = Store::open_in_memory().unwrap();
+                if labeled {
+                    store.open_session("sess-dormant", APPENDED).unwrap();
+                    store
+                        .append_with_session(
+                            &cap("dormant label alpha", "nott", 0.9, VF, None),
+                            "sess-dormant",
+                            APPENDED,
+                        )
+                        .unwrap();
+                    store
+                        .append_with_session(
+                            &cap("dormant label beta", "nott", 0.8, VF, None),
+                            "sess-dormant",
+                            APPENDED,
+                        )
+                        .unwrap();
+                } else {
+                    store
+                        .append(&cap("dormant label alpha", "nott", 0.9, VF, None), APPENDED)
+                        .unwrap();
+                    store
+                        .append(&cap("dormant label beta", "nott", 0.8, VF, None), APPENDED)
+                        .unwrap();
+                }
+                store
+                    .put_embedding("cap-1", &[1.0, 0.0], "dormant-test", APPENDED)
+                    .unwrap();
+                store
+                    .put_embedding("cap-2", &[0.5, 0.5], "dormant-test", APPENDED)
+                    .unwrap();
+                store
+            };
+            let query = RetrieveQuery {
+                terms: vec!["dormant label".to_string()],
+                lane: Some(lane),
+                query_embedding: matches!(lane, Lane::Vector | Lane::Fused)
+                    .then_some(vec![1.0, 0.0]),
+                session_id: None,
+                ..RetrieveQuery::default()
+            };
+            let mut unbracketed = build(false);
+            let mut labeled = build(true);
+            let a = retrieve_core(
+                &mut unbracketed,
+                &query,
+                NOW,
+                Path::new("/nmemory-hermetic-test-anchor-root"),
+            )
+            .unwrap();
+            let b = retrieve_core(
+                &mut labeled,
+                &query,
+                NOW,
+                Path::new("/nmemory-hermetic-test-anchor-root"),
+            )
+            .unwrap();
+            assert_eq!(
+                serde_json::to_vec(&a).unwrap(),
+                serde_json::to_vec(&b).unwrap(),
+                "session_id: None must be structurally dormant in {lane:?} recall"
+            );
+        }
+    }
+
+    // --- S3 effort-lifecycle: effort_id scoped retrieve ------------------
+
+    /// Build a two-effort world sharing a term across BOTH efforts' members,
+    /// so a fence that leaks would surface the other effort's row. Returns
+    /// the store; ids: cap-1 epic A, cap-2 member A, cap-3 epic B, cap-4
+    /// member B — every content carries "token".
+    fn two_effort_world() -> Store {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append(
+                &cap("token rollout epic alpha", "nott", 0.9, VF, None),
+                APPENDED,
+            )
+            .unwrap(); // cap-1
+        store
+            .append(
+                &cap("token detail member alpha", "nott", 0.9, VF, None),
+                APPENDED,
+            )
+            .unwrap(); // cap-2
+        store
+            .append(
+                &cap("token rollout epic beta", "nott", 0.9, VF, None),
+                APPENDED,
+            )
+            .unwrap(); // cap-3
+        store
+            .append(
+                &cap("token detail member beta", "nott", 0.9, VF, None),
+                APPENDED,
+            )
+            .unwrap(); // cap-4
+        store
+            .set_classification("cap-1", "epic", "project", NOW)
+            .unwrap();
+        store
+            .set_classification("cap-3", "epic", "project", NOW)
+            .unwrap();
+        store
+            .upsert_relation(RelationKind::PartOf, "cap-2", "cap-1", APPENDED)
+            .unwrap();
+        store
+            .upsert_relation(RelationKind::PartOf, "cap-4", "cap-3", APPENDED)
+            .unwrap();
+        store
+    }
+
+    /// Effort A's scope: epic cap-1, member cap-2, open.
+    fn effort_a() -> EffortScope {
+        EffortScope {
+            epic_id: "cap-1".to_string(),
+            member_ids: vec!["cap-2".to_string()],
+            open: true,
+        }
+    }
+
+    #[test]
+    fn effort_fence_grounds_only_its_members_in_the_term_lane() {
+        let mut store = two_effort_world();
+        let mut q = query(&["token"]);
+        q.effort = Some(effort_a());
+        let response = retrieve(&mut store, &q, NOW).unwrap();
+        let RetrieveResponse::Grounded { results, .. } = &response else {
+            panic!("effort A must ground its own rows, got {response:?}");
+        };
+        let ids: Vec<&str> = results.iter().map(|e| e.id.as_str()).collect();
+        assert!(ids.contains(&"cap-1"), "the epic grounds: {ids:?}");
+        assert!(ids.contains(&"cap-2"), "the member grounds: {ids:?}");
+        // Leakage rejection: another effort's rows carry the IDENTICAL term
+        // yet must never ground under this fence.
+        assert!(
+            !ids.contains(&"cap-3") && !ids.contains(&"cap-4"),
+            "effort B rows leaked past the term-lane fence: {ids:?}"
+        );
+    }
+
+    #[test]
+    fn effort_fence_grounds_only_its_members_in_the_vector_lane() {
+        let mut store = two_effort_world();
+        // IDENTICAL embedding on both efforts' members: only the fence can
+        // separate them in the vector lane.
+        store
+            .put_embedding("cap-2", &[1.0, 0.0], "m", APPENDED)
+            .unwrap();
+        store
+            .put_embedding("cap-4", &[1.0, 0.0], "m", APPENDED)
+            .unwrap();
+        let mut q = RetrieveQuery {
+            terms: vec!["token".to_string()],
+            lane: Some(Lane::Vector),
+            query_embedding: Some(vec![1.0, 0.0]),
+            ..RetrieveQuery::default()
+        };
+        q.effort = Some(effort_a());
+        let response = retrieve(&mut store, &q, NOW).unwrap();
+        let RetrieveResponse::Grounded { results, .. } = &response else {
+            panic!("vector lane must ground effort A's member, got {response:?}");
+        };
+        let ids: Vec<&str> = results.iter().map(|e| e.id.as_str()).collect();
+        assert!(
+            ids.contains(&"cap-2"),
+            "effort A's embedded member grounds: {ids:?}"
+        );
+        assert!(
+            !ids.contains(&"cap-4"),
+            "effort B's identically-embedded member leaked past the vector fence: {ids:?}"
+        );
+    }
+
+    #[test]
+    fn effort_absent_is_byte_identical_dormant() {
+        // Byte-golden dormancy (NOT a substring probe): a query WITHOUT an
+        // effort scope must be byte-for-byte identical to the pre-S3 engine —
+        // i.e. to the SAME four capsules in a store that never learned the
+        // effort machinery (no epic classification, no part_of edges). A
+        // `contains("effort")` probe both false-passes on a null field and
+        // false-FAILS on content bearing the token; full-wire identity is neither.
+        let mut with_efforts = two_effort_world();
+        let mut pre_s3 = Store::open_in_memory().unwrap();
+        for content in [
+            "token rollout epic alpha",
+            "token detail member alpha",
+            "token rollout epic beta",
+            "token detail member beta",
+        ] {
+            pre_s3
+                .append(&cap(content, "nott", 0.9, VF, None), APPENDED)
+                .unwrap();
+        }
+        let dormant =
+            serde_json::to_string(&retrieve(&mut with_efforts, &query(&["token"]), NOW).unwrap())
+                .unwrap();
+        let baseline =
+            serde_json::to_string(&retrieve(&mut pre_s3, &query(&["token"]), NOW).unwrap())
+                .unwrap();
+        assert_eq!(
+            dormant, baseline,
+            "an effort-free recall is byte-identical to the pre-S3 engine: {dormant}"
+        );
+    }
+
+    #[test]
+    fn effort_grounded_echoes_scope_and_stamps_roles() {
+        let mut store = two_effort_world();
+        let mut q = query(&["token"]);
+        q.effort = Some(effort_a());
+        let response = retrieve(&mut store, &q, NOW).unwrap();
+        let value = serde_json::to_value(&response).unwrap();
+        assert_eq!(value["effort"]["epic_id"], "cap-1");
+        assert_eq!(value["effort"]["member_total"], 1);
+        assert_eq!(value["effort"]["open"], true);
+        // Per-row effort_role: the epic is "epic", the member is "member".
+        let by_id = |id: &str| {
+            value["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["id"] == id)
+                .cloned()
+                .unwrap()
+        };
+        assert_eq!(by_id("cap-1")["effort_role"], "epic");
+        assert_eq!(by_id("cap-2")["effort_role"], "member");
+    }
+
+    #[test]
+    fn closed_effort_is_queryable_with_open_false() {
+        let mut store = two_effort_world();
+        // A witnessed (closed) epic still grounds — only tombstoned refuses
+        // (that rejection lives at the server resolution boundary).
+        let mut q = query(&["token"]);
+        q.effort = Some(EffortScope {
+            epic_id: "cap-1".to_string(),
+            member_ids: vec!["cap-2".to_string()],
+            open: false,
+        });
+        let response = retrieve(&mut store, &q, NOW).unwrap();
+        let value = serde_json::to_value(&response).unwrap();
+        assert_eq!(value["outcome"], "grounded", "closed effort still grounds");
+        assert_eq!(value["effort"]["open"], false, "the echo names it closed");
+    }
+
+    #[test]
+    fn fenced_dead_member_surfaces_in_excluded_never_collapses_to_abstain() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append(
+                &cap("alpha effort container headline", "nott", 0.9, VF, None),
+                APPENDED,
+            )
+            .unwrap(); // cap-1 epic
+        store
+            .append(&cap("widget live member", "nott", 0.9, VF, None), APPENDED)
+            .unwrap(); // cap-2 live member
+        store
+            .append(&cap("widget stale member", "nott", 0.9, VF, None), APPENDED)
+            .unwrap(); // cap-3 superseded member
+        store
+            .append(
+                &cap("widget successor outside", "nott", 0.9, VF, None),
+                APPENDED,
+            )
+            .unwrap(); // cap-4 successor (NOT in the effort)
+        store
+            .set_classification("cap-1", "epic", "project", NOW)
+            .unwrap();
+        store
+            .upsert_relation(RelationKind::PartOf, "cap-2", "cap-1", APPENDED)
+            .unwrap();
+        store
+            .upsert_relation(RelationKind::PartOf, "cap-3", "cap-1", APPENDED)
+            .unwrap();
+        store.supersede("cap-3", "cap-4", APPENDED).unwrap();
+
+        let mut q = query(&["widget"]);
+        q.effort = Some(EffortScope {
+            epic_id: "cap-1".to_string(),
+            member_ids: vec!["cap-2".to_string(), "cap-3".to_string()],
+            open: true,
+        });
+        let response = retrieve(&mut store, &q, NOW).unwrap();
+        let RetrieveResponse::Grounded {
+            results, excluded, ..
+        } = &response
+        else {
+            panic!("the live member must ground; the dead one must not abstain: {response:?}");
+        };
+        let ids: Vec<&str> = results.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["cap-2"], "only the live fenced member grounds");
+        assert_eq!(
+            excluded.get(&ExclusionReason::Superseded).copied(),
+            Some(1),
+            "the fenced-in dead member surfaces under excluded, not abstain: {excluded:?}"
+        );
+        // The successor is outside the fence — it never even reaches
+        // eligibility (scope, not exclusion).
+        assert!(!ids.contains(&"cap-4"));
+    }
+
+    #[test]
+    fn fenced_zero_match_abstains_and_names_the_effort_fence() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append(
+                &cap("effort epic headline", "nott", 0.9, VF, None),
+                APPENDED,
+            )
+            .unwrap(); // cap-1
+        store
+            .append(
+                &cap("banana member content", "nott", 0.9, VF, None),
+                APPENDED,
+            )
+            .unwrap(); // cap-2
+        store
+            .set_classification("cap-1", "epic", "project", NOW)
+            .unwrap();
+        store
+            .upsert_relation(RelationKind::PartOf, "cap-2", "cap-1", APPENDED)
+            .unwrap();
+
+        let mut q = query(&["kiwi"]);
+        q.effort = Some(EffortScope {
+            epic_id: "cap-1".to_string(),
+            member_ids: vec!["cap-2".to_string()],
+            open: true,
+        });
+        let response = retrieve(&mut store, &q, NOW).unwrap();
+        // A fenced zero-match ABSTAINS — never floored to a fabricated row.
+        let RetrieveResponse::Abstain { reason, .. } = &response else {
+            panic!("a fenced zero-match must abstain, never floor: {response:?}");
+        };
+        assert!(
+            reason.contains("within effort 'cap-1' (1 members)"),
+            "the honest-empty text names the effort fence: {reason}"
+        );
+    }
+
+    #[test]
+    fn effort_fence_label_composes_with_the_project_fence() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append(
+                &cap("effort epic headline", "nott", 0.9, VF, None),
+                APPENDED,
+            )
+            .unwrap(); // cap-1
+        store
+            .append(
+                &cap("banana member content", "nott", 0.9, VF, None),
+                APPENDED,
+            )
+            .unwrap(); // cap-2
+        store
+            .set_classification("cap-1", "epic", "project", NOW)
+            .unwrap();
+        store
+            .upsert_relation(RelationKind::PartOf, "cap-2", "cap-1", APPENDED)
+            .unwrap();
+        let q = RetrieveQuery {
+            terms: vec!["kiwi".to_string()],
+            project_id: Some("nott".to_string()),
+            effort: Some(EffortScope {
+                epic_id: "cap-1".to_string(),
+                member_ids: vec!["cap-2".to_string()],
+                open: true,
+            }),
+            ..RetrieveQuery::default()
+        };
+        let response = retrieve(&mut store, &q, NOW).unwrap();
+        let RetrieveResponse::Abstain { reason, .. } = &response else {
+            panic!("expected abstain, got {response:?}");
+        };
+        assert!(
+            reason.contains("within effort 'cap-1' (1 members) and project 'nott'"),
+            "the effort clause LEADS the composed fence label: {reason}"
+        );
+    }
+
+    #[test]
+    fn effort_fence_scales_past_the_sql_variable_limit() {
+        // 1050 members > SQLite's 999-variable ceiling: the json_each fence
+        // is ONE bound parameter, so this must ground without a variable-limit
+        // error and without a full scan of the 1050 rows (the FTS driver
+        // narrows first).
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append(&cap("scale effort epic", "nott", 0.9, VF, None), APPENDED)
+            .unwrap(); // cap-1
+        let mut member_ids = Vec::new();
+        for i in 0..1050 {
+            store
+                .append(
+                    &cap(&format!("scale member number {i}"), "nott", 0.9, VF, None),
+                    APPENDED,
+                )
+                .unwrap();
+            member_ids.push(format!("cap-{}", i + 2));
+        }
+        store
+            .set_classification("cap-1", "epic", "project", NOW)
+            .unwrap();
+        for m in &member_ids {
+            store
+                .upsert_relation(RelationKind::PartOf, m, "cap-1", APPENDED)
+                .unwrap();
+        }
+        // Non-members that ALSO carry "scale" — a FULL SCAN of the term would
+        // ground these too. They are NOT part_of the effort, so the id-set
+        // fence must exclude them: the proof that the fence NARROWS the
+        // candidate set rather than scanning every "scale" row is that
+        // `matched` counts ONLY the in-fence rows (1050 members + the epic),
+        // never these outsiders.
+        for i in 0..8 {
+            store
+                .append(
+                    &cap(&format!("scale outsider number {i}"), "nott", 0.9, VF, None),
+                    APPENDED,
+                )
+                .unwrap();
+        }
+        let q = RetrieveQuery {
+            terms: vec!["scale".to_string()],
+            effort: Some(EffortScope {
+                epic_id: "cap-1".to_string(),
+                member_ids,
+                open: true,
+            }),
+            limit: Some(5),
+            ..RetrieveQuery::default()
+        };
+        let response = retrieve(&mut store, &q, NOW).unwrap();
+        let RetrieveResponse::Grounded {
+            matched, effort, ..
+        } = &response
+        else {
+            panic!("a 1050-member fence must ground, not error: {response:?}");
+        };
+        // Exactly the 1050 members + the epic are eligible in-fence "scale"
+        // matches; the 8 outside "scale" rows are fence-excluded, never
+        // full-scanned. A full scan would report 1059 here.
+        assert_eq!(
+            *matched, 1051,
+            "the id-set fence narrows to members ∪ {{epic}}; outsiders never count: {matched}"
+        );
+        assert_eq!(effort.as_ref().unwrap().member_total, 1050);
+    }
+
+    #[test]
+    fn effort_scoped_recall_is_deterministic() {
+        let run = || {
+            let mut store = two_effort_world();
+            let mut q = query(&["token"]);
+            q.effort = Some(effort_a());
+            serde_json::to_vec(&retrieve(&mut store, &q, NOW).unwrap()).unwrap()
+        };
+        assert_eq!(run(), run(), "seq/id only — no clock, no nondeterminism");
     }
 }
