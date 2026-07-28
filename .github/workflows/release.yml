@@ -79,23 +79,74 @@ jobs:
     if: ${{ always() && needs.build-core.result == 'success' && contains('success skipped', needs.build-cross.result) }}
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           merge-multiple: true
-      - name: create or update release with checksums
+      - name: create the release with its checksums and notes
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           sha256sum nmemory-* > SHA256SUMS
+
+          # This repository has IMMUTABLE RELEASES enabled: a release published
+          # without assets can NEVER receive them (`HTTP 422: Cannot upload
+          # assets to an immutable release`), and v0.2.0 was burned exactly that
+          # way by a hand-cut release. So an existing assetless release is a
+          # dead end that MUST be named, not silently uploaded into.
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" nmemory-* SHA256SUMS \
-              --repo "$GITHUB_REPOSITORY" --clobber
-          else
-            gh release create "$RELEASE_TAG" nmemory-* SHA256SUMS \
-              --repo "$GITHUB_REPOSITORY" --verify-tag \
-              --title "nMEMORY $RELEASE_TAG" \
-              --notes "Hermetic local memory for LLM agents. Binaries consumed by install.sh; SHA256SUMS attached."
+            # A COUNT is not completeness. An immutable release holding one
+            # archive but no SHA256SUMS is just as unrecoverable as an empty
+            # one, and letting it pass as "done" would send the npm installer
+            # — which verifies every download against SHA256SUMS — to a
+            # release that can never carry it. Compare NAMES, against the set
+            # this run actually built: that set already accounts for a
+            # continue-on-error target legitimately absent from the matrix.
+            existing="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --json assets --jq '.assets[].name' | sort)"
+            expected="$(printf '%s\n' nmemory-* SHA256SUMS | sort)"
+            missing="$(comm -23 <(printf '%s\n' "$expected") <(printf '%s\n' "$existing"))"
+            if [ -z "$missing" ]; then
+              echo "release: $RELEASE_TAG already carries every asset this run built — nothing to do."
+              exit 0
+            fi
+            {
+              printf 'release: REFUSED — %s exists but is incomplete.\n' "$RELEASE_TAG"
+              printf 'Missing from it:\n'
+              printf '%s\n' "$missing" | while IFS= read -r name; do
+                [ -n "$name" ] && printf '  %s\n' "$name"
+              done
+              cat <<'EOF'
+          Immutable releases cannot receive assets after publication, so this
+          release can never be completed. Delete it (the tag may stay) and
+          re-run this workflow; it will create the release WITH its assets in
+          one act. NEVER hand-create a release before this workflow runs.
+          EOF
+            } >&2
+            exit 1
           fi
+
+          # Notes come from the changelog entry for this version — the release
+          # and the changelog tell one story, or the checklist's changelog item
+          # is theatre. A missing entry is a refusal, not a boilerplate line.
+          version="${RELEASE_TAG#v}"
+          awk -v ver="$version" '
+            $0 ~ "^## \\[" ver "\\]" { grab = 1; next }
+            grab && /^## \[/ { exit }
+            grab { print }
+          ' CHANGELOG.md > /tmp/notes.md
+          if ! grep -q '[^[:space:]]' /tmp/notes.md; then
+            printf 'release: REFUSED — CHANGELOG.md has no entry for %s.\n' "$version" >&2
+            exit 1
+          fi
+
+          gh release create "$RELEASE_TAG" nmemory-* SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "nMEMORY $RELEASE_TAG" \
+            --notes-file /tmp/notes.md
 
   # --- registries -----------------------------------------------------------
   #

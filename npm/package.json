@@ -1,6 +1,6 @@
 {
   "name": "nmemory",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Hermetic local memory for coding agents over MCP: capture with mandatory provenance, recall that is grounded or abstains. One binary, one SQLite file, zero network sockets on serve and recall.",
   "license": "AGPL-3.0-only",
   "homepage": "https://no.tt",
