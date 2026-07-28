@@ -1,0 +1,84 @@
+# auto-release — merging a release PR IS the release. No third click exists.
+#
+# Born from the owner's question on 2026-07-28: "porque releases/new manual?
+# a pipeline devia cuidar disso." It should, and now does. The authorization
+# chain is already two owner acts deep before this workflow runs — the
+# release-request merge in the monorepo and the release PR merge here — so
+# demanding a hand-created GitHub Release afterwards was ceremony, not a gate.
+#
+# THIS WORKFLOW CREATES A TAG, NEVER A RELEASE. That distinction is the whole
+# design, and it was learned the expensive way: this repository has IMMUTABLE
+# RELEASES enabled, so a release published with no assets can never receive
+# them — `gh release upload` answers `HTTP 422: Cannot upload assets to an
+# immutable release`, permanently. A hand-cut v0.2.0 release burned exactly
+# that way. So the release must be born WITH its assets, in the single
+# `gh release create <tag> <files...>` that release.yml already performs.
+#
+# The chain: push to main -> version has no tag -> create the tag ref ->
+# dispatch release.yml for it. The dispatch is explicit because a tag created
+# with the workflow's own GITHUB_TOKEN fires no downstream workflows
+# (GitHub's recursion guard); without it the tag would sit there silently
+# building nothing.
+#
+# Fail-closed twice: no CHANGELOG entry for the version -> no tag (the
+# public-release checklist calls a release without its changelog entry a
+# double failure; this makes that law mechanical, before anything outward
+# exists); an existing tag -> clean no-op, so replays and ordinary pushes to
+# main cost nothing.
+name: auto-release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: tag an untagged version and hand it to release.yml
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(awk -F'"' '/^version[[:space:]]*=/ { print $2; exit }' Cargo.toml)"
+          [ -n "$version" ] || { echo "auto-release: cannot read version from Cargo.toml" >&2; exit 1; }
+          tag="v${version}"
+
+          if gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "auto-release: ${tag} already exists — nothing to do."
+            exit 0
+          fi
+
+          # The changelog gate runs BEFORE the tag: refusing here leaves the
+          # repository exactly as it was, with no ref and no release to undo.
+          if ! awk -v ver="$version" '
+                 $0 ~ "^## \\[" ver "\\]" { grab = 1; next }
+                 grab && /^## \[/ { exit }
+                 grab { print }
+               ' CHANGELOG.md | grep -q '[^[:space:]]'; then
+            cat >&2 <<EOF
+          auto-release: REFUSED — CHANGELOG.md has no entry for ${version}.
+          A release whose notes are boilerplate while no changelog entry exists
+          fails the public-release checklist twice. Add the [${version}] entry
+          and merge; this workflow tags on that push.
+          EOF
+            exit 1
+          fi
+
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f "ref=refs/tags/${tag}" -f "sha=${GITHUB_SHA}" >/dev/null
+          echo "auto-release: tagged ${tag} at ${GITHUB_SHA} (no release yet — release.yml creates it WITH its assets)."
+
+          gh workflow run release.yml -f "tag=${tag}"
+          echo "auto-release: dispatched release.yml for ${tag}."

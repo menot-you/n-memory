@@ -6,6 +6,30 @@ All notable changes to nMEMORY. The format follows
 `menot-you/n-memory` mirror. Every entry states what shipped, verified against
 the released source — never against commit messages alone.
 
+## [0.2.1] — 2026-07-28
+
+### Changed
+
+- Re-release of 0.2.0. No library or binary source change — the crate content
+  is identical; only the release workflows and this changelog move. The
+  v0.2.0 GitHub release name is permanently unusable: this repository has
+  immutable releases enabled, the release was published by hand before the
+  pipeline attached its binaries, and an immutable release can neither
+  receive assets after publication nor free its tag name for reuse. From
+  this version the pipeline cuts the tag and creates the release with its
+  assets and its changelog entry in one act (`auto-release`), so that
+  failure mode cannot recur — and a version with no changelog entry is
+  refused before anything outward exists.
+- crates.io publishing begins at this version.
+
+### Known
+
+- The Windows x86_64 target regressed in 0.2.0 (unix-only file-descriptor
+  APIs on a new code path) and is absent from this release's binaries;
+  v0.1.2 was the last version with a Windows build. The npm installer
+  refuses that platform by name instead of guessing. Tracked for a
+  follow-up release.
+
 ## [0.2.0] — 2026-07-28
 
 ### Added
