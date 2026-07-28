@@ -16,7 +16,10 @@
 //!   An outcome NEVER flips a capsule's recall eligibility by itself: only an
 //!   explicit `falsifies` edge ([`crate::relation::RelationKind::Falsifies`])
 //!   excludes a capsule from recall. The optional `capsule_id` is a soft
-//!   "bears on" pointer for the reader, never a consequence.
+//!   "bears on" pointer for the reader, never a consequence. A scored outcome
+//!   carries a grounded recall receipt and a `0.0..=1.0` usefulness score;
+//!   the store may use that pair to update advisory ranking weights, never
+//!   eligibility.
 //! - A [`PreferenceRecord`] is ONE **pairwise** preference-evidence datum:
 //!   `preferred_id` was chosen over `rejected_id` in some `context`. Pairwise
 //!   ONLY — no score, no ranking, no aggregation, no training. It is evidence
@@ -39,16 +42,22 @@ pub enum SubstrateError {
     /// preference endpoint id) was empty or whitespace-only.
     #[error("substrate record rejected: {0} is empty")]
     EmptyField(&'static str),
+    /// A scored outcome did not carry `receipt_id` and `score` together, or
+    /// its score was not finite and inside the closed `0.0..=1.0` range.
+    #[error("substrate outcome scoring rejected: {0}")]
+    InvalidOutcomeScoring(&'static str),
 }
 
 /// One append-only **outcome observation** (u6h). `id` is the store-minted
 /// `out-<n>`; `at` is the injected recording instant. `description` and
 /// `actor` are mandatory (the caller names WHO observed — there is no default
-/// actor); `evidence_ref` and `capsule_id` are optional. This record is
+/// actor); `evidence_ref` and `capsule_id` are optional. `receipt_id` and
+/// `score` are optional only as a PAIR: together they rate the capsules a
+/// grounded recall returned. This record is
 /// ADVISORY substrate: it asserts an outcome was observed, never that it was
-/// witnessed/proven, and it never changes any capsule's state (see the module
-/// docs — only a `falsifies` edge does).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// witnessed/proven, and it never changes any capsule's recall eligibility
+/// (see the module docs — only a `falsifies` edge does).
+#[derive(Debug, Clone, PartialEq)]
 pub struct OutcomeRecord {
     /// Store-minted id (`out-<n>`, 1-based append sequence).
     pub id: String,
@@ -63,21 +72,35 @@ pub struct OutcomeRecord {
     /// A soft "bears on" pointer for the reader — it has ZERO effect on the
     /// capsule's recall eligibility (only a `falsifies` edge fences recall).
     pub capsule_id: Option<String>,
+    /// Grounded recall receipt whose returned capsules this observation rates.
+    /// Present exactly when [`Self::score`] is present.
+    pub receipt_id: Option<String>,
+    /// Usefulness score in the closed `0.0..=1.0` range. Present exactly when
+    /// [`Self::receipt_id`] is present.
+    pub score: Option<f64>,
     /// Injected recording instant (the store reads no clock).
     pub at: OffsetDateTime,
 }
 
 impl OutcomeRecord {
     /// Build a validated outcome record. Rejects empty/whitespace `id`,
-    /// `description`, or `actor`; the optionals are taken as-is (the store
-    /// validates a present `capsule_id`'s existence — a shape this pure
-    /// module cannot see). `id` and `at` are injected by the store.
+    /// `description`, or `actor`; validates that `receipt_id` and `score`
+    /// appear together and that the score is finite and inside `0.0..=1.0`.
+    /// The store validates a present `capsule_id`'s existence and resolves a
+    /// receipt — shapes this pure module cannot see. `id` and `at` are
+    /// injected by the store.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the validated record constructor mirrors the eight persisted outcome columns"
+    )]
     pub fn new(
         id: String,
         description: String,
         actor: String,
         evidence_ref: Option<String>,
         capsule_id: Option<String>,
+        receipt_id: Option<String>,
+        score: Option<f64>,
         at: OffsetDateTime,
     ) -> Result<Self, SubstrateError> {
         if id.trim().is_empty() {
@@ -89,12 +112,34 @@ impl OutcomeRecord {
         if actor.trim().is_empty() {
             return Err(SubstrateError::EmptyField("actor"));
         }
+        match (&receipt_id, score) {
+            (None, None) => {}
+            (Some(receipt_id), Some(score)) => {
+                if receipt_id.trim().is_empty() {
+                    return Err(SubstrateError::InvalidOutcomeScoring(
+                        "receipt_id must be non-empty",
+                    ));
+                }
+                if !score.is_finite() || !(0.0..=1.0).contains(&score) {
+                    return Err(SubstrateError::InvalidOutcomeScoring(
+                        "score must be finite and within 0.0..=1.0",
+                    ));
+                }
+            }
+            _ => {
+                return Err(SubstrateError::InvalidOutcomeScoring(
+                    "receipt_id and score must be present together",
+                ));
+            }
+        }
         Ok(OutcomeRecord {
             id,
             description,
             actor,
             evidence_ref,
             capsule_id,
+            receipt_id,
+            score,
             at,
         })
     }
@@ -185,17 +230,23 @@ mod tests {
             "session:2026-07-19".into(),
             Some("ci://run/4821".into()),
             Some("cap-7".into()),
+            Some("rcpt-3".into()),
+            Some(0.75),
             at(),
         )
         .expect("valid full record");
         assert_eq!(full.id, "out-1");
         assert_eq!(full.evidence_ref.as_deref(), Some("ci://run/4821"));
         assert_eq!(full.capsule_id.as_deref(), Some("cap-7"));
+        assert_eq!(full.receipt_id.as_deref(), Some("rcpt-3"));
+        assert_eq!(full.score, Some(0.75));
 
         let bare = OutcomeRecord::new(
             "out-2".into(),
             "observed".into(),
             "actor".into(),
+            None,
+            None,
             None,
             None,
             at(),
@@ -208,20 +259,74 @@ mod tests {
     #[test]
     fn outcome_new_rejects_each_empty_mandatory_field() {
         assert_eq!(
-            OutcomeRecord::new("".into(), "d".into(), "a".into(), None, None, at())
-                .expect_err("empty id"),
+            OutcomeRecord::new(
+                "".into(),
+                "d".into(),
+                "a".into(),
+                None,
+                None,
+                None,
+                None,
+                at(),
+            )
+            .expect_err("empty id"),
             SubstrateError::EmptyField("id")
         );
         assert_eq!(
-            OutcomeRecord::new("out-1".into(), "  ".into(), "a".into(), None, None, at())
-                .expect_err("blank description"),
+            OutcomeRecord::new(
+                "out-1".into(),
+                "  ".into(),
+                "a".into(),
+                None,
+                None,
+                None,
+                None,
+                at(),
+            )
+            .expect_err("blank description"),
             SubstrateError::EmptyField("description")
         );
         assert_eq!(
-            OutcomeRecord::new("out-1".into(), "d".into(), "".into(), None, None, at())
-                .expect_err("empty actor — there is no default observer"),
+            OutcomeRecord::new(
+                "out-1".into(),
+                "d".into(),
+                "".into(),
+                None,
+                None,
+                None,
+                None,
+                at(),
+            )
+            .expect_err("empty actor — there is no default observer"),
             SubstrateError::EmptyField("actor")
         );
+    }
+
+    #[test]
+    fn outcome_new_rejects_unpaired_or_invalid_scoring() {
+        for (receipt_id, score, message) in [
+            (Some("rcpt-1".into()), None, "receipt without score"),
+            (None, Some(0.5), "score without receipt"),
+            (Some("  ".into()), Some(0.5), "blank receipt"),
+            (Some("rcpt-1".into()), Some(-0.01), "negative score"),
+            (Some("rcpt-1".into()), Some(1.01), "score above one"),
+            (Some("rcpt-1".into()), Some(f64::NAN), "non-finite score"),
+        ] {
+            assert!(matches!(
+                OutcomeRecord::new(
+                    "out-1".into(),
+                    "observed".into(),
+                    "actor".into(),
+                    None,
+                    None,
+                    receipt_id,
+                    score,
+                    at(),
+                )
+                .expect_err(message),
+                SubstrateError::InvalidOutcomeScoring(_)
+            ));
+        }
     }
 
     #[test]
@@ -314,6 +419,8 @@ mod tests {
                 "out-1".into(),
                 "observed".into(),
                 "\t\n".into(),
+                None,
+                None,
                 None,
                 None,
                 at(),

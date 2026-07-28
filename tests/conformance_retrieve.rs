@@ -12,7 +12,8 @@
 //! mirroring the donor's production-handler discipline.
 //!
 //! Strengthened vs donor: `now` is injected here (no wall-clock reads), so
-//! the repeat-query gate asserts byte-identical JSON, not just order. The
+//! the repeat-query gate asserts byte-identical JSON after removing the
+//! deliberately fresh receipt id, not just order. The
 //! donor's superseded-capsule and foreign-supersede-edge gates are NOT
 //! carried here (h4's own suites in `src/` carry superseded-exclusion;
 //! consolidate beyond exact-dedup is deferred), and its extract/classify
@@ -37,6 +38,40 @@ use time::macros::datetime;
 /// Injected instants: capture happens before the query instant.
 const CAPTURED: OffsetDateTime = datetime!(2026-07-18 12:00:00 UTC);
 const NOW: OffsetDateTime = datetime!(2026-07-18 20:00:00 UTC);
+
+/// A vector whose mantissas cannot be confused with any rounded recall
+/// explain field on the wire (confidence/decay, bm25, or cosine).
+const SENTINEL: [f32; 3] = [0.987_654_3, -0.192_837_46, 0.564_738_3];
+
+/// The one source of truth for fields admitted on a fused result envelope.
+/// Any additive wire field must extend this set in the same change.
+const FUSED_ENVELOPE_KEYS: &[&str] = &[
+    "label",
+    "framing",
+    "id",
+    "headline",
+    "instruction_taint",
+    "authority_class",
+    "confidence",
+    "decayed_weight",
+    "provenance",
+    "anchor_live",
+    "anchor_drift",
+    "evidence_state",
+    "proof_hint",
+    "stale_if",
+    "freshness",
+    "matched_terms",
+    "relevance",
+    "bm25",
+    "vector_similarity",
+    "fusion_rank",
+    "feedback_weight",
+    "review_state",
+    "corroboration",
+    "corroboration_weight",
+    "effort_role",
+];
 
 /// Test seam for the public entry: every recall in this suite injects
 /// the SAME hermetic, nonexistent anchor root (the root is boot-injected
@@ -75,6 +110,7 @@ fn request(content: &str, anchor: &str) -> IngestRequest {
         instruction_taint: None,
         supersedes: None,
         session_id: None,
+        event_time: None,
     }
 }
 
@@ -244,6 +280,103 @@ fn ten_queries_ground_with_100pct_field_completeness() {
     }
 }
 
+fn fused_response_with_sentinel_vectors() -> RetrieveResponse {
+    let mut store = seeded_store();
+    for seq in 1..=10 {
+        store
+            .put_embedding(
+                &format!("cap-{seq}"),
+                &SENTINEL,
+                "u02-sentinel-model",
+                CAPTURED,
+            )
+            .expect("attach sentinel embedding");
+    }
+    let mut fused = query(&["sync", "engine"]);
+    fused.query_embedding = Some(SENTINEL.to_vec());
+    // Activate u04's envelope addition with neutral priors. Ranking stays
+    // deterministic while the allowlist guard observes feedback_weight.
+    fused.weight_blend = Some(1.0);
+    retrieve(&mut store, &fused, NOW).expect("fused retrieve")
+}
+
+/// A fused recall may serialize rounded score explanations, but it must
+/// never serialize the caller-fed query vector or stored embedding bytes.
+#[test]
+fn no_serialized_response_ever_carries_embedding_floats() {
+    let response = fused_response_with_sentinel_vectors();
+    let serialized = serde_json::to_string(&response).expect("serialize fused response");
+    assert!(
+        serialized.contains("\"vector_similarity\"") && serialized.contains("\"fusion_rank\""),
+        "the vector lane must be active or this invariant test is vacuous: {serialized}"
+    );
+    for forbidden in [
+        "0.9876543",
+        "0.98765427",
+        "-0.192837",
+        "0.19283746",
+        "0.5647383",
+        "0.56473833",
+        "\"embedding\"",
+        "query_embedding",
+        "\"vector\":",
+    ] {
+        assert!(
+            !serialized.contains(forbidden),
+            "serialized retrieve leaked forbidden vector fragment {forbidden:?}: {serialized}"
+        );
+    }
+}
+
+/// The fused evidence envelope is a closed wire surface. Additive fields are
+/// deliberate only when this guardian is updated in the same change.
+#[test]
+fn fused_envelope_keys_stay_within_the_frozen_expected_set() {
+    let value = serde_json::to_value(fused_response_with_sentinel_vectors())
+        .expect("serialize fused response");
+    assert_eq!(value["outcome"], "grounded");
+    let results = value["results"].as_array().expect("results array");
+    assert!(!results.is_empty(), "fused response must carry results");
+
+    for result in results {
+        let envelope = result.as_object().expect("result envelope");
+        for key in envelope.keys() {
+            assert!(
+                FUSED_ENVELOPE_KEYS.contains(&key.as_str()),
+                "unexpected fused envelope key {key:?}: {result}"
+            );
+        }
+        for required in [
+            "label",
+            "framing",
+            "id",
+            "headline",
+            "instruction_taint",
+            "authority_class",
+            "confidence",
+            "decayed_weight",
+            "provenance",
+            "anchor_live",
+            "anchor_drift",
+            "freshness",
+            "matched_terms",
+            "fusion_rank",
+            "feedback_weight",
+        ] {
+            assert!(
+                envelope.contains_key(required),
+                "fused envelope missing mandatory key {required:?}: {result}"
+            );
+        }
+    }
+    assert!(
+        results
+            .iter()
+            .any(|result| result.get("vector_similarity").is_some()),
+        "at least one fused row must prove that the vector lane ran"
+    );
+}
+
 /// Donor hard gate (c) + CAP-10: a query fenced to a project the capsule
 /// does not belong to returns zero rows — the new engine ABSTAINS, and
 /// neither the restricted content nor its id leaks through the response.
@@ -261,7 +394,7 @@ fn a_cross_project_query_returns_zero_rows_never_the_restricted_capsule() {
     fenced.project_id = Some("nott".to_string());
     let response = retrieve(&mut store, &fenced, NOW).expect("cross-project query must not error");
 
-    let RetrieveResponse::Abstain { reason } = &response else {
+    let RetrieveResponse::Abstain { reason, .. } = &response else {
         panic!("cross-project query must abstain, got: {response:?}");
     };
     // No leak: the response names neither the restricted content nor its
@@ -374,20 +507,32 @@ fn w2_tier_fences_report_archived_and_quarantined_excluded_counts() {
 
 /// Donor rule 6, strengthened: ranking is deterministic — and because the
 /// new engine takes `now` injected instead of reading a wall clock, two
-/// identical calls return byte-identical JSON, not merely the same order.
+/// identical calls return fresh sequential receipt ids and byte-identical
+/// JSON after that one additive key is removed, not merely the same order.
 #[test]
 fn retrieving_twice_yields_the_same_ranked_order_and_bytes() {
     let mut store = seeded_store();
     let q = query(&["sync", "engine"]);
-    let first =
-        serde_json::to_string(&retrieve(&mut store, &q, NOW).expect("first")).expect("json");
-    let second =
-        serde_json::to_string(&retrieve(&mut store, &q, NOW).expect("second")).expect("json");
+    let mut first =
+        serde_json::to_value(retrieve(&mut store, &q, NOW).expect("first")).expect("first json");
+    let mut second =
+        serde_json::to_value(retrieve(&mut store, &q, NOW).expect("second")).expect("second json");
+    assert_eq!(first["receipt_id"], "rcpt-1");
+    assert_eq!(second["receipt_id"], "rcpt-2");
+    first
+        .as_object_mut()
+        .expect("response object")
+        .remove("receipt_id");
+    second
+        .as_object_mut()
+        .expect("response object")
+        .remove("receipt_id");
     assert_eq!(
-        first, second,
-        "retrieving the same query twice at the same instant must be byte-identical"
+        serde_json::to_vec(&first).expect("first bytes"),
+        serde_json::to_vec(&second).expect("second bytes"),
+        "retrieving the same query twice must differ only by the fresh receipt id"
     );
-    assert!(first.contains("\"outcome\":\"grounded\""));
+    assert_eq!(first["outcome"], "grounded");
 }
 
 /// Donor: a query with no matching candidate returns missing-evidence,
@@ -402,7 +547,7 @@ fn a_query_matching_nothing_abstains_never_grounds() {
         NOW,
     )
     .expect("retrieve");
-    let RetrieveResponse::Abstain { reason } = &response else {
+    let RetrieveResponse::Abstain { reason, .. } = &response else {
         panic!("expected abstain, got: {response:?}");
     };
     assert!(
@@ -415,4 +560,78 @@ fn a_query_matching_nothing_abstains_never_grounds() {
         value.get("results").is_none(),
         "no fabricated results field"
     );
+}
+
+/// u13 public contract: the MCP-facing query field is a store-local capsule
+/// label fence. Capsules are linked through the real session + ingest paths;
+/// exact label and project fences AND-compose, and a different label neither
+/// returns nor names the fenced capsule.
+#[test]
+fn session_label_recall_is_exact_private_and_project_composed() {
+    let mut store = Store::open_in_memory().expect("open");
+    store.open_session("sess-a", CAPTURED).expect("open a");
+    store.open_session("sess-b", CAPTURED).expect("open b");
+
+    let mut a_nott = request("labelscope alpha-private nott capsule", "sessions.md:1");
+    a_nott.session_id = Some("sess-a".to_string());
+    a_nott.project_id = Some("nott/sub".to_string());
+    ingest(&mut store, a_nott, defaults(), CAPTURED).expect("ingest a nott"); // cap-1
+
+    let mut b_nott = request("labelscope beta-private nott capsule", "sessions.md:2");
+    b_nott.session_id = Some("sess-b".to_string());
+    b_nott.project_id = Some("nott/sub".to_string());
+    ingest(&mut store, b_nott, defaults(), CAPTURED).expect("ingest b nott"); // cap-2
+
+    let mut a_other = request("labelscope alpha-private other capsule", "sessions.md:3");
+    a_other.session_id = Some("sess-a".to_string());
+    a_other.project_id = Some("other".to_string());
+    ingest(&mut store, a_other, defaults(), CAPTURED).expect("ingest a other"); // cap-3
+
+    let response = retrieve(
+        &mut store,
+        &RetrieveQuery {
+            terms: vec!["labelscope".to_string()],
+            project_id: Some("nott/sub".to_string()),
+            project_prefix: Some("nott".to_string()),
+            session_id: Some("sess-a".to_string()),
+            ..RetrieveQuery::default()
+        },
+        NOW,
+    )
+    .expect("composed retrieve");
+    let value = serde_json::to_value(&response).expect("serialize");
+    assert_eq!(value["outcome"], "grounded");
+    assert_eq!(value["results"].as_array().expect("results").len(), 1);
+    assert_eq!(value["results"][0]["id"], "cap-1");
+
+    let cross_label = retrieve(
+        &mut store,
+        &RetrieveQuery {
+            terms: vec!["alpha-private".to_string()],
+            project_id: Some("nott/sub".to_string()),
+            session_id: Some("sess-b".to_string()),
+            ..RetrieveQuery::default()
+        },
+        NOW,
+    )
+    .expect("cross-label retrieve");
+    let raw = serde_json::to_string(&cross_label).expect("serialize cross-label");
+    assert!(matches!(cross_label, RetrieveResponse::Abstain { .. }));
+    assert!(!raw.contains("cap-1"));
+    assert!(!raw.contains("alpha-private"));
+
+    let project_intersection = retrieve(
+        &mut store,
+        &RetrieveQuery {
+            terms: vec!["labelscope".to_string()],
+            project_id: Some("other".to_string()),
+            session_id: Some("sess-a".to_string()),
+            ..RetrieveQuery::default()
+        },
+        NOW,
+    )
+    .expect("project and label retrieve");
+    let value = serde_json::to_value(project_intersection).expect("serialize intersection");
+    assert_eq!(value["results"].as_array().expect("results").len(), 1);
+    assert_eq!(value["results"][0]["id"], "cap-3");
 }

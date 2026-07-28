@@ -309,15 +309,11 @@ fn owned_id_key(id: &str) -> (u64, String) {
     (numeric, id.to_owned())
 }
 
-/// Closed relation-kind rank — [`crate::export`]'s contract order.
-const fn relation_kind_rank(kind: RelationKind) -> usize {
-    match kind {
-        RelationKind::Supersedes => 0,
-        RelationKind::DerivedFrom => 1,
-        RelationKind::Witnesses => 2,
-        RelationKind::Blocks => 3,
-        RelationKind::Falsifies => 4,
-    }
+/// Closed relation-kind rank — delegates to the enum's own contract order
+/// ([`RelationKind::rank`], derived from `ALL`); a local copy here drifted
+/// from its siblings in review once, so none of the surfaces keeps its own.
+fn relation_kind_rank(kind: RelationKind) -> usize {
+    kind.rank()
 }
 
 /// Total order over capsules by append sequence then id — the deterministic

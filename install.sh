@@ -62,7 +62,7 @@ if curl -fsSL -o "$TMP/$ASSET" "$URL" 2>/dev/null; then
 fi
 
 say "no release binary for ${TARGET_OS}-${TARGET_ARCH}; building from source."
-say "(first build needs the network for crates; the RUNTIME is hermetic — zero sockets)"
+say "(first build needs the network for crates; serve/recall are zero-socket; explicit sync shells to scp)"
 command -v git   >/dev/null 2>&1 || die "git is required for a source build"
 command -v cargo >/dev/null 2>&1 || die "Rust is required for a source build — https://rustup.rs"
 

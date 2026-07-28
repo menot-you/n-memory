@@ -17,12 +17,31 @@
 use std::path::{Path, PathBuf};
 
 use nmemory::bridge::{BridgeError, BridgeSource, read_source};
+use nmemory::capsule::sha256_hex;
 
 fn fixture_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
         .join("bridge")
+}
+
+/// Build a synthetic notion-pull export under `export`: a `manifest.json`
+/// plus one `pages/pg.md`, its `content_sha256` the REAL hash of the bytes
+/// (so the reader verifies it). Built in-code (d15: never a committed real
+/// export); `serde_json` is not a dev-dependency here, so the small manifest
+/// is formatted by hand.
+fn write_notion_fixture(export: &Path) {
+    std::fs::create_dir_all(export.join("pages")).unwrap();
+    let markdown = "# Notion Page\nbody from an exported page\n";
+    std::fs::write(export.join("pages").join("pg.md"), markdown).unwrap();
+    let hash = sha256_hex(markdown.as_bytes());
+    let manifest = format!(
+        "{{\"version\":1,\"entries\":[{{\"page_id\":\"pg\",\
+         \"url\":\"https://notion.so/pg\",\"content_sha256\":\"{hash}\",\
+         \"file\":\"pages/pg.md\"}}]}}"
+    );
+    std::fs::write(export.join("manifest.json"), manifest).unwrap();
 }
 
 /// Hermetic anchor root injected into every `read_source` call in this
@@ -301,6 +320,10 @@ fn memory_dir_pointing_at_a_file_is_a_typed_error() {
 #[test]
 fn every_closed_enum_variant_is_covered_and_labeled() {
     let root = fixture_root();
+    // A synthetic Notion export built in-code (d15: never a committed real
+    // export), kept alive for the whole test.
+    let notion = tempfile::tempdir().unwrap();
+    write_notion_fixture(&notion.path().join("export"));
     // Exhaustive on purpose: adding a BridgeSource variant breaks this
     // test (and `source_label`) until its coverage exists.
     let cases: Vec<(BridgeSource, PathBuf, &str)> = vec![
@@ -324,13 +347,19 @@ fn every_closed_enum_variant_is_covered_and_labeled() {
             root.clone(),
             "memory-dir",
         ),
+        (
+            BridgeSource::NotionExportDir(PathBuf::from("export")),
+            notion.path().to_path_buf(),
+            "notion-export-dir",
+        ),
     ];
     for (source, base, label) in &cases {
         match source {
             BridgeSource::UserClaudeMd
             | BridgeSource::ProjectClaudeMd
             | BridgeSource::ProjectAgentsMd
-            | BridgeSource::MemoryDir(_) => {}
+            | BridgeSource::MemoryDir(_)
+            | BridgeSource::NotionExportDir(_) => {}
         }
         assert_eq!(source.source_label(), *label);
         let got = read_source(source, base, Path::new(TEST_ANCHOR_ROOT))
