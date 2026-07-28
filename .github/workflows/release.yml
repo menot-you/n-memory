@@ -98,19 +98,34 @@ jobs:
           # way by a hand-cut release. So an existing assetless release is a
           # dead end that MUST be named, not silently uploaded into.
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            asset_count="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-              --json assets --jq '.assets | length')"
-            if [ "$asset_count" -gt 0 ]; then
-              echo "release: $RELEASE_TAG already carries $asset_count asset(s) — nothing to do."
+            # A COUNT is not completeness. An immutable release holding one
+            # archive but no SHA256SUMS is just as unrecoverable as an empty
+            # one, and letting it pass as "done" would send the npm installer
+            # — which verifies every download against SHA256SUMS — to a
+            # release that can never carry it. Compare NAMES, against the set
+            # this run actually built: that set already accounts for a
+            # continue-on-error target legitimately absent from the matrix.
+            existing="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --json assets --jq '.assets[].name' | sort)"
+            expected="$(printf '%s\n' nmemory-* SHA256SUMS | sort)"
+            missing="$(comm -23 <(printf '%s\n' "$expected") <(printf '%s\n' "$existing"))"
+            if [ -z "$missing" ]; then
+              echo "release: $RELEASE_TAG already carries every asset this run built — nothing to do."
               exit 0
             fi
-            cat >&2 <<EOF
-          release: REFUSED — $RELEASE_TAG exists with zero assets.
+            {
+              printf 'release: REFUSED — %s exists but is incomplete.\n' "$RELEASE_TAG"
+              printf 'Missing from it:\n'
+              printf '%s\n' "$missing" | while IFS= read -r name; do
+                [ -n "$name" ] && printf '  %s\n' "$name"
+              done
+              cat <<'EOF'
           Immutable releases cannot receive assets after publication, so this
           release can never be completed. Delete it (the tag may stay) and
           re-run this workflow; it will create the release WITH its assets in
           one act. NEVER hand-create a release before this workflow runs.
           EOF
+            } >&2
             exit 1
           fi
 

@@ -10,8 +10,9 @@ the released source — never against commit messages alone.
 
 ### Changed
 
-- Re-release of 0.2.0. No library or binary source change — the crate content
-  is identical; only the release workflows and this changelog move. The
+- Re-release of 0.2.0. The functional library and binary source is unchanged;
+  what moves is release metadata — the version itself, the release workflows,
+  and this changelog. The
   v0.2.0 GitHub release name is permanently unusable: this repository has
   immutable releases enabled, the release was published by hand before the
   pipeline attached its binaries, and an immutable release can neither
