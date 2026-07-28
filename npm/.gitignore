@@ -1,0 +1,4 @@
+# Written by install.mjs on the consumer's machine; never committed, never published.
+vendor/
+# Local `npm pack` output.
+*.tgz

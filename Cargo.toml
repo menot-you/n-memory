@@ -6,11 +6,54 @@
 
 [package]
 name = "nmemory"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 description = "nMEMORY: capture with mandatory provenance, recall that is grounded-or-abstain and ADVISORY_NOT_AUTHORITY. Hermetic single-file SQLite, stdio MCP, zero network."
 # Owner-ratified 2026-07-20 (ledger cap-82): AGPL-3.0-only, monorepo-wide canon.
 license = "AGPL-3.0-only"
+# Registry metadata. These URLs MUST name the PUBLIC mirror and the public site,
+# NEVER the monorepo — a crates.io listing is a public artifact and the monorepo
+# is not a place a reader can go (d33-monorepo-only-mirrors).
+repository = "https://github.com/menot-you/n-memory"
+homepage = "https://no.tt"
+readme = "README.md"
+keywords = ["mcp", "memory", "agent", "sqlite", "llm"]
+categories = ["command-line-utilities", "database", "development-tools"]
+# The toolchain this crate is BUILT and TESTED with (rust-toolchain.toml). A
+# consumer's `cargo install` never reads that file — rustup resolves it from the
+# working directory upward, and the unpacked .crate sits under the registry
+# cache — so the pin is restated here, where cargo does enforce it, and the file
+# itself is excluded below rather than shipped inert.
+rust-version = "1.96.1"
+# What the .crate does NOT carry. Every path here is either internal-only (it is
+# also stripped from the public mirror by tools/mirror-strip.d/n-memory.list) or
+# repository machinery no consumer of the packaged crate can run. The crate must
+# still BUILD from the tarball alone: Cargo.toml, Cargo.lock, src/ and tests/ all
+# stay, and `cargo package`'s verification build is the proof.
+exclude = [
+  # 2.4 MiB of demo media — 83% of the tarball — that nothing here compiles
+  # against (no build.rs; every include_str! names src/ or tests/fixtures/).
+  # crates.io renders the README with relative links rewritten against
+  # `repository` above, so the page serves these from the mirror's raw URLs
+  # whether or not the .crate carries them. Verified against published crates
+  # that do exactly this: gitui's `assets/logo.png` renders as
+  # https://github.com/gitui-org/gitui/raw/HEAD/assets/logo.png.
+  "/assets",
+  "/evals",
+  "/evidence",
+  "/handoff.nMEMORY.md",
+  "/infra",
+  "/schema",
+  "/scripts",
+  "/.github",
+  "/.coderabbit.yaml",
+  "/.gitignore",
+  "/glama.json",
+  # The npm wrapper is a SEPARATE distribution channel with its own manifest and
+  # its own published artifact. A `cargo install nmemory` consumer never runs it.
+  "/npm",
+  "/rust-toolchain.toml",
+]
 
 [dependencies]
 # Capsule v1 + canonical JSON (byte-stable via fixed struct field order).
@@ -28,8 +71,9 @@ thiserror = "2"
 # RFC3339 timestamps on the Capsule. The store itself reads NO clock —
 # `now` is injected at the surface boundary.
 time = { version = "0.3", features = ["serde-well-known", "formatting", "parsing", "macros"] }
-# Single-file SQLite store (s2) + FTS5-bm25 recall (s4). Bundled = hermetic.
-rusqlite = { version = "0.39", features = ["bundled"] }
+# Single-file SQLite store (s2) + FTS5-bm25 recall (s4). Bundled = hermetic;
+# backup gives sync a consistent snapshot of committed WAL state.
+rusqlite = { version = "0.39", features = ["backup", "bundled"] }
 # Spool organ (copied verbatim @9f92fa58): tempfile persist + tracing warns.
 tempfile = "3"
 tracing = "0.1"
@@ -38,6 +82,9 @@ rmcp = { version = "2.2", features = ["server", "transport-io"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
 # rmcp tool macros derive parameter schemas via schemars (donor B parity).
 schemars = "1"
+# Notion export reads stay beneath one opened root descriptor: every path
+# component is opened relative to it with O_NOFOLLOW.
+rustix = { version = "1", features = ["fs"] }
 
 [lints.rust]
 unsafe_code = "forbid"

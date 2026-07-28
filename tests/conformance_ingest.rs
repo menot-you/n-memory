@@ -72,6 +72,7 @@ impl PackEntry {
             instruction_taint: None,
             supersedes: None,
             session_id: None,
+            event_time: None,
         }
     }
 }
