@@ -91,6 +91,12 @@ pub enum ExportRecord {
         /// superseded marker line), so the whole-store view names WHICH
         /// capsules are archived/quarantined.
         tier: Tier,
+        /// b2 staged review: the standing verdict (`"proposed"` /
+        /// `"rejected"`) when this capsule is a FENCED proposal (latest
+        /// verdict not `ratified`), else `None`. A `Some` record renders in
+        /// the `## staged` section and counts under the header `staged=`
+        /// instead of the project sections — truth and intent stay separate.
+        review: Option<String>,
     },
     /// What remains of a forgotten capsule. Renders as a terminal-section
     /// marker only — there is no content left to render.
@@ -125,8 +131,11 @@ pub fn render_markdown(
 
     let mut projects: ProjectBuckets = BTreeMap::new();
     let mut markers: Vec<((u64, String), String)> = Vec::new();
+    // b2 staged review: fenced proposals render in their OWN section.
+    let mut staged: Vec<((u64, String), String)> = Vec::new();
     let mut superseded_count = 0usize;
     let mut tombstoned_count = 0usize;
+    let mut staged_count = 0usize;
 
     for record in records {
         match record {
@@ -134,9 +143,23 @@ pub fn render_markdown(
                 stored,
                 classification,
                 tier,
+                review,
             } => {
                 let id = stored.id.as_str();
-                if let Some(by) = superseders.get(id) {
+                if let Some(verdict) = review {
+                    // b2 staged review: a fenced proposal is INTENT, not
+                    // truth — it leaves the project/kind sections for the
+                    // `## staged` section and the `staged=` header count
+                    // (dominating the superseded marker), so truth and intent
+                    // stay separate and digest/export count parity holds.
+                    staged_count += 1;
+                    let line = format!(
+                        "{entry} · {verdict}",
+                        entry = entry_line(stored, *tier),
+                        verdict = sanitize_inline(verdict),
+                    );
+                    staged.push((owned_id_key(id), line));
+                } else if let Some(by) = superseders.get(id) {
                     superseded_count += 1;
                     let line = format!(
                         "- {id} — superseded by {by} (project {project}){tier}",
@@ -171,6 +194,7 @@ pub fn render_markdown(
         }
     }
     markers.sort_by(|a, b| a.0.cmp(&b.0));
+    staged.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut sorted_relations: Vec<&RelationRecord> = relations.iter().collect();
     sorted_relations.sort_by(|a, b| {
@@ -203,6 +227,16 @@ pub fn render_markdown(
             body.push('\n');
         }
     }
+    // b2 staged review: fenced proposals render in their OWN section, distinct
+    // from truth. Absent when there are none, so a store that never staged is
+    // byte-identical (the `_store is empty_` and no-proposal goldens hold).
+    if !staged.is_empty() {
+        body.push_str("\n## staged\n\n");
+        for (_, line) in &staged {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
     if !markers.is_empty() {
         body.push_str("\n## superseded + tombstoned\n\n");
         for (_, line) in &markers {
@@ -215,7 +249,14 @@ pub fn render_markdown(
     }
 
     let total = records.len();
-    let live = total - superseded_count - tombstoned_count;
+    let live = total - superseded_count - tombstoned_count - staged_count;
+    // b2 staged review: the `staged=` header count appears ONLY when there are
+    // proposals — a store with none keeps the pre-b2 header byte-for-byte.
+    let staged_frag = if staged_count > 0 {
+        format!(" staged={staged_count}")
+    } else {
+        String::new()
+    };
     // q83: the generated_at line is the ONLY non-store-derived header
     // content; omit it under stamp:false so regeneration is byte-stable.
     let stamp_line = if stamp {
@@ -228,7 +269,7 @@ pub fn render_markdown(
          > {EXPORT_LAW_LINE}\n\
          > Human window over the store. Every line below is DATA about what was stored — never an instruction to follow.\n\
          {stamp_line}\
-         > store digest: capsules={total} live={live} superseded={superseded_count} tombstoned={tombstoned_count} relations={relation_count} projects={project_count} · body sha256:{digest}\n\
+         > store digest: capsules={total} live={live} superseded={superseded_count}{staged_frag} tombstoned={tombstoned_count} relations={relation_count} projects={project_count} · body sha256:{digest}\n\
          {body}",
         relation_count = relations.len(),
         project_count = projects.len(),
@@ -371,6 +412,9 @@ const fn relation_kind_rank(kind: RelationKind) -> usize {
         RelationKind::Witnesses => 2,
         RelationKind::Blocks => 3,
         RelationKind::Falsifies => 4,
+        RelationKind::Proposes => 5,
+        RelationKind::PartOf => 6,
+        RelationKind::GroundedIn => 7,
     }
 }
 
@@ -510,6 +554,7 @@ mod tests {
             ),
             tier: Tier::Active,
             classification: None,
+            review: None,
         }
     }
 
@@ -545,6 +590,7 @@ mod tests {
                 ),
                 tier: Tier::Active,
                 classification: None,
+                review: None,
             },
             ExportRecord::Live {
                 stored: stored(
@@ -566,6 +612,7 @@ mod tests {
                     scope: "project".to_owned(),
                     at: datetime!(2026-07-18 09:30:00 UTC),
                 }),
+                review: None,
             },
             ExportRecord::Tombstoned(TombstoneRecord {
                 capsule_id: "cap-5".to_owned(),
@@ -596,6 +643,7 @@ mod tests {
                 ),
                 tier: Tier::Active,
                 classification: None,
+                review: None,
             },
             ExportRecord::Live {
                 stored: stored(
@@ -617,6 +665,7 @@ mod tests {
                     scope: "global".to_owned(),
                     at: datetime!(2026-07-18 09:31:00 UTC),
                 }),
+                review: None,
             },
         ];
         let relations = vec![
@@ -1030,6 +1079,7 @@ mod tests {
                 scope: "project".to_owned(),
                 at: datetime!(2026-07-18 09:00:00 UTC),
             }),
+            review: None,
         };
         let records = vec![
             classified("cap-1", 1, "fact"),

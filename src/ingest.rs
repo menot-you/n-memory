@@ -78,7 +78,7 @@ use time::OffsetDateTime;
 use crate::capsule::{
     AuthorityClass, Capsule, CapsuleError, Confidence, Freshness, Provenance, Scope, sha256_hex,
 };
-use crate::store::{CapsuleId, Store, StoreError};
+use crate::store::{CapsuleId, EventTimeRange, Store, StoreError};
 use crate::taint;
 
 /// Confidence recorded when the caller does not calibrate one: `0.6`.
@@ -222,7 +222,18 @@ pub struct IngestRequest {
     /// capture. A byte-identical dedup collapse never relinks the
     /// existing capsule.
     pub session_id: Option<String>,
+    /// Optional caller-declared fact-time range. A point is the degenerate
+    /// range `event_from == event_to`. Fresh captures persist it atomically
+    /// with the capsule; dedup collapses keep the existing capsule's first
+    /// declaration and never backfill or overwrite it.
+    pub event_time: Option<EventTimeRange>,
 }
+
+/// Literal fallback for `scope.project_id` when the operator supplied no
+/// boot project. An explicit `--project default` is indistinguishable from
+/// choosing the fallback by name, so the connected client may still derive
+/// the capture-time project in that one case.
+pub const DEFAULT_PROJECT_ID: &str = "default";
 
 /// Caller context the surface boundary resolves once per session and
 /// injects into every capture — currently the default project fence.
@@ -516,9 +527,13 @@ pub fn ingest(
         instruction_taint,
     )?;
 
-    let id = match &req.session_id {
-        Some(session) => store.append_with_session(&capsule, session, now)?,
-        None => store.append(&capsule, now)?,
+    let id = match (&req.session_id, &req.event_time) {
+        (Some(session), Some(event_time)) => {
+            store.append_with_session_and_event_time(&capsule, session, event_time, now)?
+        }
+        (Some(session), None) => store.append_with_session(&capsule, session, now)?,
+        (None, Some(event_time)) => store.append_with_event_time(&capsule, event_time, now)?,
+        (None, None) => store.append(&capsule, now)?,
     };
     // The replace verb, executed AFTER the successful append: the target
     // was validated above and the fresh id is distinct from every stored
@@ -795,6 +810,7 @@ mod tests {
             instruction_taint: None,
             supersedes: None,
             session_id: None,
+            event_time: None,
         }
     }
 
@@ -1038,6 +1054,7 @@ mod tests {
             instruction_taint: Some(true),
             supersedes: None,
             session_id: None,
+            event_time: None,
         };
         let out = ingest(&mut store, req, defaults(), injected_now()).unwrap();
         let stored = store.get(out.id.as_str()).unwrap().unwrap();

@@ -15,16 +15,28 @@
 //!    | `witnesses` | the evidence capsule | the attested capsule | gate-verdict doc attesting a story |
 //!    | `blocks` | the blocker | the blocked | `tasks.blocked_by` / `task_dependencies` edge |
 //!    | `falsifies` | the falsifier (an outcome `out-<n>` OR a capsule) | the falsified capsule | an observed outcome contradicting a stored claim |
+//!    | `proposes` | the proposing capsule | the target it proposes to replace | a staged, unratified replacement (navigational only) |
+//!    | `part_of` | the member capsule | the container epic/task | membership of a capsule in an effort container |
+//!    | `grounded_in` | the child task/epic/plan node | its parent epic | the planning-plane mission anchor |
 //!
 //!    Wire names are **snake_case** (`supersedes`, `derived_from`,
-//!    `witnesses`, `blocks`, `falsifies`) — chosen (over kebab-case) to
-//!    byte-match the donor &1532 contract, the store-side relation-kind CHECK
-//!    ontology, and the `memory_relate` tool vocabulary. As built, records
-//!    cross the layers BY WIRE NAME (`as_str()` / [`FromStr`]); a server-side
-//!    parity test pins all five copies of the closed set to these exact
-//!    bytes so none can drift. The enum is CLOSED: adding a kind is a
-//!    deliberate, reviewed ontology change, never an incidental one (u6h
-//!    added `falsifies`).
+//!    `witnesses`, `blocks`, `falsifies`, `proposes`, `part_of`,
+//!    `grounded_in`) — chosen (over kebab-case) to byte-match the donor
+//!    &1532 contract, the store-side relation-kind CHECK ontology, and the
+//!    `memory_relate` tool vocabulary. As built, records cross the layers BY
+//!    WIRE NAME (`as_str()` / [`FromStr`]); a server-side parity test pins
+//!    all five copies of the closed set (contract module, store enum, tool
+//!    param, SQL CHECK, and the wire-name docs) to these exact bytes so none
+//!    can drift. The enum is CLOSED: adding a kind is a deliberate, reviewed
+//!    ontology change, never an incidental one (u6h added `falsifies`; b2
+//!    staged review added `proposes`; effort-lifecycle s1 added `part_of`;
+//!    planning-plane s1 added `grounded_in`).
+//!
+//!    `part_of` is PURE MEMBERSHIP — `from` is a member of container `to`,
+//!    and like `falsifies` it is NOT a dag input (it joins neither the
+//!    blocks universe nor the supersede liveness set); the [`Dag`] projection
+//!    below folds `blocks`/`supersedes`/`witnesses` only, so a `part_of`
+//!    edge is BYTE-INERT to every ready/blocked/done answer.
 //!
 //!    `falsifies` is the ONLY kind whose `from_id` may name a non-capsule:
 //!    an outcome record id (`out-<n>`, the u6h substrate) may falsify a
@@ -96,10 +108,19 @@ use time::OffsetDateTime;
 
 use crate::extract::CandidateKind;
 
-/// The five declared relation kinds. Wire names are the snake_case forms
+/// The eight declared relation kinds. Wire names are the snake_case forms
 /// fixed by the donor &1532 contract and mirrored by the store's CHECK
 /// ontology; see the module docs for the direction each kind reads in.
 /// `falsifies` (u6h) is the recall-eligibility kind — closed like the rest.
+/// `proposes` (b2 staged review) is NAVIGATIONAL ONLY: it records that one
+/// capsule proposes to replace another, but has NO dag/ready/done effect and
+/// NO recall-exclusion effect — the blocks-dag stays `blocks`-only and the
+/// grounding fences never read it. On ratification the caller MAY convert a
+/// `proposes` edge to `supersedes` explicitly; the machine never does.
+/// `part_of` (effort-lifecycle s1) is pure membership — `from` is a member of
+/// container `to`; like `falsifies` and `proposes` it is NOT a dag input.
+/// `grounded_in` (planning-plane s1) is the mission-anchoring kind — also
+/// NOT a dag input; see the [`RelationKind::GroundedIn`] variant doc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RelationKind {
@@ -108,16 +129,22 @@ pub enum RelationKind {
     Witnesses,
     Blocks,
     Falsifies,
+    Proposes,
+    PartOf,
+    GroundedIn,
 }
 
 impl RelationKind {
     /// All declared kinds, in contract order.
-    pub const ALL: [RelationKind; 5] = [
+    pub const ALL: [RelationKind; 8] = [
         RelationKind::Supersedes,
         RelationKind::DerivedFrom,
         RelationKind::Witnesses,
         RelationKind::Blocks,
         RelationKind::Falsifies,
+        RelationKind::Proposes,
+        RelationKind::PartOf,
+        RelationKind::GroundedIn,
     ];
 
     /// The wire name, e.g. `"derived_from"` — byte-identical to the serde
@@ -130,6 +157,9 @@ impl RelationKind {
             RelationKind::Witnesses => "witnesses",
             RelationKind::Blocks => "blocks",
             RelationKind::Falsifies => "falsifies",
+            RelationKind::Proposes => "proposes",
+            RelationKind::PartOf => "part_of",
+            RelationKind::GroundedIn => "grounded_in",
         }
     }
 }
@@ -153,6 +183,9 @@ impl FromStr for RelationKind {
             "witnesses" => Ok(RelationKind::Witnesses),
             "blocks" => Ok(RelationKind::Blocks),
             "falsifies" => Ok(RelationKind::Falsifies),
+            "proposes" => Ok(RelationKind::Proposes),
+            "part_of" => Ok(RelationKind::PartOf),
+            "grounded_in" => Ok(RelationKind::GroundedIn),
             other => Err(RelationError::UnknownKind(other.to_owned())),
         }
     }
@@ -171,7 +204,7 @@ pub enum RelationError {
     /// A string outside the closed ontology reached [`RelationKind::from_str`].
     #[error(
         "relation rejected: unknown kind {0:?} \
-         (closed enum: supersedes, derived_from, witnesses, blocks, falsifies)"
+         (closed enum: supersedes, derived_from, witnesses, blocks, falsifies, proposes, part_of, grounded_in)"
     )]
     UnknownKind(String),
 }
@@ -527,6 +560,96 @@ impl Dag {
     }
 }
 
+/// Cycle detection over the live `grounded_in` (child → parent) subgraph —
+/// the mission spine's OWN fail-closed check (planning-plane u2),
+/// independent of [`Dag`]: `grounded_in` is proven NOT a dag input (see
+/// module docs), so it needs its own Kahn sweep rather than piggy-backing
+/// on [`Dag::project`]. `dead` (caller-supplied: tombstoned ∪ superseded
+/// ids) is excluded from the graph BEFORE the sweep — a dead endpoint
+/// neither anchors nor gates a mission cycle, mirroring
+/// [`Dag::project_excluding`]'s tombstone seam: append-only repair
+/// (supersede or forget any cycle member) dissolves it on the next check.
+///
+/// Returns `Ok(())` for an acyclic (including empty) live subgraph; no
+/// projection is built — this is a pure yes/no fail-closed gate, callers
+/// that need roots/children walk `edges` themselves. On a cycle, reuses
+/// the private [`find_cycle`] helper (module-internal only, never made
+/// `pub`) so the reported shape is byte-identical to the blocks-dag's:
+/// one concrete cycle (forward `grounded_in` direction, smallest id
+/// first) plus the FULL entangled set.
+pub fn grounded_in_cycle(
+    edges: &[RelationRecord],
+    dead: &BTreeSet<String>,
+) -> Result<(), DagCycleError> {
+    // Live grounded_in subgraph only: an edge with EITHER endpoint dead is
+    // dropped before the sweep. `in_edges_of` maps target -> live in-edge
+    // sources — exactly the shape `find_cycle` expects (the same shape
+    // `Dag::project`'s `blockers` map has for the blocks subgraph).
+    let mut in_edges_of: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut universe: BTreeSet<String> = BTreeSet::new();
+    for e in edges {
+        if e.kind != RelationKind::GroundedIn {
+            continue;
+        }
+        if dead.contains(&e.from_id) || dead.contains(&e.to_id) {
+            continue;
+        }
+        universe.insert(e.from_id.clone());
+        universe.insert(e.to_id.clone());
+        in_edges_of
+            .entry(e.to_id.clone())
+            .or_default()
+            .insert(e.from_id.clone());
+    }
+
+    let mut indeg: BTreeMap<&str, usize> = universe
+        .iter()
+        .map(|id| {
+            (
+                id.as_str(),
+                in_edges_of.get(id.as_str()).map_or(0, BTreeSet::len),
+            )
+        })
+        .collect();
+    let mut out: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (parent, children) in &in_edges_of {
+        for child in children {
+            out.entry(child.as_str()).or_default().push(parent.as_str());
+        }
+    }
+    let mut queue: BTreeSet<&str> = indeg
+        .iter()
+        .filter(|(_, d)| **d == 0)
+        .map(|(id, _)| *id)
+        .collect();
+    while let Some(n) = queue.pop_first() {
+        if let Some(targets) = out.get(n) {
+            for t in targets {
+                if let Some(d) = indeg.get_mut(t)
+                    && let Some(nd) = d.checked_sub(1)
+                {
+                    *d = nd;
+                    if nd == 0 {
+                        queue.insert(t);
+                    }
+                }
+            }
+        }
+    }
+    let leftover: BTreeSet<&str> = indeg
+        .iter()
+        .filter(|(_, d)| **d > 0)
+        .map(|(id, _)| *id)
+        .collect();
+    if leftover.is_empty() {
+        return Ok(());
+    }
+    Err(DagCycleError {
+        cycle: find_cycle(&leftover, &in_edges_of),
+        entangled: leftover.iter().map(|s| (*s).to_string()).collect(),
+    })
+}
+
 /// Extract one concrete cycle from the Kahn leftover set by walking
 /// backward along in-edges (every leftover node keeps at least one live
 /// blocker inside the leftover — that is what made it leftover). The walk
@@ -615,7 +738,10 @@ mod tests {
                 "derived_from",
                 "witnesses",
                 "blocks",
-                "falsifies"
+                "falsifies",
+                "proposes",
+                "part_of",
+                "grounded_in"
             ]
         );
     }
@@ -782,6 +908,26 @@ mod tests {
         // `plan` is still ready, `ship` still blocked by `plan`.
         assert!(dag.is_live("plan"));
         assert!(dag.is_live("ship"));
+        assert_eq!(dag.ready(), vec!["plan"]);
+        assert_eq!(dag.blocked_by("ship"), vec!["plan"]);
+    }
+
+    #[test]
+    fn grounded_in_is_not_a_dag_input_it_neither_gates_nor_kills_liveness() {
+        // planning-plane u1: `grounded_in` is the mission-anchoring kind, NOT
+        // a dag input. It must NOT join the blocks universe (like
+        // witnesses/derived_from/falsifies) and it must NOT mark either
+        // endpoint dead — the child (`from_id`) and the parent epic (`to_id`)
+        // both stay outside the blocks universe entirely.
+        let edges = vec![
+            rec(RelationKind::Blocks, "plan", "ship"),
+            rec(RelationKind::GroundedIn, "cap-10", "cap-431"),
+        ];
+        let dag = Dag::project(&edges).expect("grounded_in adds no cycle");
+        // Neither grounded_in endpoint is a dag node at all.
+        assert!(!dag.is_live("cap-10"), "child endpoint is not a dag node");
+        assert!(!dag.is_live("cap-431"), "parent endpoint is not a dag node");
+        // The unrelated blocks edge is untouched.
         assert_eq!(dag.ready(), vec!["plan"]);
         assert_eq!(dag.blocked_by("ship"), vec!["plan"]);
     }
@@ -1031,6 +1177,64 @@ mod tests {
             "everything cycle-stuck is named, beyond the one shown cycle"
         );
         assert!(err.to_string().contains("5 id(s) cycle-entangled"));
+    }
+
+    // ---- grounded_in_cycle: mission-spine cycle check (planning-plane u2) ----
+    //
+    // Independent of Dag/project: grounded_in is NOT a dag input (proven
+    // above), so the mission spine needs its OWN fail-closed cycle check
+    // over the child->parent grounded_in subgraph. Reuses the same private
+    // find_cycle helper the blocks-dag uses, in-module only.
+
+    #[test]
+    fn grounded_in_cycle_is_ok_on_an_acyclic_mission_graph() {
+        let edges = vec![
+            rec(RelationKind::GroundedIn, "cap-10", "cap-431"),
+            rec(RelationKind::GroundedIn, "cap-11", "cap-431"),
+            // An unrelated kind must be ignored, not counted into the graph.
+            rec(RelationKind::Blocks, "plan", "ship"),
+        ];
+        assert!(
+            grounded_in_cycle(&edges, &BTreeSet::new()).is_ok(),
+            "a tree of grounded_in edges is acyclic"
+        );
+        assert!(
+            grounded_in_cycle(&[], &BTreeSet::new()).is_ok(),
+            "no grounded_in edges at all is trivially acyclic"
+        );
+    }
+
+    #[test]
+    fn grounded_in_cycle_fails_closed_on_a_live_two_cycle_with_a_concrete_cycle() {
+        let edges = vec![
+            rec(RelationKind::GroundedIn, "cap-a", "cap-b"),
+            rec(RelationKind::GroundedIn, "cap-b", "cap-a"),
+        ];
+        let err = grounded_in_cycle(&edges, &BTreeSet::new())
+            .expect_err("a live grounded_in 2-cycle must fail closed");
+        assert_eq!(err.cycle, vec!["cap-a".to_string(), "cap-b".to_string()]);
+        assert_eq!(
+            err.entangled,
+            vec!["cap-a".to_string(), "cap-b".to_string()]
+        );
+    }
+
+    #[test]
+    fn grounded_in_cycle_through_a_dead_node_dissolves() {
+        // 3-cycle a->b->c->a; excluding the dead middle node from the
+        // graph before the sweep leaves only c->a, which is acyclic — the
+        // same append-only repair shape as the blocks-dag's tombstone seam.
+        let edges = vec![
+            rec(RelationKind::GroundedIn, "cap-a", "cap-b"),
+            rec(RelationKind::GroundedIn, "cap-b", "cap-c"),
+            rec(RelationKind::GroundedIn, "cap-c", "cap-a"),
+        ];
+        grounded_in_cycle(&edges, &BTreeSet::new()).expect_err("live cycle before repair");
+        let dead: BTreeSet<String> = ["cap-b".to_string()].into_iter().collect();
+        assert!(
+            grounded_in_cycle(&edges, &dead).is_ok(),
+            "excluding a dead cycle member dissolves the mission cycle"
+        );
     }
 
     // ---- property sweep: deterministic seeded generator (no external deps;

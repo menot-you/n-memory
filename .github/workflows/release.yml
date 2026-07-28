@@ -96,3 +96,179 @@ jobs:
               --title "nMEMORY $RELEASE_TAG" \
               --notes "Hermetic local memory for LLM agents. Binaries consumed by install.sh; SHA256SUMS attached."
           fi
+
+  # --- registries -----------------------------------------------------------
+  #
+  # Both jobs run AFTER `publish`, never instead of it: the GitHub release and its
+  # SHA256SUMS are the artifact of record, and the npm wrapper downloads from that
+  # release, so it cannot be published before the release exists.
+  #
+  # Both are gated on their token. A repository with no token SKIPS the job cleanly
+  # and the release still succeeds, so adding the secret is the only remaining act
+  # for either channel. Both are idempotent: a re-run on an already published
+  # version reports the fact and exits 0, so replaying a tag never fails the
+  # release.
+  #
+  # Secrets, exact names, set at Settings -> Secrets and variables -> Actions on
+  # THIS repository:
+  #   CARGO_REGISTRY_TOKEN — a crates.io API token scoped publish-new + publish-update
+  #   NPM_TOKEN            — an npm automation token with publish rights on `nmemory`
+
+  publish-crate:
+    needs: publish
+    runs-on: ubuntu-latest
+    # Least privilege: this job reads the tree and pushes to crates.io. It has no
+    # business writing a release, so it drops the workflow-level contents:write.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - name: publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -z "${CARGO_REGISTRY_TOKEN}" ]; then
+            printf 'crates.io: no CARGO_REGISTRY_TOKEN secret — skipping (the release is unaffected).\n'
+            exit 0
+          fi
+          version="${RELEASE_TAG#v}"
+          manifest_version="$(awk -F'"' '/^version[[:space:]]*=/ { print $2; exit }' Cargo.toml)"
+          if [ "$manifest_version" != "$version" ]; then
+            printf 'crates.io: REFUSED — tag %s but Cargo.toml says %s.\n' "$RELEASE_TAG" "$manifest_version" >&2
+            exit 1
+          fi
+          # Idempotent, in two layers. First ask the registry: it is the authority on
+          # what is already out, and a tag replayed after a successful publish MUST
+          # NOT fail the release.
+          if curl -fsS -H 'User-Agent: n-memory release workflow' \
+               "https://crates.io/api/v1/crates/nmemory/${version}" >/dev/null 2>&1; then
+            printf 'crates.io: nmemory %s is already published — nothing to do.\n' "$version"
+            exit 0
+          fi
+          # Second layer, for the race the first cannot see (crates.io unreachable,
+          # or two runs of this job overlapping): publish, then read the refusal.
+          # Redirected, NEVER piped to tee — the default shell here has no pipefail,
+          # so a pipe would report tee's status and swallow every failure. The log
+          # lands OUTSIDE the crate root, so it can never be swept into the tarball.
+          # `--locked` so the published crate carries the lockfile this repo tested.
+          log="${RUNNER_TEMP}/cargo-publish.log"
+          if cargo publish --locked >"$log" 2>&1; then
+            cat "$log"
+            printf 'crates.io: published nmemory %s.\n' "$version"
+            exit 0
+          fi
+          cat "$log" >&2
+          if grep -qiE 'already (exists|uploaded|been uploaded)' "$log"; then
+            printf 'crates.io: nmemory %s was already published — treating as done.\n' "$version"
+            exit 0
+          fi
+          printf 'crates.io: publish failed for a reason other than "already published".\n' >&2
+          exit 1
+
+  publish-npm:
+    needs: publish
+    runs-on: ubuntu-latest
+    # `--provenance` below signs an attestation binding the published tarball to
+    # this workflow, this commit, and this run. That is the one part of the npm
+    # path that is real authenticity rather than integrity, so the token it needs
+    # is granted here; a job-level block replaces the workflow default entirely,
+    # so `contents` is restated at the read this job actually uses.
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+      - name: publish to npm
+        working-directory: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN}" ]; then
+            printf 'npm: no NPM_TOKEN secret — skipping (the release is unaffected).\n'
+            exit 0
+          fi
+          # An EMPTY secret is not the only way this channel is unarmed. A secret that
+          # still exists while its token has been revoked is not empty, so the check
+          # above waves it through and the failure lands on `npm publish` — turning a
+          # dormant side channel into a red release. Ask npm who we are; if it cannot
+          # say, the token is dead or scopeless and this channel is simply not ready.
+          # Skipping is correct here and failing is not: npm is additive to a release
+          # whose binaries already shipped, and it MUST NEVER be able to redden one.
+          if ! npm whoami >/dev/null 2>&1; then
+            printf 'npm: NPM_TOKEN is set but does not authenticate — skipping.\n'
+            printf 'The token is revoked, expired, or lacks publish scope. Replace the\n'
+            printf 'secret and re-run this workflow for the tag; the release is unaffected.\n'
+            exit 0
+          fi
+          version="${RELEASE_TAG#v}"
+          package_version="$(node -p 'require("./package.json").version')"
+          if [ "$package_version" != "$version" ]; then
+            printf 'npm: REFUSED — tag %s but npm/package.json says %s.\n' "$RELEASE_TAG" "$package_version" >&2
+            printf 'The wrapper resolves its download from v<its own version>; a drifted\n' >&2
+            printf 'version would install the wrong release or none at all.\n' >&2
+            exit 1
+          fi
+          # The wrapper downloads from THIS tag's assets and verifies them against
+          # THIS tag's SHA256SUMS. Asked of the release API, never of the download
+          # URL: an object-store HEAD is not a contract, and a false negative there
+          # would block the channel over nothing.
+          assets="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[].name')"
+          case "$assets" in
+            *SHA256SUMS*) : ;;
+            *)
+              printf 'npm: REFUSED — release %s carries no SHA256SUMS.\n' "$RELEASE_TAG" >&2
+              printf 'The wrapper verifies every download against it and installs nothing without it.\n' >&2
+              exit 1
+              ;;
+          esac
+          # Windows is continue-on-error upstream, so an archive MAY be absent. That
+          # is a named install-time refusal for that platform, not a reason to
+          # withhold the package from every other one — warn, and require at least
+          # one archive so the package is not empty of purpose.
+          present=0
+          for archive in nmemory-linux-x86_64.tar.gz nmemory-linux-aarch64.tar.gz \
+                         nmemory-macos-aarch64.tar.gz nmemory-windows-x86_64.zip; do
+            case "$assets" in
+              *"$archive"*) present=$((present + 1)) ;;
+              *) printf 'npm: WARNING — %s is absent from %s; that platform will refuse to install.\n' \
+                   "$archive" "$RELEASE_TAG" >&2 ;;
+            esac
+          done
+          if [ "$present" -eq 0 ]; then
+            printf 'npm: REFUSED — release %s carries no platform archive at all.\n' "$RELEASE_TAG" >&2
+            exit 1
+          fi
+          # AGPL text travels with the package. npm always includes a LICENSE file,
+          # so this copy needs no `files` entry; keeping it out of the repo keeps a
+          # single source for the license.
+          cp ../LICENSE ./LICENSE
+          # Idempotent, same two layers as the crate job: ask the registry first,
+          # then read the refusal if the publish itself loses a race. The log lands
+          # outside the package dir so it can never be swept into the tarball.
+          if npm view "nmemory@${version}" version >/dev/null 2>&1; then
+            printf 'npm: nmemory %s is already published — nothing to do.\n' "$version"
+            exit 0
+          fi
+          log="${RUNNER_TEMP}/npm-publish.log"
+          if npm publish --provenance --access public >"$log" 2>&1; then
+            cat "$log"
+            printf 'npm: published nmemory %s.\n' "$version"
+            exit 0
+          fi
+          cat "$log" >&2
+          if grep -qiE 'EPUBLISHCONFLICT|cannot publish over|previously published version' "$log"; then
+            printf 'npm: nmemory %s was already published — treating as done.\n' "$version"
+            exit 0
+          fi
+          printf 'npm: publish failed for a reason other than "already published".\n' >&2
+          exit 1

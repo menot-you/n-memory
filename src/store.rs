@@ -91,13 +91,14 @@
 //! Usage is a LATE ranking tiebreak input only, never confidence/authority
 //! (ARCHITECTURE §1 law: usage is not success evidence).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::Path;
 
 use hmac::{Hmac, KeyInit, Mac};
 use rusqlite::{
-    Connection, OpenFlags, OptionalExtension, TransactionBehavior, params, params_from_iter,
+    Connection, MAIN_DB, OpenFlags, OptionalExtension, TransactionBehavior, params,
+    params_from_iter, types::ValueRef,
 };
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -144,7 +145,7 @@ fn capsules_create_sql(head: &str) -> String {
 fn relations_create_sql(head: &str) -> String {
     format!(
         "{head} (
-    kind    TEXT NOT NULL CHECK (kind IN ('supersedes', 'derived_from', 'witnesses', 'blocks', 'falsifies')),
+    kind    TEXT NOT NULL CHECK (kind IN ('supersedes', 'derived_from', 'witnesses', 'blocks', 'falsifies', 'proposes', 'part_of', 'grounded_in')),
     from_id TEXT NOT NULL,
     to_id   TEXT NOT NULL,
     at      TEXT NOT NULL,
@@ -244,6 +245,8 @@ CREATE INDEX IF NOT EXISTS idx_relations_from
     ON relations (from_id);
 CREATE INDEX IF NOT EXISTS idx_relations_to
     ON relations (to_id);
+CREATE INDEX IF NOT EXISTS idx_classifications_kind
+    ON classifications (kind);
 CREATE INDEX IF NOT EXISTS idx_audit_events_subject
     ON audit_events (subject);
 CREATE TABLE IF NOT EXISTS tiers (
@@ -280,6 +283,8 @@ CREATE TABLE IF NOT EXISTS outcomes (
     actor        TEXT NOT NULL,
     evidence_ref TEXT,
     capsule_id   TEXT,
+    receipt_id   TEXT,
+    score        REAL,
     at           TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS preferences (
@@ -417,8 +422,10 @@ CREATE TABLE IF NOT EXISTS epistemics (
 /// RECALL-MISS LEDGER SIDECAR (u-r5 miss-ledger, schema v9) — an
 /// APPEND-ONLY telemetry ledger of the query terms that failed to ground:
 /// misses teach vocabulary. Recall records ONE row per normalized (folded)
-/// query term of a `missing_evidence` or `abstain` outcome
-/// ([`Store::record_recall_miss`]); a `grounded` outcome records nothing.
+/// query term when the FTS term lane's pre-trim observation is
+/// `missing_evidence` or `abstain` ([`Store::record_recall_miss`]); a
+/// pre-trim term hit records nothing even if output trimming returns zero
+/// envelopes, and a request that never ran FTS records nothing.
 /// The term is folded exactly like [`Store::add_alias`]'s key
 /// ([`fold_term`]: trim + lowercase + diacritic-fold), so a recorded miss
 /// term is a ready alias LHS; the `outcome` is the closed
@@ -442,6 +449,138 @@ CREATE TABLE IF NOT EXISTS recall_misses (
     at      TEXT NOT NULL
 );
 ";
+
+/// RECALL-RECEIPT LEDGER SIDECAR (u03 recall receipts, schema v12) — an
+/// APPEND-ONLY, GROUNDED-ONLY ledger that binds each public recall response
+/// to the raw caller terms and the capsule ids actually returned, in response
+/// order. Recording is FAIL-CLOSED: a returned `receipt_id` MUST resolve, in
+/// deliberate contrast to the fail-open [`RECALL_MISSES_DDL`] telemetry whose
+/// rows nothing references by id. `session_id` is nullable from birth; u13
+/// supplies it. Dropping this additive table loses only feedback
+/// addressability and never rewrites a canonical capsule byte.
+const RECALL_RECEIPTS_DDL: &str = "
+CREATE TABLE IF NOT EXISTS recall_receipts (
+    seq            INTEGER PRIMARY KEY,
+    id             TEXT NOT NULL UNIQUE,
+    terms          TEXT NOT NULL,
+    returned_ids   TEXT NOT NULL,
+    project_id     TEXT,
+    project_prefix TEXT,
+    session_id     TEXT,
+    at             TEXT NOT NULL
+);
+";
+
+/// ADVISORY scored-outcome ranking sidecar (u04, schema v13). One row per
+/// capsule stores the latest EMA weight and its injected update instant.
+/// Dropping it loses only opt-in ranking feedback: capsule bytes and recall
+/// eligibility remain untouched.
+const FEEDBACK_WEIGHTS_DDL: &str = "
+CREATE TABLE IF NOT EXISTS feedback_weights (
+    capsule_id TEXT PRIMARY KEY,
+    weight     REAL NOT NULL,
+    at         TEXT NOT NULL
+);
+";
+
+/// Successful explicit recall-lane overrides (u05, schema v14). This
+/// append-only advisory telemetry records the forced lane and the lane the
+/// auto policy would have chosen for the same successful request.
+const LANE_OVERRIDES_DDL: &str = "
+CREATE TABLE IF NOT EXISTS lane_overrides (
+    seq       INTEGER PRIMARY KEY,
+    forced    TEXT NOT NULL,
+    auto_pick TEXT NOT NULL,
+    at        TEXT NOT NULL,
+    CHECK (
+        (forced = 'term'   AND auto_pick = 'fused') OR
+        (forced = 'vector' AND auto_pick = 'fused') OR
+        (forced = 'vector' AND auto_pick = 'term')  OR
+        (forced = 'fused'  AND auto_pick = 'term')
+    )
+);
+";
+
+/// Caller-declared fact time (u06, schema v15). One inclusive range per
+/// capsule; a point is stored as the degenerate range `event_from ==
+/// event_to`. `declared_at` is the same injected boundary instant as the
+/// capsule append. The row is inserted inside the capsule + FTS transaction,
+/// so a declaration can never lag its capsule. This is a per-store sidecar:
+/// the merge primitive never moves its rows. Sync push restores only the
+/// fetched destination's own verified rows into the private candidate, never
+/// sender declarations.
+const EVENT_TIME_DDL: &str = "
+CREATE TABLE IF NOT EXISTS event_time (
+    capsule_id  TEXT PRIMARY KEY,
+    event_from  TEXT NOT NULL,
+    event_to    TEXT NOT NULL,
+    declared_at TEXT NOT NULL
+);
+";
+
+/// STAGED-REVIEW SIDECAR (b2 staged ingests, schema v18) — the APPEND-ONLY
+/// verdict history behind a capsule's review state (`proposed` → optional
+/// `ratified`/`rejected` verdicts). Review state is ITS OWN orthogonal
+/// sidecar, NEVER a tier value and NEVER a Capsule field (Capsule v1 is
+/// frozen; tier is single-valued and consolidate re-tiers by taint — a
+/// `proposed` tier value would be erased by a consolidate pass and become
+/// un-ratifiable). The FENCE STATE is DERIVED, never stored: a capsule is
+/// fenced from grounding IFF it carries at least one row here AND its LATEST
+/// verdict is not `ratified` — a projection of this log, one source per fact
+/// (NOTT.md §12), never a separately-cleared flag that can drift. Rejection
+/// NEVER tombstones (that would deny the content to every future ingest —
+/// `source_hash` is a global UNIQUE and forget is sticky); a later
+/// `ratified` verdict reverses a `rejected` one. [`Store::consolidate`]
+/// NEVER reads or writes this table — tier keeps its existing semantics.
+/// Append-only: `seq` is assigned MAX+1 like the other ledgers; the index
+/// serves the per-capsule latest-verdict projection. Additive and
+/// order-independent (`IF NOT EXISTS`, own const so a sibling lane never
+/// conflicts); dropping it loses only the review history and returns every
+/// proposal to plain truth (no canonical byte moves — Capsule v1 stays
+/// frozen).
+const REVIEW_EVENTS_DDL: &str = "
+CREATE TABLE IF NOT EXISTS review_events (
+    seq        INTEGER PRIMARY KEY,
+    capsule_id TEXT NOT NULL,
+    verdict    TEXT NOT NULL CHECK (verdict IN ('proposed', 'ratified', 'rejected')),
+    reason     TEXT NOT NULL,
+    actor      TEXT NOT NULL,
+    at         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_review_events_capsule_id
+    ON review_events (capsule_id);
+";
+
+/// PIN sidecar (S1, schema v16) — the APPEND-ONLY pin/unpin ledger. Pin
+/// state is DERIVED: the highest-`seq` row per `capsule_id` is the current
+/// verdict (`pinned` 0/1), never a mutated flag. `reason`/`actor` witness
+/// the event that set it; `at` is the injected boundary instant. Pin is a
+/// pure sidecar signal — it NEVER touches a capsule byte, tier, relation,
+/// or the stored `confidence`. It affects only the retrieve/bootstrap decay
+/// KEY (a pinned capsule ranks by full confidence, decay exempted at the
+/// call site — [`crate::retrieve::decay_weight`] stays pure), the archive
+/// veto ([`crate::consolidate`]), and surfacing/flags. Pin is NEVER
+/// eligibility: the recall fences (quarantine/falsified/archive/superseded/
+/// currency) run UNCHANGED, so a pinned+superseded capsule stays excluded.
+/// Additive `IF NOT EXISTS`, own const so a sibling lane never conflicts;
+/// dropping it loses no canonical byte (Capsule v1 stays frozen) and only
+/// disables the decay-exemption/archive-veto (recorded audit rows survive).
+const PIN_EVENTS_DDL: &str = "
+CREATE TABLE IF NOT EXISTS pin_events (
+    seq        INTEGER PRIMARY KEY,
+    capsule_id TEXT NOT NULL,
+    pinned     INTEGER NOT NULL CHECK (pinned IN (0, 1)),
+    reason     TEXT NOT NULL,
+    actor      TEXT NOT NULL,
+    at         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pin_events_capsule_id ON pin_events (capsule_id);
+";
+
+/// EMA step applied by scored outcomes.
+pub const FEEDBACK_EMA_ALPHA: f64 = 0.1;
+/// Prior used until a capsule receives its first scored outcome.
+pub const FEEDBACK_NEUTRAL_WEIGHT: f64 = 0.5;
 
 /// IMPORT-BLOCK LINEAGE SIDECAR (u-r8-REDESIGN stale-import-supersession,
 /// schema v10) — the machine-derived-from-import lineage the auto-supersede
@@ -490,6 +629,198 @@ CREATE TABLE IF NOT EXISTS import_blocks (
 CREATE INDEX IF NOT EXISTS idx_import_blocks_capsule_id
     ON import_blocks (capsule_id);
 ";
+
+/// GIT-WITNESS CORROBORATION SIDECAR (S2 git witness lane, schema v17) — an
+/// APPEND-ONLY ledger of what an external witness (currently only `git`)
+/// observed about a stored capsule. Each row is ONE verdict at one scan:
+/// `kind` names WHAT was probed (`anchor_path` / `anchor_sha` /
+/// `anchor_content` existence-or-hash checks, or a `mention` of the capsule
+/// in a commit message), `ref` the probed reference (the anchor path, the
+/// `@sha`, or the citing commit sha), `verdict` the closed observation, and
+/// `detail` optional context (the scan `HEAD` the verdict was observed at).
+/// There is NO `unknown` verdict on purpose: a probe that cannot answer
+/// records NOTHING (the [`ANCHOR_HASHES_DDL`] "never a guess" rule). Read =
+/// LATEST per (capsule_id, kind, ref) — [`Store::latest_corroborations`];
+/// the git-scan verb ([`crate::git::scan`]) appends only when a verdict
+/// CHANGES, so re-scanning an unchanged tree writes zero rows. This is a
+/// WITNESS lane, NEVER a truth lane: nothing here mutates a capsule's stored
+/// `confidence`, authority, or tier. Additive and order-independent
+/// (`IF NOT EXISTS`, own const so a sibling lane never conflicts); dropping
+/// it loses only the derived corroboration explain (Capsule v1 stays
+/// frozen).
+const CORROBORATIONS_DDL: &str = "
+CREATE TABLE IF NOT EXISTS corroborations (
+  seq INTEGER PRIMARY KEY, capsule_id TEXT NOT NULL,
+  source TEXT NOT NULL CHECK (source IN ('git')),
+  kind TEXT NOT NULL CHECK (kind IN ('anchor_path','anchor_sha','anchor_content','mention')),
+  ref TEXT NOT NULL, verdict TEXT NOT NULL CHECK (verdict IN ('corroborated','drifted','missing')),
+  detail TEXT, at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_corroborations_capsule_id ON corroborations (capsule_id);
+";
+
+/// GIT-WITNESS SCAN CURSOR SIDECAR (S2 git witness lane, schema v17) — the
+/// incremental-scan bookmark: one row per witness source
+/// (`source_key = "git:<canonical repo path>"`) holding the last scanned
+/// commit sha (`cursor`) and the instant it advanced (`at`). The git-scan
+/// mention lane pages from this completed frontier to a fixed target recorded
+/// in [`SOURCE_BACKFILLS_DDL`]; the cursor advances only when that range is
+/// complete. PRIMARY KEY on `source_key` — the cursor is REPLACED in place,
+/// never accumulated. Additive and disposable: dropping it re-does a full
+/// mention scan (idempotent by the corroboration dedup) and loses no canonical
+/// byte.
+const SOURCE_CURSORS_DDL: &str = "
+CREATE TABLE IF NOT EXISTS source_cursors (
+  source_key TEXT PRIMARY KEY, cursor TEXT NOT NULL, at TEXT NOT NULL);
+";
+
+/// In-progress bounded mention-history traversal for one git witness source.
+/// `source_cursors` remains the last fully consumed frontier; this sidecar
+/// pins a target head and the next newest-first offset until the complete
+/// range has been consumed.
+const SOURCE_BACKFILLS_DDL: &str = "
+CREATE TABLE IF NOT EXISTS source_backfills (
+  source_key TEXT PRIMARY KEY,
+  base_cursor TEXT,
+  target_head TEXT NOT NULL,
+  next_offset INTEGER NOT NULL CHECK (next_offset > 0),
+  at TEXT NOT NULL);
+";
+
+fn validate_source_backfill_fields(
+    source_key: &str,
+    base_cursor: Option<&str>,
+    target_head: &str,
+    next_offset: usize,
+) -> Result<(), StoreError> {
+    if source_key.trim().is_empty() {
+        return Err(StoreError::EmptyField("source_key"));
+    }
+    if base_cursor.is_some_and(|cursor| cursor.trim().is_empty()) {
+        return Err(StoreError::EmptyField("base_cursor"));
+    }
+    if target_head.trim().is_empty() {
+        return Err(StoreError::EmptyField("target_head"));
+    }
+    if next_offset == 0 {
+        return Err(StoreError::Corrupt {
+            id: source_key.to_string(),
+            reason: "source backfill next offset must be positive".to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// A witness's LATEST observations about ONE capsule (S2 git witness lane;
+/// see [`CORROBORATIONS_DDL`]), folded to the newest verdict per anchor kind
+/// plus a mention tally — the derived explain the retrieve envelope
+/// decorates a returned row with. NEVER authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CorroborationSummary {
+    /// The witness source (currently only `"git"`).
+    pub source: String,
+    /// The scan `HEAD` the newest verdict was observed at, when recorded.
+    pub git_ref: Option<String>,
+    /// Latest `anchor_path` verdict, when the path was probed.
+    pub anchor_path: Option<String>,
+    /// Latest `anchor_sha` verdict, when an `@sha` anchor was probed.
+    pub anchor_sha: Option<String>,
+    /// Latest `anchor_content` verdict, when a capture hash was re-checked.
+    pub anchor_content: Option<String>,
+    /// How many distinct commit mentions cite this capsule.
+    pub mentions: usize,
+    /// The newest `at` across the folded rows.
+    pub at: String,
+}
+
+/// Store-global corroboration tallies for ONE witness source (S2 git witness
+/// lane), counting the LATEST verdict per (capsule_id, kind, ref) — the
+/// digest `sources` section's per-source counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CorroborationCounts {
+    /// Anchors whose latest verdict is `corroborated`.
+    pub corroborated: usize,
+    /// Anchor-content rows whose latest verdict is `drifted`.
+    pub drifted: usize,
+    /// Anchors whose latest verdict is `missing`.
+    pub missing: usize,
+    /// Mention rows (each a distinct capsule+commit citation).
+    pub mentions: usize,
+}
+
+/// One incomplete bounded git-history traversal. The completed source cursor
+/// does not advance until this fixed target has been fully consumed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceBackfill {
+    /// Last fully consumed frontier when this traversal began.
+    pub base_cursor: Option<String>,
+    /// Fixed head whose `base_cursor..target_head` range is being paged.
+    pub target_head: String,
+    /// Number of newest commits already processed from that fixed range.
+    pub next_offset: usize,
+    /// Timestamp of the last checkpoint update.
+    pub at: String,
+}
+
+fn source_cursor_on(conn: &Connection, source_key: &str) -> Result<Option<String>, StoreError> {
+    conn.query_row(
+        "SELECT cursor FROM source_cursors WHERE source_key = ?1",
+        [source_key],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(backend)
+}
+
+fn source_backfill_on(
+    conn: &Connection,
+    source_key: &str,
+) -> Result<Option<SourceBackfill>, StoreError> {
+    conn.query_row(
+        "SELECT base_cursor, target_head, next_offset, at \
+         FROM source_backfills WHERE source_key = ?1",
+        [source_key],
+        |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        },
+    )
+    .optional()
+    .map_err(backend)?
+    .map(|(base_cursor, target_head, next_offset, at)| {
+        let next_offset = usize::try_from(next_offset).map_err(|_| StoreError::Corrupt {
+            id: source_key.to_string(),
+            reason: format!("source_backfills.next_offset {next_offset} is not a usize"),
+        })?;
+        if next_offset == 0 {
+            return Err(StoreError::Corrupt {
+                id: source_key.to_string(),
+                reason: "source_backfills.next_offset must be positive".to_string(),
+            });
+        }
+        Ok(SourceBackfill {
+            base_cursor,
+            target_head,
+            next_offset,
+            at,
+        })
+    })
+    .transpose()
+}
+
+fn require_source_cursor(
+    conn: &Connection,
+    source_key: &str,
+    expected: Option<&str>,
+) -> Result<(), StoreError> {
+    if source_cursor_on(conn, source_key)?.as_deref() != expected {
+        return Err(StoreError::StaleSourceBackfill(source_key.to_string()));
+    }
+    Ok(())
+}
 
 /// Encode an `f32` vector as its deterministic little-endian byte blob
 /// (`4 × len` bytes) — the exact bytes [`Store::put_embedding`] persists.
@@ -594,15 +925,55 @@ fn validate_embedding(vector: &[f32]) -> Result<(), StoreError> {
 /// `tombstones.source_hash` column: the forgotten capsule's content
 /// identity, so a forget can propagate cross-store by content
 /// ([`crate::merge`]); a pre-v11 marker backfills NULL and simply cannot
-/// propagate by content (acceptable). Version 1–10 files migrate
+/// propagate by content (acceptable). Version 12 (u03 recall receipts) added
+/// the additive append-only `recall_receipts` ledger
+/// ([`RECALL_RECEIPTS_DDL`] — `IF NOT EXISTS`, no canonical byte touched).
+/// Version 13 (u04 scored outcomes) added nullable `outcomes.receipt_id` /
+/// `outcomes.score` columns plus the additive advisory `feedback_weights`
+/// sidecar ([`FEEDBACK_WEIGHTS_DDL`] — `IF NOT EXISTS`, no canonical byte
+/// touched). Version 14 (u05 lane router) added the append-only advisory
+/// `lane_overrides` telemetry sidecar ([`LANE_OVERRIDES_DDL`] — `IF NOT
+/// EXISTS`, no canonical byte touched). Version 15 (u06 event time) added
+/// the caller-declared [`EVENT_TIME_DDL`] sidecar. Version 16 (S1 pin) added
+/// the append-only [`PIN_EVENTS_DDL`] pin/unpin ledger — a pure sidecar
+/// signal (decay-exemption + archive-veto + surfacing; `IF NOT EXISTS`, no
+/// canonical byte touched). Version 17 (S2 git witness lane) added the
+/// append-only, order-independent [`CORROBORATIONS_DDL`] and
+/// [`SOURCE_CURSORS_DDL`] sidecars (`IF NOT EXISTS`, no canonical byte
+/// touched). Version 18 (b2 staged review) added the append-only
+/// [`REVIEW_EVENTS_DDL`] sidecar (additive `IF NOT EXISTS`, no canonical byte
+/// touched) and widened the `relations.kind` CHECK to add `proposes` — a
+/// shared-DDL table rebuild (`relations_v6`, probed on the stored CHECK text
+/// via [`relations_missing_proposes_check`], the SAME no-drift discipline as
+/// the `falsifies` rebuild) whose copy PRESERVES the `origin` column so
+/// import provenance survives byte-for-byte. The current v18 shape also
+/// carries the disposable [`SOURCE_BACKFILLS_DDL`] checkpoint so a bounded
+/// git scan cannot advance past unseen history. Version 19 (effort-lifecycle
+/// s1) widened the `relations.kind` CHECK again to add `part_of` (pure
+/// membership; NEVER a dag input) — the SAME shared-DDL rebuild, FOLDED into
+/// the v18 `proposes` rebuild so a store missing EITHER token (a `proposes`
+/// store lacking `part_of` OR an out-of-order `part_of` store lacking
+/// `proposes`) converges to the seven-kind set in ONE pass, `origin`
+/// preserved; probed on the stored CHECK text via
+/// [`relations_missing_part_of_check`], newest-token `'part_of'`. Version 20
+/// (planning-plane s1) widened the `relations.kind` CHECK a third time to add
+/// `grounded_in` (the mission-anchoring kind; also NEVER a dag input) — the
+/// SAME shared-DDL rebuild extended to a THREE-token disjunction, so a store
+/// missing ANY of `proposes` / `part_of` / `grounded_in` converges to the
+/// EIGHT-kind set in ONE pass; the shadow table moves to `relations_v7` (the
+/// next free name after the v19 fold's `relations_v6`), probed on the stored
+/// CHECK text via [`relations_lacks_grounded_in`], `origin` preserved
+/// byte-for-byte. Version 1–19 files migrate
 /// in place via [`migrate_to_current`];
 /// versions this build does not know fail closed
 /// ([`StoreError::UnsupportedSchemaVersion`]). Every migration step keys on
 /// the observed DDL shape (`relations_has_old_check` /
-/// `classifications_has_old_check`) or `IF NOT EXISTS`, never on the
+/// `relations_missing_proposes_check` / `relations_missing_part_of_check` /
+/// `relations_lacks_grounded_in` / `classifications_has_old_check`) or
+/// `IF NOT EXISTS`, never on the
 /// version integer, so the stamp renumbers mechanically when lanes land
 /// out of authoring order.
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 20;
 
 /// Milliseconds a connection waits for a held write lock before giving up
 /// with `SQLITE_BUSY`. Concurrent sessions on one store — the owner runs
@@ -646,13 +1017,16 @@ pub enum StoreError {
     /// The file's `PRAGMA user_version` names a schema this build does not
     /// know — fail closed instead of guessing at columns.
     #[error(
-        "store: unsupported schema version {0} (this build migrates v1..=10 in place and reads v{SCHEMA_VERSION} natively)"
+        "store: unsupported schema version {0} (this build migrates v1..=18 in place and reads v{SCHEMA_VERSION} natively)"
     )]
     UnsupportedSchemaVersion(i64),
     /// A relation/classification endpoint named a capsule id that is not
     /// stored — nothing was recorded.
     #[error("store: operation references unknown capsule {0}")]
     UnknownCapsule(String),
+    /// A scored outcome named a recall receipt that was never recorded.
+    #[error("store: operation references unknown recall receipt {0}")]
+    UnknownReceipt(String),
     /// Both endpoints of a relation named the same capsule: no kind is
     /// reflexive (donor B law — a capsule cannot supersede, derive from,
     /// witness, or block itself).
@@ -680,6 +1054,10 @@ pub enum StoreError {
     /// [`fold_term`] normalization).
     #[error("store: {0} must be non-empty")]
     EmptyField(&'static str),
+    /// A git history page attempted to advance a checkpoint that no longer
+    /// matches the fixed target and offset it read.
+    #[error("store: stale git source backfill checkpoint for {0}")]
+    StaleSourceBackfill(String),
     /// A classification value fell outside its closed set
     /// ([`CLASSIFICATION_KINDS`] / [`CLASSIFICATION_SCOPES`]).
     #[error("store: classification {field} {value:?} is outside the closed set")]
@@ -724,6 +1102,10 @@ pub enum StoreError {
     /// (u6a hermetic law: no NaN may reach the deterministic fusion).
     #[error("store: embedding rejected: {0}")]
     InvalidEmbedding(String),
+    /// A scored outcome omitted half of its receipt/score pair or supplied
+    /// a non-finite or out-of-range score.
+    #[error("store: outcome scoring rejected: {0}")]
+    InvalidOutcomeScoring(&'static str),
     /// An `evidence_state` fell outside the closed set — the message
     /// TEACHES the whole set ([`EVIDENCE_STATES`]), so a rejected caller
     /// learns the vocabulary in one round-trip (u-r2).
@@ -742,8 +1124,22 @@ impl From<SubstrateError> for StoreError {
     fn from(e: SubstrateError) -> StoreError {
         match e {
             SubstrateError::EmptyField(field) => StoreError::EmptyField(field),
+            SubstrateError::InvalidOutcomeScoring(reason) => {
+                StoreError::InvalidOutcomeScoring(reason)
+            }
         }
     }
+}
+
+/// One committed outcome append and its optional post-EMA weights. Unscored
+/// observations carry `None`; a scored receipt that returned no capsules
+/// carries `Some([])` so the wire can distinguish those two honest states.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AppendedOutcome {
+    /// The committed append-only outcome record.
+    pub record: OutcomeRecord,
+    /// Post-EMA weights in the grounded receipt's original response order.
+    pub weights_updated: Option<Vec<(String, f64)>>,
 }
 
 /// Store-assigned deterministic capsule id: `cap-<seq>` with `<seq>` the
@@ -793,6 +1189,183 @@ pub struct StoredCapsule {
     pub session_id: Option<String>,
 }
 
+/// A caller-declared inclusive fact-time range. The fields are private so a
+/// backwards range cannot cross the store boundary; [`EventTimeRange::new`]
+/// is the single validating constructor. A point is represented by equal
+/// bounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EventTimeRange {
+    event_from: OffsetDateTime,
+    event_to: OffsetDateTime,
+}
+
+impl EventTimeRange {
+    /// Construct a point event as an equal-bounds range.
+    #[must_use]
+    pub const fn point(at: OffsetDateTime) -> Self {
+        Self {
+            event_from: at,
+            event_to: at,
+        }
+    }
+
+    /// Construct an inclusive range. Rejects `event_to < event_from`.
+    pub fn new(
+        event_from: OffsetDateTime,
+        event_to: OffsetDateTime,
+    ) -> Result<Self, EventTimeRangeError> {
+        if event_to < event_from {
+            return Err(EventTimeRangeError {
+                event_from,
+                event_to,
+            });
+        }
+        Ok(Self {
+            event_from,
+            event_to,
+        })
+    }
+
+    /// Inclusive start of the declared event range.
+    #[must_use]
+    pub const fn event_from(&self) -> OffsetDateTime {
+        self.event_from
+    }
+
+    /// Inclusive end of the declared event range.
+    #[must_use]
+    pub const fn event_to(&self) -> OffsetDateTime {
+        self.event_to
+    }
+}
+
+/// A backwards caller-declared event range. Kept distinct from
+/// [`StoreError`] because it is a pre-persistence value error; persisted
+/// backwards rows surface as [`StoreError::Corrupt`] on read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("event_to {event_to} lies before event_from {event_from} — an event range runs forward")]
+pub struct EventTimeRangeError {
+    event_from: OffsetDateTime,
+    event_to: OffsetDateTime,
+}
+
+/// One validated row from [`EVENT_TIME_DDL`]. Private fields preserve the
+/// same closed-range invariant after persistence; callers use accessors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EventTimeRecord {
+    range: EventTimeRange,
+    declared_at: OffsetDateTime,
+}
+
+impl EventTimeRecord {
+    /// Inclusive event-range start.
+    #[must_use]
+    pub const fn event_from(&self) -> OffsetDateTime {
+        self.range.event_from()
+    }
+
+    /// Inclusive event-range end.
+    #[must_use]
+    pub const fn event_to(&self) -> OffsetDateTime {
+        self.range.event_to()
+    }
+
+    /// Injected instant when this declaration was first stored.
+    #[must_use]
+    pub const fn declared_at(&self) -> OffsetDateTime {
+        self.declared_at
+    }
+}
+
+/// The closed set of review verdicts (b2 staged review). `proposed` is the
+/// birth verdict of a staged capsule; `ratified` / `rejected` remain readable
+/// for compatible history and authority-bearing internal consumers. The
+/// standalone connector exposes no CLOSE verb. Wire names are the exact SQL
+/// CHECK strings ([`REVIEW_EVENTS_DDL`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewVerdict {
+    /// A staged capsule's birth verdict — fenced from grounding.
+    Proposed,
+    /// Promoted to plain truth at its tier — no longer fenced.
+    Ratified,
+    /// A verdict of rejection — stays fenced; NEVER tombstones, and a later
+    /// `ratified` reverses it.
+    Rejected,
+}
+
+impl ReviewVerdict {
+    /// The persisted/wire word — exactly the SQL CHECK set.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ReviewVerdict::Proposed => "proposed",
+            ReviewVerdict::Ratified => "ratified",
+            ReviewVerdict::Rejected => "rejected",
+        }
+    }
+
+    /// Parse a stored/wire verdict; `None` for anything outside the closed
+    /// set — the caller turns that into a fail-closed [`StoreError::Corrupt`]
+    /// (the CHECK makes it near-unreachable, but a corrupt file is decidable).
+    #[must_use]
+    pub fn from_wire(text: &str) -> Option<Self> {
+        match text {
+            "proposed" => Some(ReviewVerdict::Proposed),
+            "ratified" => Some(ReviewVerdict::Ratified),
+            "rejected" => Some(ReviewVerdict::Rejected),
+            _ => None,
+        }
+    }
+}
+
+/// One append-only review-verdict row (b2 staged review): the verdict, the
+/// caller's reason, the recorded actor (the boundary `clientInfo.name`), and
+/// the injected instant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewEvent {
+    /// The recorded verdict.
+    pub verdict: ReviewVerdict,
+    /// Why the verdict was recorded (non-empty).
+    pub reason: String,
+    /// Who recorded it — boundary knowledge, never store-minted.
+    pub actor: String,
+    /// Injected instant — the store reads no clock.
+    pub at: OffsetDateTime,
+}
+
+/// A capsule's DERIVED review state (b2 staged review): its full append-only
+/// verdict history plus the projected latest verdict. [`ReviewState::fenced`]
+/// is the ONE grounding-fence rule — a capsule is fenced from recall IFF it
+/// carries review history AND its latest verdict is not `ratified` — never a
+/// stored flag (one source per fact). Present (`Some`) whenever ANY review
+/// row exists, so a ratified (live) proposal stays auditable here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewState {
+    latest: ReviewVerdict,
+    history: Vec<ReviewEvent>,
+}
+
+impl ReviewState {
+    /// The projected standing verdict — the latest row's verdict.
+    #[must_use]
+    pub const fn latest(&self) -> ReviewVerdict {
+        self.latest
+    }
+
+    /// Whether this capsule is fenced from grounding: it carries review
+    /// history and the latest verdict is not `ratified`.
+    #[must_use]
+    pub const fn fenced(&self) -> bool {
+        !matches!(self.latest, ReviewVerdict::Ratified)
+    }
+
+    /// The append-only verdict history, oldest first.
+    #[must_use]
+    pub fn history(&self) -> &[ReviewEvent] {
+        &self.history
+    }
+}
+
 /// Usage counters for one capsule (h4 sidecar) — DERIVED advisory data
 /// for a LATE ranking tiebreak only; it never touches confidence or
 /// authority (ARCHITECTURE §1 law: usage is not success evidence).
@@ -803,6 +1376,24 @@ pub struct UsageStat {
     /// Instant of the most recent recall — exactly the INJECTED `now` of
     /// that [`Store::record_recall`] call; the store reads no clock.
     pub last_recalled_at: OffsetDateTime,
+}
+
+/// The DERIVED pin state of one capsule (S1, schema v16) — the highest-`seq`
+/// row from [`PIN_EVENTS_DDL`]. `pinned` is the current verdict; the other
+/// fields witness the event that set it. Produced by [`Store::pin_state_of`];
+/// [`Store::is_pinned`] is the hot-path boolean the decay key reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PinRecord {
+    /// The capsule this pin state is about (`cap-<n>`).
+    pub capsule_id: String,
+    /// Current pin verdict — `true` pinned, `false` unpinned.
+    pub pinned: bool,
+    /// Why the latest event set this state (non-empty).
+    pub reason: String,
+    /// Who set it (non-empty).
+    pub actor: String,
+    /// When the latest event was recorded (RFC3339).
+    pub at: String,
 }
 
 /// A caller-fed embedding as stored (w3 u6a sidecar) — the full vector plus
@@ -836,7 +1427,7 @@ pub struct EmbeddingRow {
     pub model_tag: String,
 }
 
-/// The five declared relation kinds (donor B closed enum — mcps/memory-
+/// The eight declared relation kinds (donor B closed enum — mcps/memory-
 /// contract `relation.rs`). Wire names are the snake_case forms; adding a
 /// kind is a deliberate, reviewed change to the public ontology. Each edge
 /// reads `from --kind--> to`:
@@ -848,11 +1439,17 @@ pub struct EmbeddingRow {
 /// | `witnesses` | the evidence capsule | the attested capsule |
 /// | `blocks` | the blocker | the blocked |
 /// | `falsifies` | an outcome `out-<n>` OR a capsule | the falsified capsule |
+/// | `proposes` | the proposing capsule | the target it proposes to replace |
+/// | `part_of` | the member capsule | the container epic/task |
+/// | `grounded_in` | the child work | its parent epic |
 ///
 /// `falsifies` (u6h) is unique: its `from_id` may name an OUTCOME record
 /// (`out-<n>`, [`Store::append_outcome`]) as well as a capsule, and its
 /// target becomes recall-ineligible (a fence in `crate::retrieve`, not a
-/// state change — [`Store::is_falsified`]).
+/// state change — [`Store::is_falsified`]). `proposes` (b2 staged review) is
+/// navigational only — no dag or recall effect. `part_of` (effort-lifecycle
+/// s1) is pure membership — `from` is a member of container `to`; like
+/// `falsifies` and `proposes` it is NOT a dag input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RelationKind {
     /// `from` replaces `to` (the replace-over-append discipline).
@@ -867,16 +1464,32 @@ pub enum RelationKind {
     /// the target stops grounding recall (eligibility fence), its bytes
     /// untouched. NOT a dag input.
     Falsifies,
+    /// `from` PROPOSES to replace `to` (b2 staged review) — NAVIGATIONAL
+    /// ONLY: no dag/ready/done effect and no recall-exclusion effect. The
+    /// staged-import path (S5b) records it new-proposal→incumbent so a
+    /// changed source never silently supersedes; on ratification the caller
+    /// MAY convert it to `supersedes` explicitly, the machine never does.
+    Proposes,
+    /// `from` is a member of container `to` (an epic/task): pure
+    /// membership. NOT a dag input.
+    PartOf,
+    /// `from` (the child task/epic/plan node) hangs off `to` (its parent
+    /// epic) — the planning-plane anchor surfaced by `memory_digest`'s
+    /// mission section. NOT a dag input.
+    GroundedIn,
 }
 
 impl RelationKind {
     /// All declared kinds, in contract order.
-    pub const ALL: [RelationKind; 5] = [
+    pub const ALL: [RelationKind; 8] = [
         RelationKind::Supersedes,
         RelationKind::DerivedFrom,
         RelationKind::Witnesses,
         RelationKind::Blocks,
         RelationKind::Falsifies,
+        RelationKind::Proposes,
+        RelationKind::PartOf,
+        RelationKind::GroundedIn,
     ];
 
     /// The wire name, e.g. `"derived_from"` — exactly the SQL CHECK set.
@@ -888,6 +1501,9 @@ impl RelationKind {
             RelationKind::Witnesses => "witnesses",
             RelationKind::Blocks => "blocks",
             RelationKind::Falsifies => "falsifies",
+            RelationKind::Proposes => "proposes",
+            RelationKind::PartOf => "part_of",
+            RelationKind::GroundedIn => "grounded_in",
         }
     }
 
@@ -1014,17 +1630,17 @@ pub struct ClassificationRecord {
 /// with the teaching [`StoreError::InvalidEvidenceState`].
 pub const EVIDENCE_STATES: [&str; 3] = ["observed", "inferred", "unverified"];
 
-/// The closed outcome set a recall miss records (u-r5 miss-ledger): the
-/// two UNGROUNDED [`crate::retrieve::RetrieveResponse`] outcomes. A
-/// `grounded` outcome is NOT a miss and has no variant here — it records
-/// nothing. Wire names match the response tags exactly and the SQL CHECK
-/// in [`RECALL_MISSES_DDL`], so an illegal outcome is unrepresentable at
-/// the type layer before the CHECK ever sees it.
+/// The closed outcome set a term-lane recall miss records (u-r5
+/// miss-ledger): `missing_evidence` or `abstain` as observed BEFORE output
+/// trimming. A pre-trim term hit and a request that never ran FTS have no
+/// variant here and record nothing. Wire names match the response tags
+/// exactly and the SQL CHECK in [`RECALL_MISSES_DDL`], so an illegal outcome
+/// is unrepresentable at the type layer before the CHECK ever sees it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecallMissOutcome {
     /// Terms matched stored capsules but every match was fenced out.
     MissingEvidence,
-    /// Zero raw matches — the honest empty answer.
+    /// Zero raw term-lane matches — the honest term miss.
     Abstain,
 }
 
@@ -1037,6 +1653,80 @@ impl RecallMissOutcome {
             RecallMissOutcome::MissingEvidence => "missing_evidence",
             RecallMissOutcome::Abstain => "abstain",
         }
+    }
+
+    /// Parse the persisted wire name back into the closed outcome set.
+    /// Anything else is corrupt store data, never an extensible string.
+    #[must_use]
+    pub fn from_wire(text: &str) -> Option<Self> {
+        match text {
+            "missing_evidence" => Some(Self::MissingEvidence),
+            "abstain" => Some(Self::Abstain),
+            _ => None,
+        }
+    }
+}
+
+/// One typed recall-miss ledger row. The reader re-validates every field
+/// even for a database already stamped at the current schema version, so a
+/// hand-shaped table cannot turn the digest into an open-string channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecallMissRow {
+    /// Positive append sequence; newest-first readers order by this field.
+    pub seq: i64,
+    /// Non-empty canonical folded term (the exact key persisted by the writer).
+    pub term: String,
+    /// Closed pre-trim term-lane miss outcome.
+    pub outcome: RecallMissOutcome,
+    /// Parsed RFC3339 recording instant.
+    pub at: OffsetDateTime,
+}
+
+/// A successful explicit recall-lane choice that differs from the auto
+/// policy's choice for the same request. The four variants are the complete
+/// disagreement set; equal lanes and `auto` as a forced value are
+/// unrepresentable at the Rust writer boundary and rejected by
+/// [`LANE_OVERRIDES_DDL`] at the persistence boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LaneOverride {
+    /// Explicit term instead of auto-fused.
+    TermOverFused,
+    /// Explicit vector instead of auto-fused.
+    VectorOverFused,
+    /// Explicit vector instead of auto-term.
+    VectorOverTerm,
+    /// Explicit fused instead of auto-term.
+    FusedOverTerm,
+}
+
+impl LaneOverride {
+    /// Every representable successful disagreement. Readers use this same
+    /// closed set to re-validate persisted rows rather than trusting that a
+    /// hand-shaped current-version table preserved the SQL CHECK.
+    const ALL: [Self; 4] = [
+        Self::TermOverFused,
+        Self::VectorOverFused,
+        Self::VectorOverTerm,
+        Self::FusedOverTerm,
+    ];
+
+    /// The exact `(forced, auto_pick)` pair persisted by the telemetry
+    /// writer. This is the sole Rust source of those strings.
+    const fn pair(self) -> (&'static str, &'static str) {
+        match self {
+            LaneOverride::TermOverFused => ("term", "fused"),
+            LaneOverride::VectorOverFused => ("vector", "fused"),
+            LaneOverride::VectorOverTerm => ("vector", "term"),
+            LaneOverride::FusedOverTerm => ("fused", "term"),
+        }
+    }
+
+    /// Whether persisted wire strings name one member of the closed typed
+    /// disagreement set.
+    fn contains_pair(forced: &str, auto_pick: &str) -> bool {
+        Self::ALL
+            .into_iter()
+            .any(|override_| override_.pair() == (forced, auto_pick))
     }
 }
 
@@ -1246,6 +1936,34 @@ pub struct SessionRecord {
     pub summary: Option<String>,
 }
 
+/// Store-local state of one exact session label in the activity projection.
+/// A label can outlive or never have a local bracket because merge copies
+/// capsule labels but deliberately does not import [`SessionRecord`] rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionLabelState {
+    /// A local bracket exists and has no `finished_at`.
+    Open,
+    /// A local bracket exists and carries a `finished_at`.
+    Closed,
+    /// Capsules and/or receipts carry the label, but no local bracket exists.
+    LabelOnly,
+}
+
+/// One exact-label row in [`Store::session_activity`]. Counts are physical
+/// store rows: `saves` includes retained tombstone skeletons and `recalls`
+/// counts grounded receipt rows, never ids inside `returned_ids`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionActivityRow {
+    /// Character-exact store-local label.
+    pub session_id: String,
+    /// Capsule rows carrying the label, including tombstone skeletons.
+    pub saves: usize,
+    /// Grounded recall receipt rows carrying the label.
+    pub recalls: usize,
+    /// Local bracket state, or [`SessionLabelState::LabelOnly`].
+    pub state: SessionLabelState,
+}
+
 /// Filter for [`Store::list`]. `Default` = everything. Present fences
 /// AND-compose: a row must pass every fence that is `Some`.
 #[derive(Debug, Clone, Default)]
@@ -1268,6 +1986,23 @@ pub struct ListFilter {
 #[derive(Debug)]
 pub struct Store {
     conn: Connection,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// S2 effort-lifecycle read-count guard: how many times [`Store::all_relations`]
+    /// ran on THIS thread. Thread-local so the count is private to the
+    /// current `#[tokio::test]` (each runs its handler on its own thread) and
+    /// never races a parallel test. Compiled out of release builds.
+    pub(crate) static ALL_RELATIONS_READS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+    /// #156-c read-count guard: how many times [`Store::list`] ran on THIS
+    /// thread. Same thread-local discipline as [`ALL_RELATIONS_READS`] — the
+    /// redundant-scan fix means an unfenced digest/bootstrap call reuses its
+    /// already-loaded capsule list instead of a second full-store `list()`,
+    /// so this stays a cheap regression guard on that perf contract.
+    pub(crate) static STORE_LIST_READS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
 }
 
 impl Store {
@@ -1331,9 +2066,8 @@ impl Store {
         // lesson: leaning on the const silently rejects older files
         // after a bump).
         match version {
-            0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | SCHEMA_VERSION => {
-                migrate_to_current(&mut conn)?
-            }
+            0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18
+            | 19 | SCHEMA_VERSION => migrate_to_current(&mut conn)?,
             other => return Err(StoreError::UnsupportedSchemaVersion(other)),
         }
         // Derived-table heal: the mirror must cover the canonical table
@@ -1401,7 +2135,20 @@ impl Store {
         capsule: &Capsule,
         now: OffsetDateTime,
     ) -> Result<CapsuleId, StoreError> {
-        self.append_inner(capsule, None, now)
+        self.append_inner(capsule, None, None, now)
+    }
+
+    /// [`Store::append`] with one caller-declared fact-time range. The
+    /// event row is inserted after the capsule and FTS rows but before the
+    /// SAME transaction commits. There is deliberately no post-append
+    /// event-time writer: a declaration is fresh-capture input only.
+    pub fn append_with_event_time(
+        &mut self,
+        capsule: &Capsule,
+        event_time: &EventTimeRange,
+        now: OffsetDateTime,
+    ) -> Result<CapsuleId, StoreError> {
+        self.append_inner(capsule, None, Some(event_time), now)
     }
 
     /// [`Store::append`] with a session bracketing link: the capsule row's
@@ -1428,7 +2175,33 @@ impl Store {
         match finished {
             None => Err(StoreError::UnknownSession(session_id.to_string())),
             Some(Some(_)) => Err(StoreError::SessionFinished(session_id.to_string())),
-            Some(None) => self.append_inner(capsule, Some(session_id), now),
+            Some(None) => self.append_inner(capsule, Some(session_id), None, now),
+        }
+    }
+
+    /// [`Store::append_with_session`] plus caller-declared fact time. The
+    /// session gate runs before the append and the fact-time row then shares
+    /// the capsule + FTS transaction.
+    pub fn append_with_session_and_event_time(
+        &mut self,
+        capsule: &Capsule,
+        session_id: &str,
+        event_time: &EventTimeRange,
+        now: OffsetDateTime,
+    ) -> Result<CapsuleId, StoreError> {
+        let finished: Option<Option<String>> = self
+            .conn
+            .query_row(
+                "SELECT finished_at FROM sessions WHERE session_id = ?1",
+                [session_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        match finished {
+            None => Err(StoreError::UnknownSession(session_id.to_string())),
+            Some(Some(_)) => Err(StoreError::SessionFinished(session_id.to_string())),
+            Some(None) => self.append_inner(capsule, Some(session_id), Some(event_time), now),
         }
     }
 
@@ -1436,6 +2209,7 @@ impl Store {
         &mut self,
         capsule: &Capsule,
         session_id: Option<&str>,
+        event_time: Option<&EventTimeRange>,
         now: OffsetDateTime,
     ) -> Result<CapsuleId, StoreError> {
         let canonical_json = capsule
@@ -1477,6 +2251,16 @@ impl Store {
             params![seq, capsule.content()],
         )
         .map_err(backend)?;
+        if let Some(event_time) = event_time {
+            let event_from = rfc3339_text(event_time.event_from())?;
+            let event_to = rfc3339_text(event_time.event_to())?;
+            tx.execute(
+                "INSERT INTO event_time (capsule_id, event_from, event_to, declared_at) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![id, event_from, event_to, created_at],
+            )
+            .map_err(backend)?;
+        }
         tx.commit().map_err(backend)?;
         Ok(CapsuleId(id))
     }
@@ -1499,6 +2283,259 @@ impl Store {
             .transpose()
     }
 
+    /// Read a capsule's caller-declared fact-time sidecar. `Ok(None)` means
+    /// no declaration was made. Every timestamp and the forward-range
+    /// invariant are re-validated on read so a hand-shaped current-version
+    /// row fails as [`StoreError::Corrupt`] rather than fabricating time.
+    pub fn event_time_of(&self, id: &str) -> Result<Option<EventTimeRecord>, StoreError> {
+        let row: Option<(String, String, String)> = self
+            .conn
+            .query_row(
+                "SELECT event_from, event_to, declared_at \
+                 FROM event_time WHERE capsule_id = ?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((event_from_text, event_to_text, declared_at_text)) = row else {
+            return Ok(None);
+        };
+        let event_from = parse_at(id, "event_time.event_from", &event_from_text)?;
+        let event_to = parse_at(id, "event_time.event_to", &event_to_text)?;
+        let declared_at = parse_at(id, "event_time.declared_at", &declared_at_text)?;
+        let range = EventTimeRange::new(event_from, event_to).map_err(|_| StoreError::Corrupt {
+            id: id.to_string(),
+            reason: format!(
+                "event_time.event_to {event_to_text:?} lies before \
+                 event_time.event_from {event_from_text:?}"
+            ),
+        })?;
+        Ok(Some(EventTimeRecord { range, declared_at }))
+    }
+
+    /// Write a transactionally consistent SQLite snapshot to
+    /// `destination_path` from this LIVE connection. SQLite's online backup
+    /// API reads the connection's committed database state, including pages
+    /// still resident in WAL because another connection remains open; copying
+    /// only the main database file cannot provide that guarantee.
+    ///
+    /// The caller owns the destination path and phase-specific error mapping.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::Backend`] when SQLite cannot create or complete
+    /// the snapshot.
+    pub fn snapshot_to(&self, destination_path: &Path) -> Result<(), StoreError> {
+        self.conn
+            .backup(MAIN_DB, destination_path, None)
+            .map_err(backend)
+    }
+
+    /// Rebase a private sync push candidate onto the destination store's
+    /// fact-time declarations. The candidate already carries the merged
+    /// core rows and historical whole-file push state; this method replaces
+    /// ONLY its `event_time` table. Every destination declaration is decoded,
+    /// validated, and rebound by the capsule's unique content identity
+    /// (`source_hash`) before one transaction deletes any candidate row.
+    ///
+    /// This is deliberately not a general sidecar copier. Fact time is local
+    /// to each store, while the existing sync push contract for older
+    /// sidecars remains unchanged. The indexed `capsules.source_hash` column
+    /// is only a projection: it must agree with decoded canonical provenance
+    /// for a live row, or the validated tombstone identity for a forgotten
+    /// skeleton, on BOTH destination and candidate. An orphan declaration,
+    /// corrupt timestamp, backwards range, ambiguous/drifted identity, or
+    /// destination identity missing from the merged candidate fails closed
+    /// before the candidate is pushed.
+    pub(crate) fn rebase_event_time_from(
+        &mut self,
+        destination_path: &Path,
+    ) -> Result<(), StoreError> {
+        let destination = Store::open_readonly(destination_path)?;
+        validate_all_capsule_identity_projections(&destination.conn)?;
+        let mut stmt = destination
+            .conn
+            .prepare(
+                "SELECT e.capsule_id, c.source_hash, c.canonical_json, \
+                        t.capsule_id, t.source_hash, \
+                        e.event_from, e.event_to, e.declared_at, \
+                        (SELECT COUNT(*) FROM capsules c2 \
+                         WHERE c2.source_hash = c.source_hash) \
+                 FROM event_time e \
+                 LEFT JOIN capsules c ON c.id = e.capsule_id \
+                 LEFT JOIN tombstones t ON t.capsule_id = c.id \
+                 ORDER BY e.capsule_id",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, i64>(8)?,
+                ))
+            })
+            .map_err(backend)?;
+
+        // Read and validate the complete destination declaration set before
+        // opening the candidate transaction. Raw RFC3339 text is retained so
+        // preservation is byte-for-byte even for a valid non-UTC offset.
+        let mut destination_rows: Vec<(String, String, String, String, String)> = Vec::new();
+        for row in rows {
+            let (
+                destination_id,
+                source_hash,
+                canonical_json,
+                tombstone_id,
+                tombstone_source_hash,
+                event_from,
+                event_to,
+                declared_at,
+                identity_count,
+            ) = row.map_err(backend)?;
+            let source_hash = source_hash.ok_or_else(|| StoreError::Corrupt {
+                id: destination_id.clone(),
+                reason: "event_time row has no destination capsule identity".to_string(),
+            })?;
+            if identity_count != 1 {
+                return Err(StoreError::Corrupt {
+                    id: destination_id.clone(),
+                    reason: format!(
+                        "event_time source_hash {source_hash:?} resolves to \
+                         {identity_count} destination capsules, expected exactly one"
+                    ),
+                });
+            }
+            validate_capsule_identity_projection(
+                &destination_id,
+                &source_hash,
+                canonical_json.as_deref(),
+                tombstone_id.as_deref(),
+                tombstone_source_hash.as_deref(),
+            )?;
+            let from = parse_at(&destination_id, "event_time.event_from", &event_from)?;
+            let to = parse_at(&destination_id, "event_time.event_to", &event_to)?;
+            parse_at(&destination_id, "event_time.declared_at", &declared_at)?;
+            EventTimeRange::new(from, to).map_err(|_| StoreError::Corrupt {
+                id: destination_id.clone(),
+                reason: format!(
+                    "event_time.event_to {event_to:?} lies before \
+                     event_time.event_from {event_from:?}"
+                ),
+            })?;
+            destination_rows.push((
+                destination_id,
+                source_hash,
+                event_from,
+                event_to,
+                declared_at,
+            ));
+        }
+        drop(stmt);
+
+        validate_all_capsule_identity_projections(&self.conn)?;
+
+        // Resolve every destination identity against the already-merged push
+        // candidate before deleting its sender-local rows. Never bind by id:
+        // cap-N values are store-local and can name different contents.
+        let mut rebound: Vec<(String, String, String, String)> =
+            Vec::with_capacity(destination_rows.len());
+        let mut rebound_ids: BTreeSet<String> = BTreeSet::new();
+        for (destination_id, source_hash, event_from, event_to, declared_at) in destination_rows {
+            let mut candidate_stmt = self
+                .conn
+                .prepare(
+                    "SELECT c.id, c.canonical_json, t.capsule_id, t.source_hash \
+                     FROM capsules c \
+                     LEFT JOIN tombstones t ON t.capsule_id = c.id \
+                     WHERE c.source_hash = ?1 \
+                     ORDER BY c.seq",
+                )
+                .map_err(backend)?;
+            let candidate_rows = candidate_stmt
+                .query_map([source_hash.as_str()], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                })
+                .map_err(backend)?;
+            let mut candidates = Vec::new();
+            for candidate in candidate_rows {
+                candidates.push(candidate.map_err(backend)?);
+            }
+            drop(candidate_stmt);
+            if candidates.len() != 1 {
+                return Err(StoreError::Corrupt {
+                    id: destination_id,
+                    reason: format!(
+                        "event_time source_hash {source_hash:?} resolves to \
+                         {} capsules in the merged push candidate, expected exactly one",
+                        candidates.len()
+                    ),
+                });
+            }
+            let (candidate_id, canonical_json, tombstone_id, tombstone_source_hash) =
+                candidates.pop().ok_or_else(|| StoreError::Corrupt {
+                    id: destination_id,
+                    reason: format!(
+                        "event_time source_hash {source_hash:?} vanished from the merged push candidate"
+                    ),
+                })?;
+            validate_capsule_identity_projection(
+                &candidate_id,
+                &source_hash,
+                canonical_json.as_deref(),
+                tombstone_id.as_deref(),
+                tombstone_source_hash.as_deref(),
+            )?;
+            if !rebound_ids.insert(candidate_id.clone()) {
+                return Err(StoreError::Corrupt {
+                    id: candidate_id,
+                    reason: format!(
+                        "multiple destination event_time rows resolve to source_hash {source_hash:?}"
+                    ),
+                });
+            }
+            rebound.push((candidate_id, event_from, event_to, declared_at));
+        }
+
+        let tx = self.conn.transaction().map_err(backend)?;
+        tx.execute("DELETE FROM event_time", []).map_err(backend)?;
+        for (candidate_id, event_from, event_to, declared_at) in &rebound {
+            tx.execute(
+                "INSERT INTO event_time (capsule_id, event_from, event_to, declared_at) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![candidate_id, event_from, event_to, declared_at],
+            )
+            .map_err(backend)?;
+        }
+        let stored_count: i64 = tx
+            .query_row("SELECT COUNT(*) FROM event_time", [], |row| row.get(0))
+            .map_err(backend)?;
+        let expected_count = i64::try_from(rebound.len()).map_err(|error| StoreError::Corrupt {
+            id: "event_time".to_string(),
+            reason: format!("destination declaration count cannot fit i64: {error}"),
+        })?;
+        if stored_count != expected_count {
+            return Err(StoreError::Corrupt {
+                id: "event_time".to_string(),
+                reason: format!(
+                    "rebased {stored_count} destination declaration(s), expected {expected_count}"
+                ),
+            });
+        }
+        tx.commit().map_err(backend)
+    }
+
     /// List LIVE capsules in append (`seq`) order, optionally fenced to a
     /// project and/or a project-prefix subtree ([`ListFilter`]; present
     /// fences AND-compose). `limit` keeps the NEWEST rows (the tail of the
@@ -1507,6 +2544,8 @@ impl Store {
     /// order. Tombstoned rows are excluded — they have no capsule bytes to
     /// list; their markers live in [`Store::get_tombstone`].
     pub fn list(&self, filter: ListFilter) -> Result<Vec<StoredCapsule>, StoreError> {
+        #[cfg(test)]
+        STORE_LIST_READS.with(|c| c.set(c.get() + 1));
         // SQLite treats a negative LIMIT as "unlimited". The inner query
         // takes the newest N by seq desc; the outer re-sorts ascending so
         // callers always read append order. NULL-tolerant fences: a NULL
@@ -1584,7 +2623,9 @@ impl Store {
     ///   the same snapshot;
     /// - sidecar tables (`relations`, `audit_events` — chain links
     ///   included, `classifications`, `tombstones`, `sessions`, `tiers`,
-    ///   `synonyms`, `usage`, `capsules_fts`) are EXCLUDED by documented
+    ///   `synonyms`, `usage`, `capsules_fts`, `review_events`, `pin_events` +
+    ///   `idx_pin_events_capsule_id`, `corroborations`, `source_cursors`,
+    ///   `source_backfills`) are EXCLUDED by documented
     ///   rule: the snapshot is the CAPSULE comparand; each sidecar is
     ///   separately queryable and deterministic (the audit chain has its
     ///   own comparand, [`Store::journal_head`]). Sidecar writes therefore
@@ -1639,7 +2680,7 @@ impl Store {
         terms: &[String],
         project_id: Option<&str>,
     ) -> Result<Vec<(StoredCapsule, f64)>, StoreError> {
-        self.search_fts_inner(terms, project_id, None, None)
+        self.search_fts_inner(terms, project_id, None, None, None, None)
     }
 
     /// [`Store::search_fts`] capped to the top-`limit` matches by bm25 rank
@@ -1657,13 +2698,14 @@ impl Store {
         project_id: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(StoredCapsule, f64)>, StoreError> {
-        self.search_fts_inner(terms, project_id, None, Some(limit))
+        self.search_fts_inner(terms, project_id, None, None, Some(limit), None)
     }
 
-    /// [`Store::search_fts`] with the full w2 scope fences: `project_id`
+    /// [`Store::search_fts`] with the full recall scope fences: `project_id`
     /// (exact) and `project_prefix` (the [`ListFilter::project_prefix`]
     /// subtree rule — `project_id == p` OR starting with `p + "/"`).
-    /// Present fences AND-compose; both `None` is the unfenced search.
+    /// and `session_id` (the character-exact store-local capsule label).
+    /// Present fences AND-compose; all `None` is the unfenced search.
     /// Everything else — match semantics, quoting, ordering, tombstone
     /// exclusion — is exactly [`Store::search_fts`].
     pub fn search_fts_scoped(
@@ -1671,22 +2713,57 @@ impl Store {
         terms: &[String],
         project_id: Option<&str>,
         project_prefix: Option<&str>,
+        session_id: Option<&str>,
     ) -> Result<Vec<(StoredCapsule, f64)>, StoreError> {
-        self.search_fts_inner(terms, project_id, project_prefix, None)
+        self.search_fts_inner(terms, project_id, project_prefix, session_id, None, None)
+    }
+
+    /// [`Store::search_fts_scoped`] with the S3 effort-lifecycle membership
+    /// fence AND-composed onto the project/session fences: only capsules
+    /// whose id appears in `effort_ids` (the effort's members ∪ {epic}) can
+    /// ground. The fence is a single JSON-array bind matched with `json_each`
+    /// (never a per-id variable and never post-filtering), so a 1000-member
+    /// effort neither trips SQLite's variable limit nor forces a full scan —
+    /// the `capsules_fts MATCH` driver still narrows first, then the unique
+    /// `id` index probes membership. `None` is exactly [`Store::search_fts_scoped`]
+    /// (byte-identical dormancy); an empty slice is a degenerate fence the
+    /// caller must reject BEFORE reaching this seam (the engine never passes
+    /// one).
+    pub fn search_fts_effort(
+        &self,
+        terms: &[String],
+        project_id: Option<&str>,
+        project_prefix: Option<&str>,
+        session_id: Option<&str>,
+        effort_ids: Option<&[String]>,
+    ) -> Result<Vec<(StoredCapsule, f64)>, StoreError> {
+        self.search_fts_inner(
+            terms,
+            project_id,
+            project_prefix,
+            session_id,
+            None,
+            effort_ids,
+        )
     }
 
     /// The one FTS query body behind [`Store::search_fts`],
-    /// [`Store::search_fts_scoped`], and [`Store::search_fts_limited`].
+    /// [`Store::search_fts_scoped`], [`Store::search_fts_effort`], and
+    /// [`Store::search_fts_limited`].
     /// `limit` bounds the ranked result: `None` is unbounded (SQLite reads
     /// a negative `LIMIT` as unlimited, the same convention as
     /// [`Store::list`]); `Some(k)` keeps the top-`k` by `ORDER BY score,
-    /// seq`.
+    /// seq`. `effort_ids` is the S3 membership fence: `None` disables it
+    /// entirely (byte-identical dormancy), `Some(ids)` keeps only capsules
+    /// whose id is in the JSON-array set (`json_each`, one bind).
     fn search_fts_inner(
         &self,
         terms: &[String],
         project_id: Option<&str>,
         project_prefix: Option<&str>,
+        session_id: Option<&str>,
         limit: Option<usize>,
+        effort_ids: Option<&[String]>,
     ) -> Result<Vec<(StoredCapsule, f64)>, StoreError> {
         let phrases: Vec<String> = terms
             .iter()
@@ -1708,6 +2785,12 @@ impl Store {
             None => -1_i64,
             Some(n) => i64::try_from(n).unwrap_or(i64::MAX),
         };
+        // S3 effort membership fence: one JSON-array bind (NULL disables the
+        // clause, exactly like the project/session fences). `json_each`
+        // expands the array in-engine, so a 1000-member effort is a SINGLE
+        // bound parameter — never `params_from_iter` (which would trip the
+        // 999-variable ceiling) and never a post-filter.
+        let effort_json = effort_ids_json(effort_ids)?;
         let mut out = Vec::new();
         // Same NULL-tolerant fence shape as [`Store::list`]: a NULL
         // parameter disables its clause; `substr` keeps prefix bytes
@@ -1724,12 +2807,21 @@ impl Store {
                    AND (?2 IS NULL OR c.project_id = ?2) \
                    AND (?3 IS NULL OR c.project_id = ?3 \
                         OR substr(c.project_id, 1, length(?3) + 1) = ?3 || '/') \
-                 ORDER BY score, c.seq LIMIT ?4",
+                   AND (?4 IS NULL OR c.session_id = ?4) \
+                   AND (?6 IS NULL OR c.id IN (SELECT value FROM json_each(?6))) \
+                 ORDER BY score, c.seq LIMIT ?5",
             )
             .map_err(backend)?;
         let rows = stmt
             .query_map(
-                params![match_expr, project_id, project_prefix, row_limit],
+                params![
+                    match_expr,
+                    project_id,
+                    project_prefix,
+                    session_id,
+                    row_limit,
+                    effort_json
+                ],
                 row_to_scored,
             )
             .map_err(backend)?;
@@ -1791,6 +2883,129 @@ impl Store {
             .map_err(backend)
     }
 
+    /// Append one pin/unpin event for `id` (S1, schema v16), returning the
+    /// resulting [`PinRecord`] (the new latest state). APPEND-ONLY: state is
+    /// the highest-`seq` row per `capsule_id`; a re-pin or unpin appends a
+    /// fresh row, never mutates one. `reason`/`actor` must be non-empty
+    /// ([`StoreError::EmptyField`]); `id` must name a stored capsule
+    /// ([`StoreError::UnknownCapsule`] — a tombstoned or never-stored id).
+    /// `at` is the INJECTED `now`. Pin is a pure sidecar: no capsule byte,
+    /// tier, relation, or the stored `confidence` is touched here.
+    pub fn append_pin_event(
+        &mut self,
+        id: &str,
+        pinned: bool,
+        reason: &str,
+        actor: &str,
+        now: OffsetDateTime,
+    ) -> Result<PinRecord, StoreError> {
+        if reason.trim().is_empty() {
+            return Err(StoreError::EmptyField("reason"));
+        }
+        if actor.trim().is_empty() {
+            return Err(StoreError::EmptyField("actor"));
+        }
+        let at = rfc3339_text(now)?;
+        let tx = self.conn.transaction().map_err(backend)?;
+        let exists: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM capsules WHERE id = ?1)",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if !exists {
+            return Err(StoreError::UnknownCapsule(id.to_string()));
+        }
+        let seq: i64 = tx
+            .query_row(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM pin_events",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        tx.execute(
+            "INSERT INTO pin_events (seq, capsule_id, pinned, reason, actor, at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![seq, id, i64::from(pinned), reason, actor, at],
+        )
+        .map_err(backend)?;
+        tx.commit().map_err(backend)?;
+        Ok(PinRecord {
+            capsule_id: id.to_string(),
+            pinned,
+            reason: reason.to_string(),
+            actor: actor.to_string(),
+            at,
+        })
+    }
+
+    /// Whether `id`'s LATEST pin event set it pinned (S1). The highest-`seq`
+    /// row per capsule is the state; no row (the dormant default, every store
+    /// predating v16) is NOT pinned — `false`, never an error. Sibling of
+    /// [`Store::is_superseded`]; the retrieve/bootstrap decay key and the
+    /// archive veto read it. A `false` here restores the exact pre-pin decay
+    /// behavior (byte-identical dormancy).
+    pub fn is_pinned(&self, id: &str) -> Result<bool, StoreError> {
+        let pinned: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT pinned FROM pin_events WHERE capsule_id = ?1 \
+                 ORDER BY seq DESC LIMIT 1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        Ok(pinned == Some(1))
+    }
+
+    /// Every capsule whose LATEST pin event is pinned (S1), ordered by
+    /// `capsule_id` for determinism. Empty on a fresh store; never an error.
+    /// A capsule later unpinned (its newest event `pinned = 0`) is absent.
+    pub fn list_pinned(&self) -> Result<Vec<CapsuleId>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT capsule_id FROM pin_events AS pe \
+                 WHERE pe.seq = (SELECT MAX(seq) FROM pin_events \
+                                 WHERE capsule_id = pe.capsule_id) \
+                   AND pe.pinned = 1 \
+                 ORDER BY pe.capsule_id",
+            )
+            .map_err(backend)?;
+        let ids = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(backend)?
+            .collect::<Result<Vec<String>, _>>()
+            .map_err(backend)?;
+        Ok(ids.into_iter().map(CapsuleId).collect())
+    }
+
+    /// The full latest pin state for `id` (S1) — [`PinRecord`] from the
+    /// highest-`seq` row, or `None` when the capsule was never pinned or
+    /// unpinned. The audit/inspection read; [`Store::is_pinned`] is the
+    /// hot-path boolean.
+    pub fn pin_state_of(&self, id: &str) -> Result<Option<PinRecord>, StoreError> {
+        self.conn
+            .query_row(
+                "SELECT capsule_id, pinned, reason, actor, at FROM pin_events \
+                 WHERE capsule_id = ?1 ORDER BY seq DESC LIMIT 1",
+                [id],
+                |row| {
+                    Ok(PinRecord {
+                        capsule_id: row.get(0)?,
+                        pinned: row.get::<_, i64>(1)? == 1,
+                        reason: row.get(2)?,
+                        actor: row.get(3)?,
+                        at: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(backend)
+    }
+
     /// Whether any `falsifies` edge names `id` as the falsified target
     /// (u6h). The recall-eligibility signal: a `true` here makes recall
     /// fence the capsule (`crate::retrieve`), its bytes untouched and still
@@ -1805,6 +3020,191 @@ impl Store {
                 |row| row.get(0),
             )
             .map_err(backend)
+    }
+
+    /// Append one review-verdict row for `id` (b2 staged review) —
+    /// append-only, `seq` assigned MAX+1 like every ledger. The birth event
+    /// is `proposed` (a fresh staged ingest); authority-bearing internal
+    /// consumers may append compatible `ratified` / `rejected` history.
+    /// NEVER tombstones and NEVER deletes: fence state is DERIVED from the
+    /// latest verdict, so a `rejected` is reversible by a later `ratified`.
+    /// `now` is injected; the store reads no clock. Writes NO audit row — the
+    /// boundary audits (module audit policy).
+    pub fn append_review_event(
+        &mut self,
+        id: &str,
+        verdict: ReviewVerdict,
+        reason: &str,
+        actor: &str,
+        now: OffsetDateTime,
+    ) -> Result<(), StoreError> {
+        let at = rfc3339_text(now)?;
+        let tx = self.conn.transaction().map_err(backend)?;
+        let seq: i64 = tx
+            .query_row(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM review_events",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        tx.execute(
+            "INSERT INTO review_events (seq, capsule_id, verdict, reason, actor, at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![seq, id, verdict.as_str(), reason, actor, at],
+        )
+        .map_err(backend)?;
+        tx.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// The DERIVED review state of `id` (b2 staged review): `Some` with the
+    /// full verdict history + projected latest verdict when ANY review row
+    /// exists, `None` when the capsule was never staged. Fence state reads off
+    /// [`ReviewState::fenced`] — one source per fact. A verdict outside the
+    /// closed set, or an unparseable instant (a corrupt file the CHECK could
+    /// not have written), is a fail-closed [`StoreError::Corrupt`].
+    pub fn review_state_of(&self, id: &str) -> Result<Option<ReviewState>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT verdict, reason, actor, at FROM review_events \
+                 WHERE capsule_id = ?1 ORDER BY seq",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(backend)?;
+        let mut history: Vec<ReviewEvent> = Vec::new();
+        for row in rows {
+            let (verdict, reason, actor, at) = row.map_err(backend)?;
+            let verdict =
+                ReviewVerdict::from_wire(&verdict).ok_or_else(|| StoreError::Corrupt {
+                    id: id.to_owned(),
+                    reason: format!("review_events verdict {verdict:?} is outside the closed set"),
+                })?;
+            let at = OffsetDateTime::parse(&at, &Rfc3339).map_err(|e| StoreError::Corrupt {
+                id: id.to_owned(),
+                reason: format!("review_events at: {e}"),
+            })?;
+            history.push(ReviewEvent {
+                verdict,
+                reason,
+                actor,
+                at,
+            });
+        }
+        match history.last() {
+            None => Ok(None),
+            Some(last) => {
+                let latest = last.verdict;
+                Ok(Some(ReviewState { latest, history }))
+            }
+        }
+    }
+
+    /// Whether `id` is fenced from grounding by a standing proposal (b2) —
+    /// review history exists and the latest verdict is not `ratified`.
+    /// Derived from [`Store::review_state_of`], one source per fact. An
+    /// unstaged id is simply not fenced — `false`, never an error.
+    pub fn review_fenced(&self, id: &str) -> Result<bool, StoreError> {
+        Ok(self
+            .review_state_of(id)?
+            .is_some_and(|state| state.fenced()))
+    }
+
+    /// The standing review verdict of `id` (b2) when it carries review
+    /// history (`Some("proposed" | "ratified" | "rejected")`), else `None` —
+    /// the verdict surfaced on an INCLUDED staged retrieve envelope and echoed
+    /// on an ingest collision.
+    pub fn review_verdict(&self, id: &str) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .review_state_of(id)?
+            .map(|state| state.latest().as_str().to_owned()))
+    }
+
+    /// The full append-only review history of `id` (b2) in seq order — the
+    /// read the merge path carries into a freshly-minted capsule so a proposal
+    /// stays fenced across a store boundary (fence durability). Empty when the
+    /// capsule was never staged.
+    pub fn review_events_of(&self, id: &str) -> Result<Vec<ReviewEvent>, StoreError> {
+        Ok(self
+            .review_state_of(id)?
+            .map_or_else(Vec::new, |state| state.history))
+    }
+
+    /// Every capsule id currently fenced by a standing proposal (b2) — the
+    /// capsule whose LATEST review verdict is not `ratified`. Deterministic id
+    /// order. The digest excludes these from its truth counts.
+    pub fn list_review_fenced(&self) -> Result<Vec<String>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT capsule_id FROM review_events r1 \
+                 WHERE seq = (SELECT MAX(seq) FROM review_events r2 \
+                              WHERE r2.capsule_id = r1.capsule_id) \
+                   AND verdict <> 'ratified' \
+                 ORDER BY capsule_id",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(backend)?;
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.push(row.map_err(backend)?);
+        }
+        Ok(ids)
+    }
+
+    /// How many capsules are fenced by a standing proposal (b2) — the digest
+    /// `staged.proposed` count. Same latest-verdict projection as
+    /// [`Store::list_review_fenced`].
+    pub fn count_review_fenced(&self) -> Result<usize, StoreError> {
+        let count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM review_events r1 \
+                 WHERE seq = (SELECT MAX(seq) FROM review_events r2 \
+                              WHERE r2.capsule_id = r1.capsule_id) \
+                   AND verdict <> 'ratified'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        Ok(count.max(0) as usize)
+    }
+
+    /// How many standing proposals (b2) are STALE — fenced (latest verdict
+    /// not `ratified`) and last touched more than `window_days` before `now`.
+    /// Age runs from the proposal's LATEST review instant to `now` (injected;
+    /// the store reads no clock). The digest `staged.stale_proposals` pressure
+    /// count — proposals are visible pressure, never silent backlog.
+    pub fn stale_proposals(
+        &self,
+        now: OffsetDateTime,
+        window_days: i64,
+    ) -> Result<usize, StoreError> {
+        let cutoff = rfc3339_text(now - time::Duration::days(window_days))?;
+        let count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM review_events r1 \
+                 WHERE seq = (SELECT MAX(seq) FROM review_events r2 \
+                              WHERE r2.capsule_id = r1.capsule_id) \
+                   AND verdict <> 'ratified' \
+                   AND at < ?1",
+                [cutoff],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        Ok(count.max(0) as usize)
     }
 
     /// Of the bounded candidate `ids`, those a `supersedes` edge names as
@@ -1982,6 +3382,13 @@ impl Store {
     /// input: a consumer can fold `blocks` edges into a dependency graph,
     /// `supersedes` chains into lineage, etc.
     pub fn all_relations(&self) -> Result<Vec<RelationRecord>, StoreError> {
+        // S2 effort-lifecycle perf guard: the digest/bootstrap contract is
+        // exactly ONE `all_relations` read per call. A test-only thread-local
+        // tally (each `#[tokio::test]` runs its handler on its own thread, so
+        // the count never races a parallel test) lets the read-count test
+        // prove it; compiled out of release.
+        #[cfg(test)]
+        ALL_RELATIONS_READS.with(|c| c.set(c.get() + 1));
         let mut stmt = self
             .conn
             .prepare(
@@ -2028,18 +3435,48 @@ impl Store {
     /// eligibility (only a `falsifies` edge does). `description`/`actor` must
     /// be non-empty ([`StoreError::EmptyField`] — the caller names who
     /// observed, no default); a present `capsule_id` must name a stored
-    /// capsule ([`StoreError::UnknownCapsule`]). No verb updates or deletes a
-    /// row. `at` is the INJECTED `now` — the store reads no clock.
+    /// capsule ([`StoreError::UnknownCapsule`]). A scored observation carries
+    /// `receipt_id` and `score` together: the receipt is resolved before the
+    /// row is inserted, then every returned capsule's advisory EMA weight is
+    /// updated in the SAME transaction. Unknown/corrupt receipts or any EMA
+    /// write failure roll back both the outcome and all weights. No verb
+    /// updates or deletes an outcome row. `at` is the INJECTED `now` — the
+    /// store reads no clock.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the store boundary keeps each outcome/scoring field explicit and separately validated"
+    )]
     pub fn append_outcome(
         &mut self,
         description: &str,
         actor: &str,
         evidence_ref: Option<&str>,
         capsule_id: Option<&str>,
+        receipt_id: Option<&str>,
+        score: Option<f64>,
         now: OffsetDateTime,
-    ) -> Result<OutcomeRecord, StoreError> {
+    ) -> Result<AppendedOutcome, StoreError> {
         let at = rfc3339_text(now)?;
         let tx = self.conn.transaction().map_err(backend)?;
+        // Pair/range validation is shape validation, not an effect. For a
+        // valid scored request, receipt resolution is the FIRST database
+        // operation inside the transaction: no sequence is minted and no
+        // row is inserted before the grounding address proves usable.
+        let scored_feedback = match (receipt_id, score) {
+            (None, None) => None,
+            (Some(receipt_id), Some(score)) => {
+                validate_outcome_scoring(receipt_id, score)?;
+                let returned_ids = receipt_returned_ids_on(&tx, receipt_id)?
+                    .ok_or_else(|| StoreError::UnknownReceipt(receipt_id.to_string()))?;
+                validate_receipt_capsules_on(&tx, receipt_id, &returned_ids)?;
+                Some((returned_ids, score))
+            }
+            _ => {
+                return Err(StoreError::InvalidOutcomeScoring(
+                    "receipt_id and score must be present together",
+                ));
+            }
+        };
         let seq: i64 = tx
             .query_row(
                 "SELECT COALESCE(MAX(seq), 0) + 1 FROM outcomes",
@@ -2056,6 +3493,8 @@ impl Store {
             actor.to_string(),
             evidence_ref.map(str::to_string),
             capsule_id.map(str::to_string),
+            receipt_id.map(str::to_string),
+            score,
             now,
         )?;
         if let Some(cap) = &record.capsule_id {
@@ -2073,21 +3512,33 @@ impl Store {
         }
         tx.execute(
             "INSERT INTO outcomes \
-             (seq, id, description, actor, evidence_ref, capsule_id, at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             (seq, id, description, actor, evidence_ref, capsule_id, receipt_id, score, at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 seq,
-                record.id,
-                record.description,
-                record.actor,
-                record.evidence_ref,
-                record.capsule_id,
+                &record.id,
+                &record.description,
+                &record.actor,
+                &record.evidence_ref,
+                &record.capsule_id,
+                &record.receipt_id,
+                record.score,
                 at
             ],
         )
         .map_err(backend)?;
+        let weights_updated = match scored_feedback {
+            Some((ids, score)) => {
+                let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+                Some(apply_feedback_on(&tx, &ids, score, &at)?)
+            }
+            None => None,
+        };
         tx.commit().map_err(backend)?;
-        Ok(record)
+        Ok(AppendedOutcome {
+            record,
+            weights_updated,
+        })
     }
 
     /// Every outcome record, in append order (`seq` asc) — the deterministic
@@ -2098,7 +3549,7 @@ impl Store {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, description, actor, evidence_ref, capsule_id, at \
+                "SELECT id, description, actor, evidence_ref, capsule_id, receipt_id, score, at \
                  FROM outcomes ORDER BY seq",
             )
             .map_err(backend)?;
@@ -2108,6 +3559,30 @@ impl Store {
             out.push(row.map_err(backend)?.decode()?);
         }
         Ok(out)
+    }
+
+    /// Apply one scored-feedback EMA to `ids`, preserving input order, in a
+    /// single transaction. Missing weights start at
+    /// [`FEEDBACK_NEUTRAL_WEIGHT`]; every stored and computed value is
+    /// revalidated as finite and inside `0.0..=1.0`.
+    pub fn apply_feedback(
+        &mut self,
+        ids: &[&str],
+        score: f64,
+        now: OffsetDateTime,
+    ) -> Result<Vec<(String, f64)>, StoreError> {
+        validate_feedback_score(score)?;
+        let at = rfc3339_text(now)?;
+        let tx = self.conn.transaction().map_err(backend)?;
+        let updated = apply_feedback_on(&tx, ids, score, &at)?;
+        tx.commit().map_err(backend)?;
+        Ok(updated)
+    }
+
+    /// Read one advisory feedback weight. An absent row is `None`; corrupt
+    /// persisted values fail closed instead of reaching ranking arithmetic.
+    pub fn feedback_weight_of(&self, id: &str) -> Result<Option<f64>, StoreError> {
+        feedback_weight_on(&self.conn, id)
     }
 
     /// Append one APPEND-ONLY pairwise preference-evidence record (u6i),
@@ -2440,6 +3915,88 @@ impl Store {
         }
     }
 
+    /// Capsule ids whose PERSISTED classification kind is `epic` (S2
+    /// effort-lifecycle), in ascending id order. ONE indexed query over
+    /// `classifications` (`idx_classifications_kind`) — the digest/bootstrap
+    /// open-efforts projection resolves its epic universe here rather than
+    /// fanning `get_classification` over every capsule. A tombstoned capsule
+    /// keeps its classification row, so callers still intersect the result
+    /// with the live/scope set before surfacing a row.
+    pub fn list_epic_ids(&self) -> Result<Vec<String>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT capsule_id FROM classifications \
+                 WHERE kind = 'epic' ORDER BY capsule_id",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(backend)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(backend)?);
+        }
+        Ok(out)
+    }
+
+    /// Whether a capsule row named `id` exists AT ALL — live OR a tombstoned
+    /// skeleton (forget only NULLs `canonical_json`, the row persists). S3
+    /// effort resolution reads this FIRST: a missing row is `unknown_capsule`,
+    /// a present-but-tombstoned row is the distinct `tombstoned_capsule`
+    /// state. A slug is simply a non-existent id — it never resolves scope.
+    pub fn capsule_exists(&self, id: &str) -> Result<bool, StoreError> {
+        self.conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM capsules WHERE id = ?1)",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(backend)
+    }
+
+    /// Whether any `witnesses` edge names `id` as its target — the u-r3
+    /// proof-carrying closure signal. S3 effort resolution reads it (with
+    /// [`Store::is_superseded`]) to compute the echoed `open` flag: a
+    /// witnessed OR superseded epic is CLOSED (`open:false`) yet still
+    /// queryable for post-mortem recall. An unknown id is simply not
+    /// witnessed — `false`, never an error.
+    pub fn is_witnessed(&self, id: &str) -> Result<bool, StoreError> {
+        self.conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM relations \
+                 WHERE kind = 'witnesses' AND to_id = ?1)",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(backend)
+    }
+
+    /// The effort's members: the `from` side of every `part_of` edge pointing
+    /// AT `epic` (1-hop INTO the container, non-transitive — a sub-effort is
+    /// scoped by its own sub-epic id). GRAPH TRUTH: every member is returned,
+    /// including dead ones (superseded / falsified / archived / tombstoned) —
+    /// the fence is SCOPE, downstream eligibility is untouched, and the count
+    /// matches digest/bootstrap's `member_total` (cross-surface parity).
+    /// Distinct `from_id`, ascending, for a deterministic id-set.
+    pub fn effort_members(&self, epic: &str) -> Result<Vec<String>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT DISTINCT from_id FROM relations \
+                 WHERE kind = 'part_of' AND to_id = ?1 ORDER BY from_id",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([epic], |row| row.get::<_, String>(0))
+            .map_err(backend)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(backend)?);
+        }
+        Ok(out)
+    }
+
     /// Record the CAPTURE-TIME hash of `capsule_id`'s anchored file (u-r2
     /// anchor-drift; see [`ANCHOR_HASHES_DDL`]): `hash` is the SHA-256 hex
     /// of the anchored file's bytes, computed by the BOUNDARY through the
@@ -2587,8 +4144,149 @@ impl Store {
         }
     }
 
-    /// Append the recall-miss ledger rows for one ungrounded query (u-r5
-    /// miss-ledger; see [`RECALL_MISSES_DDL`]): fold each `term` exactly
+    /// Append one grounded recall receipt (u03; see
+    /// [`RECALL_RECEIPTS_DDL`]), returning its deterministic `rcpt-<seq>` id.
+    /// The raw caller `terms` and the `returned_ids` in response order are
+    /// stored as JSON arrays; project fences and `session_id` retain their
+    /// exact nullable boundary values. `now` is injected — the store reads no
+    /// clock. One transaction mints `MAX(seq)+1` and inserts the row, so a
+    /// returned id always names a committed receipt. Any backend or
+    /// serialization failure propagates honestly: this ledger is
+    /// FAIL-CLOSED because feedback addresses it by id.
+    pub fn record_recall_receipt(
+        &mut self,
+        terms: &[String],
+        returned_ids: &[&str],
+        project_id: Option<&str>,
+        project_prefix: Option<&str>,
+        session_id: Option<&str>,
+        now: OffsetDateTime,
+    ) -> Result<String, StoreError> {
+        let terms_json = serde_json::to_string(terms)
+            .map_err(|error| StoreError::Serialize(error.to_string()))?;
+        let returned_ids_json = serde_json::to_string(returned_ids)
+            .map_err(|error| StoreError::Serialize(error.to_string()))?;
+        let at = rfc3339_text(now)?;
+        let tx = self.conn.transaction().map_err(backend)?;
+        let seq: i64 = tx
+            .query_row(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM recall_receipts",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        let id = format!("rcpt-{seq}");
+        tx.execute(
+            "INSERT INTO recall_receipts \
+             (seq, id, terms, returned_ids, project_id, project_prefix, session_id, at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                seq,
+                id,
+                terms_json,
+                returned_ids_json,
+                project_id,
+                project_prefix,
+                session_id,
+                at,
+            ],
+        )
+        .map_err(backend)?;
+        tx.commit().map_err(backend)?;
+        Ok(id)
+    }
+
+    /// Resolve a grounded recall receipt to the capsule ids returned on that
+    /// response, preserving response order. `Ok(None)` means the id is
+    /// unknown. Persisted JSON that is not a string array fails safely as the
+    /// named [`StoreError::Corrupt`] row instead of fabricating an empty set.
+    pub fn receipt_returned_ids(
+        &self,
+        receipt_id: &str,
+    ) -> Result<Option<Vec<String>>, StoreError> {
+        receipt_returned_ids_on(&self.conn, receipt_id)
+    }
+
+    /// Append one successful explicit lane override. Callers can supply only
+    /// the closed [`LaneOverride`] disagreement set; there is no raw-string
+    /// writer. The method reports persistence errors honestly. Retrieve's
+    /// public wrapper deliberately swallows that error because this table is
+    /// advisory telemetry and never part of recall correctness.
+    pub(crate) fn record_lane_override(
+        &mut self,
+        override_: LaneOverride,
+        now: OffsetDateTime,
+    ) -> Result<(), StoreError> {
+        let (forced, auto_pick) = override_.pair();
+        let at = rfc3339_text(now)?;
+        self.conn
+            .execute(
+                "INSERT INTO lane_overrides (forced, auto_pick, at) VALUES (?1, ?2, ?3)",
+                params![forced, auto_pick, at],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    /// Aggregate successful explicit lane overrides in deterministic
+    /// `(forced asc, auto_pick asc)` order. Every contributing row is read:
+    /// its auto-minted sequence must be positive, its pair is re-validated
+    /// against the closed [`LaneOverride`] type, and its timestamp is parsed
+    /// as RFC3339 before it can contribute. A malformed row fails as
+    /// [`StoreError::Corrupt`], even if a hand-shaped current-version table
+    /// omitted the SQL CHECK. This is the sole u05-to-u10 consumption
+    /// interface; individual telemetry rows stay internal.
+    pub fn lane_override_totals(&self) -> Result<Vec<(String, String, i64)>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT seq, forced, auto_pick, at FROM lane_overrides ORDER BY seq ASC")
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(backend)?;
+        let mut totals = BTreeMap::<(String, String), i64>::new();
+        for row in rows {
+            let (seq, forced, auto_pick, at) = row.map_err(backend)?;
+            let id = format!("lane_overrides:{seq}");
+            if seq <= 0 {
+                return Err(StoreError::Corrupt {
+                    id,
+                    reason: format!("lane override seq must be positive, got {seq}"),
+                });
+            }
+            if !LaneOverride::contains_pair(&forced, &auto_pick) {
+                return Err(StoreError::Corrupt {
+                    id,
+                    reason: format!(
+                        "illegal lane override pair forced={forced:?}, auto_pick={auto_pick:?}"
+                    ),
+                });
+            }
+            OffsetDateTime::parse(&at, &Rfc3339).map_err(|error| StoreError::Corrupt {
+                id: id.clone(),
+                reason: format!("lane override timestamp is not RFC3339: {error}"),
+            })?;
+            let count = totals.entry((forced, auto_pick)).or_insert(0);
+            *count = count.checked_add(1).ok_or_else(|| StoreError::Corrupt {
+                id,
+                reason: "lane override aggregate count overflowed i64".to_string(),
+            })?;
+        }
+        Ok(totals
+            .into_iter()
+            .map(|((forced, auto_pick), count)| (forced, auto_pick, count))
+            .collect())
+    }
+
+    /// Append the recall-miss ledger rows for one pre-trim term-lane miss
+    /// (u-r5 miss-ledger; see [`RECALL_MISSES_DDL`]): fold each `term` exactly
     /// like [`Store::add_alias`]'s key ([`fold_term`]: trim + lowercase +
     /// diacritic-fold), then insert ONE row per UNIQUE folded term with the
     /// injected `at` and the closed [`RecallMissOutcome`]. A term that
@@ -2602,11 +4300,12 @@ impl Store {
     /// whitespace-only) is dropped — it carries no vocabulary signal and is
     /// exactly what the retrieve search fence also drops.
     ///
-    /// Telemetry semantics: recall calls this FAIL-OPEN ([`crate::retrieve`]
-    /// swallows the `Err`) so a ledger write can never fail or delay the
-    /// retrieve — the deliberate exception to the crate's fail-closed
-    /// default. The method itself still returns the error HONESTLY; the
-    /// swallow lives at exactly one call site.
+    /// Telemetry semantics: recall calls this only when FTS ran and the
+    /// pre-trim term observation missed; it calls it FAIL-OPEN
+    /// ([`crate::retrieve`] swallows the `Err`) so a ledger write can never
+    /// fail or delay the retrieve — the deliberate exception to the crate's
+    /// fail-closed default. The method itself still returns the error
+    /// HONESTLY; the swallow lives at exactly one call site.
     pub fn record_recall_miss(
         &mut self,
         terms: &[String],
@@ -2644,6 +4343,74 @@ impl Store {
         Ok(folded_terms.len())
     }
 
+    /// Read at most `n` recall-miss ROWS newest-first by append sequence.
+    /// `n` counts folded terms, not queries: a multi-term miss writes one row
+    /// per unique folded term, and descending sequence therefore reverses that
+    /// query's insertion order. Every selected row is re-validated before the
+    /// vector is returned: positive sequence, canonical non-empty folded term,
+    /// closed outcome, and RFC3339 timestamp. One bad row returns a typed
+    /// [`StoreError::Corrupt`] and no partial result.
+    pub fn recent_recall_misses(&self, n: usize) -> Result<Vec<RecallMissRow>, StoreError> {
+        let limit = i64::try_from(n)
+            .map_err(|e| StoreError::Backend(format!("recent recall-miss limit: {e}")))?;
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT seq, term, outcome, at
+                 FROM recall_misses
+                 ORDER BY seq DESC
+                 LIMIT ?1",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([limit], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(backend)?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (seq, term, outcome_text, at_text) = row.map_err(backend)?;
+            let id = format!("recall_misses:{seq}");
+            if seq <= 0 {
+                return Err(StoreError::Corrupt {
+                    id,
+                    reason: format!("recall miss seq must be positive, got {seq}"),
+                });
+            }
+            let folded = fold_term(&term);
+            if term.is_empty() || !term.chars().any(char::is_alphanumeric) || folded != term {
+                return Err(StoreError::Corrupt {
+                    id,
+                    reason: format!(
+                        "recall miss term must be a canonical non-empty folded term, got {term:?}"
+                    ),
+                });
+            }
+            let outcome =
+                RecallMissOutcome::from_wire(&outcome_text).ok_or_else(|| StoreError::Corrupt {
+                    id: id.clone(),
+                    reason: format!("illegal recall miss outcome {outcome_text:?}"),
+                })?;
+            let at =
+                OffsetDateTime::parse(&at_text, &Rfc3339).map_err(|error| StoreError::Corrupt {
+                    id: id.clone(),
+                    reason: format!("recall miss timestamp is not RFC3339: {error}"),
+                })?;
+            out.push(RecallMissRow {
+                seq,
+                term,
+                outcome,
+                at,
+            });
+        }
+        Ok(out)
+    }
+
     /// Every recorded miss term with its miss_count — `(term, count)` pairs
     /// (u-r5), deterministic `term asc` order (the planner re-sorts by
     /// count desc). `count` is `COUNT(*) GROUP BY term`; since a query's
@@ -2675,6 +4442,391 @@ impl Store {
             .query_row("SELECT COUNT(*) FROM recall_misses", [], |row| row.get(0))
             .map_err(backend)?;
         usize::try_from(count).map_err(|e| StoreError::Backend(format!("recall_misses count: {e}")))
+    }
+
+    /// Append one git-witness verdict for `capsule_id` (S2 git witness lane;
+    /// see [`CORROBORATIONS_DDL`]) — APPEND-ONLY and CHANGE-GATED: a row is
+    /// written only when the newest existing verdict for the same
+    /// (`source`, `kind`, `ref`) DIFFERS (or none exists), so re-scanning an
+    /// unchanged tree writes nothing (returns `false`; a fresh observation
+    /// returns `true`). The closed `source`/`kind`/`verdict` vocabularies are
+    /// enforced by the SQL CHECK — an illegal value is a
+    /// [`StoreError::Backend`], never a silent write. The caller guarantees
+    /// `capsule_id` names a stored capsule (the git-scan verb enumerates
+    /// [`Store::list`] for anchors and probes [`Store::get`] for mentions).
+    /// `now` is INJECTED; the store reads no clock. NEVER mutates a capsule's
+    /// confidence, authority, or tier — a witness observes, it does not
+    /// decide.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the witness boundary keeps each corroboration field explicit and CHECK-validated"
+    )]
+    pub fn append_corroboration(
+        &mut self,
+        capsule_id: &str,
+        source: &str,
+        kind: &str,
+        ref_: &str,
+        verdict: &str,
+        detail: Option<&str>,
+        now: OffsetDateTime,
+    ) -> Result<bool, StoreError> {
+        let at = rfc3339_text(now)?;
+        let tx = self.conn.transaction().map_err(backend)?;
+        let latest: Option<String> = tx
+            .query_row(
+                "SELECT verdict FROM corroborations \
+                 WHERE capsule_id = ?1 AND source = ?2 AND kind = ?3 AND ref = ?4 \
+                 ORDER BY seq DESC LIMIT 1",
+                params![capsule_id, source, kind, ref_],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        if latest.as_deref() == Some(verdict) {
+            // Unchanged verdict — the read-only transaction rolls back on
+            // drop (a no-op), so a re-scan churns nothing.
+            return Ok(false);
+        }
+        tx.execute(
+            "INSERT INTO corroborations \
+             (capsule_id, source, kind, ref, verdict, detail, at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![capsule_id, source, kind, ref_, verdict, detail, at],
+        )
+        .map_err(backend)?;
+        tx.commit().map_err(backend)?;
+        Ok(true)
+    }
+
+    /// The newest witness observations about `capsule_id` (S2 git witness
+    /// lane), folded to one verdict per anchor kind plus a mention tally —
+    /// `Ok(None)` when nothing was ever recorded. Rows are read seq-ascending
+    /// so the LAST seen per kind is the latest; `git_ref` is the newest
+    /// recorded scan `HEAD` (`detail`). Derived explain for the retrieve
+    /// envelope; never authority.
+    pub fn latest_corroborations(
+        &self,
+        capsule_id: &str,
+    ) -> Result<Option<CorroborationSummary>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT source, kind, verdict, detail, at FROM corroborations \
+                 WHERE capsule_id = ?1 ORDER BY seq ASC",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([capsule_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })
+            .map_err(backend)?;
+        let mut summary: Option<CorroborationSummary> = None;
+        let mut mentions = 0usize;
+        for row in rows {
+            let (source, kind, verdict, detail, at) = row.map_err(backend)?;
+            let entry = summary.get_or_insert_with(|| CorroborationSummary {
+                source: source.clone(),
+                git_ref: None,
+                anchor_path: None,
+                anchor_sha: None,
+                anchor_content: None,
+                mentions: 0,
+                at: String::new(),
+            });
+            entry.source = source;
+            entry.at = at; // seq-asc ⇒ ends at the newest row's instant.
+            if detail.is_some() {
+                entry.git_ref = detail; // newest recorded scan HEAD wins.
+            }
+            match kind.as_str() {
+                "anchor_path" => entry.anchor_path = Some(verdict),
+                "anchor_sha" => entry.anchor_sha = Some(verdict),
+                "anchor_content" => entry.anchor_content = Some(verdict),
+                "mention" => mentions += 1,
+                _ => {}
+            }
+        }
+        if let Some(entry) = summary.as_mut() {
+            entry.mentions = mentions;
+        }
+        Ok(summary)
+    }
+
+    /// Store-global corroboration tallies grouped by witness source (S2 git
+    /// witness lane), counting the LATEST verdict per (capsule_id, kind, ref)
+    /// so a superseded earlier verdict never double-counts — the digest
+    /// `sources` section's per-source counts. Empty map when nothing was
+    /// recorded.
+    pub fn corroboration_counts(
+        &self,
+    ) -> Result<BTreeMap<String, CorroborationCounts>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT c.source, c.kind, c.verdict FROM corroborations c \
+                 WHERE c.seq = (SELECT MAX(c2.seq) FROM corroborations c2 \
+                                WHERE c2.capsule_id = c.capsule_id \
+                                  AND c2.kind = c.kind AND c2.ref = c.ref)",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(backend)?;
+        let mut counts: BTreeMap<String, CorroborationCounts> = BTreeMap::new();
+        for row in rows {
+            let (source, kind, verdict) = row.map_err(backend)?;
+            let entry = counts.entry(source).or_default();
+            if kind == "mention" {
+                entry.mentions += 1;
+            } else {
+                match verdict.as_str() {
+                    "corroborated" => entry.corroborated += 1,
+                    "drifted" => entry.drifted += 1,
+                    "missing" => entry.missing += 1,
+                    _ => {}
+                }
+            }
+        }
+        Ok(counts)
+    }
+
+    /// Read the git-scan cursor for `source_key` (S2 git witness lane; see
+    /// [`SOURCE_CURSORS_DDL`]) — the last scanned commit sha, or `Ok(None)`
+    /// when the source was never scanned.
+    pub fn get_source_cursor(&self, source_key: &str) -> Result<Option<String>, StoreError> {
+        source_cursor_on(&self.conn, source_key)
+    }
+
+    /// All git-scan cursors, `(source_key, cursor, at)`, source_key-sorted
+    /// (S2 git witness lane) — the digest `sources` section input. Empty when
+    /// no source was ever scanned.
+    pub fn list_source_cursors(&self) -> Result<Vec<(String, String, String)>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT source_key, cursor, at FROM source_cursors ORDER BY source_key ASC")
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(backend)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(backend)?);
+        }
+        Ok(out)
+    }
+
+    /// Advance the git-scan cursor for `source_key` to `cursor` at the
+    /// injected `now` (S2 git witness lane) — REPLACE in place (PRIMARY KEY
+    /// on `source_key`), never accumulated. Empty inputs fail closed.
+    pub fn set_source_cursor(
+        &mut self,
+        source_key: &str,
+        cursor: &str,
+        now: OffsetDateTime,
+    ) -> Result<(), StoreError> {
+        if source_key.trim().is_empty() {
+            return Err(StoreError::EmptyField("source_key"));
+        }
+        if cursor.trim().is_empty() {
+            return Err(StoreError::EmptyField("cursor"));
+        }
+        let at = rfc3339_text(now)?;
+        self.conn
+            .execute(
+                "INSERT INTO source_cursors (source_key, cursor, at) VALUES (?1, ?2, ?3) \
+                 ON CONFLICT(source_key) DO UPDATE SET cursor = excluded.cursor, at = excluded.at",
+                params![source_key, cursor, at],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    /// Read the durable page checkpoint for an incomplete git-history scan.
+    /// The completed cursor remains unchanged until this fixed target is
+    /// fully consumed.
+    pub fn get_source_backfill(
+        &self,
+        source_key: &str,
+    ) -> Result<Option<SourceBackfill>, StoreError> {
+        source_backfill_on(&self.conn, source_key)
+    }
+
+    /// Persist the next page offset for a fixed git-history range with a
+    /// compare-and-swap guard. Offset zero starts a new traversal; later
+    /// calls must match the exact base, target, and prior offset.
+    pub fn checkpoint_source_backfill(
+        &mut self,
+        source_key: &str,
+        base_cursor: Option<&str>,
+        target_head: &str,
+        expected_offset: usize,
+        next_offset: usize,
+        now: OffsetDateTime,
+    ) -> Result<(), StoreError> {
+        validate_source_backfill_fields(source_key, base_cursor, target_head, next_offset)?;
+        if next_offset <= expected_offset {
+            return Err(StoreError::Corrupt {
+                id: source_key.to_string(),
+                reason: format!(
+                    "source backfill offset must advance ({expected_offset} -> {next_offset})"
+                ),
+            });
+        }
+        let expected_offset = i64::try_from(expected_offset).map_err(|_| StoreError::Corrupt {
+            id: source_key.to_string(),
+            reason: "source backfill expected offset exceeds i64".to_string(),
+        })?;
+        let next_offset = i64::try_from(next_offset).map_err(|_| StoreError::Corrupt {
+            id: source_key.to_string(),
+            reason: "source backfill next offset exceeds i64".to_string(),
+        })?;
+        let at = rfc3339_text(now)?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(backend)?;
+        require_source_cursor(&tx, source_key, base_cursor)?;
+        let changed = if expected_offset == 0 {
+            tx.execute(
+                "INSERT INTO source_backfills \
+                     (source_key, base_cursor, target_head, next_offset, at) \
+                     SELECT ?1, ?2, ?3, ?4, ?5 \
+                     WHERE NOT EXISTS \
+                       (SELECT 1 FROM source_backfills WHERE source_key = ?1)",
+                params![source_key, base_cursor, target_head, next_offset, at],
+            )
+            .map_err(backend)?
+        } else {
+            tx.execute(
+                "UPDATE source_backfills \
+                     SET next_offset = ?5, at = ?6 \
+                     WHERE source_key = ?1 \
+                       AND base_cursor IS ?2 \
+                       AND target_head = ?3 \
+                       AND next_offset = ?4",
+                params![
+                    source_key,
+                    base_cursor,
+                    target_head,
+                    expected_offset,
+                    next_offset,
+                    at
+                ],
+            )
+            .map_err(backend)?
+        };
+        if changed != 1 {
+            return Err(StoreError::StaleSourceBackfill(source_key.to_string()));
+        }
+        tx.commit().map_err(backend)
+    }
+
+    /// Atomically publish a fully consumed target and remove its checkpoint.
+    /// A paged completion must still match the state observed by the caller.
+    pub fn complete_source_backfill(
+        &mut self,
+        source_key: &str,
+        base_cursor: Option<&str>,
+        target_head: &str,
+        expected_offset: usize,
+        now: OffsetDateTime,
+    ) -> Result<(), StoreError> {
+        validate_source_backfill_fields(source_key, base_cursor, target_head, 1)?;
+        let expected_offset = i64::try_from(expected_offset).map_err(|_| StoreError::Corrupt {
+            id: source_key.to_string(),
+            reason: "source backfill expected offset exceeds i64".to_string(),
+        })?;
+        let at = rfc3339_text(now)?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(backend)?;
+        require_source_cursor(&tx, source_key, base_cursor)?;
+        if expected_offset == 0 {
+            let exists: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM source_backfills WHERE source_key = ?1)",
+                    [source_key],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            if exists {
+                return Err(StoreError::StaleSourceBackfill(source_key.to_string()));
+            }
+        } else {
+            let removed = tx
+                .execute(
+                    "DELETE FROM source_backfills \
+                     WHERE source_key = ?1 \
+                       AND base_cursor IS ?2 \
+                       AND target_head = ?3 \
+                       AND next_offset = ?4",
+                    params![source_key, base_cursor, target_head, expected_offset],
+                )
+                .map_err(backend)?;
+            if removed != 1 {
+                return Err(StoreError::StaleSourceBackfill(source_key.to_string()));
+            }
+        }
+        tx.execute(
+            "INSERT INTO source_cursors (source_key, cursor, at) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(source_key) DO UPDATE SET cursor = excluded.cursor, at = excluded.at",
+            params![source_key, target_head, at],
+        )
+        .map_err(backend)?;
+        tx.commit().map_err(backend)
+    }
+
+    /// Atomically discard an obsolete completed cursor and in-progress page
+    /// checkpoint after a history range can no longer be read. Both rows
+    /// must still match the state observed by the caller.
+    pub fn clear_source_traversal(
+        &mut self,
+        source_key: &str,
+        expected_cursor: Option<&str>,
+        expected_backfill: Option<&SourceBackfill>,
+    ) -> Result<(), StoreError> {
+        if source_key.trim().is_empty() {
+            return Err(StoreError::EmptyField("source_key"));
+        }
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(backend)?;
+        require_source_cursor(&tx, source_key, expected_cursor)?;
+        if source_backfill_on(&tx, source_key)?.as_ref() != expected_backfill {
+            return Err(StoreError::StaleSourceBackfill(source_key.to_string()));
+        }
+        tx.execute(
+            "DELETE FROM source_cursors WHERE source_key = ?1",
+            [source_key],
+        )
+        .map_err(backend)?;
+        tx.execute(
+            "DELETE FROM source_backfills WHERE source_key = ?1",
+            [source_key],
+        )
+        .map_err(backend)?;
+        tx.commit().map_err(backend)
     }
 
     /// Record that `capsule_id` is the machine-derived view of
@@ -3015,51 +5167,38 @@ impl Store {
                         provenance_source, provenance_anchor, source_hash \
                  FROM tombstones WHERE capsule_id = ?1",
                 [id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                        row.get::<_, Option<String>>(5)?,
-                        row.get::<_, Option<String>>(6)?,
-                        row.get::<_, Option<String>>(7)?,
-                    ))
-                },
+                row_to_tombstone,
             )
             .optional()
             .map_err(backend)?;
-        match row {
-            None => Ok(None),
-            Some((
-                capsule_id,
-                mode_text,
-                content_hmac,
-                at_text,
-                reason,
-                provenance_source,
-                provenance_anchor,
-                source_hash,
-            )) => {
-                let mode =
-                    TombstoneMode::from_wire(&mode_text).ok_or_else(|| StoreError::Corrupt {
-                        id: capsule_id.clone(),
-                        reason: format!("tombstones.mode: unknown value {mode_text:?}"),
-                    })?;
-                let at = parse_at(&capsule_id, "tombstones.at", &at_text)?;
-                Ok(Some(TombstoneRecord {
-                    capsule_id,
-                    mode,
-                    content_hmac,
-                    at,
-                    reason,
-                    provenance_source,
-                    provenance_anchor,
-                    source_hash,
-                }))
-            }
-        }
+        row.map(RawTombstone::decode).transpose()
+    }
+
+    /// The tombstone marker for `id` only when the retained capsule
+    /// skeleton carries the exact store-local `session_id` label. This is
+    /// the session-supplied recall id probe: the equality is applied in SQL
+    /// so another label cannot learn that the marker exists. No `sessions`
+    /// row is consulted; finished, orphaned, and merge-imported labels stay
+    /// queryable for as long as the capsule skeleton exists.
+    pub fn get_tombstone_for_session_label(
+        &self,
+        id: &str,
+        session_id: &str,
+    ) -> Result<Option<TombstoneRecord>, StoreError> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT t.capsule_id, t.mode, t.content_hmac, t.at, t.reason, \
+                        t.provenance_source, t.provenance_anchor, t.source_hash \
+                 FROM tombstones t \
+                 JOIN capsules c ON c.id = t.capsule_id \
+                 WHERE t.capsule_id = ?1 AND c.session_id = ?2",
+                params![id, session_id],
+                row_to_tombstone,
+            )
+            .optional()
+            .map_err(backend)?;
+        row.map(RawTombstone::decode).transpose()
     }
 
     /// Every tombstoned capsule id, sorted — the digest's dag projection
@@ -3271,6 +5410,48 @@ impl Store {
             .map_err(backend)?;
         }
 
+        // 1b. Review durability without foreign CLOSE authority (b2 / d13):
+        //     a newly-MINTED capsule with any SOURCE review history becomes
+        //     exactly one LOCAL `proposed` row. Foreign `ratified` /
+        //     `rejected` verdicts never cross the standalone connector as
+        //     local authority. A capsule that COLLAPSED onto existing LOCAL
+        //     content carries NOTHING, so incoming review state cannot demote
+        //     local truth. The first reviewed incoming contributor per minted
+        //     id wins deterministically (`id_remap` is incoming-id ordered).
+        //     A malformed source verdict fails closed before a write.
+        let minted_ids: BTreeSet<&str> = plan.new_capsules.iter().map(|p| p.id.as_str()).collect();
+        let mut review_written: BTreeSet<&str> = BTreeSet::new();
+        for (incoming_id, local_id) in &plan.id_remap {
+            if !minted_ids.contains(local_id.as_str()) {
+                continue;
+            }
+            let events = incoming.review_events_of(incoming_id)?;
+            let Some(latest) = events.last() else {
+                continue;
+            };
+            if !review_written.insert(local_id.as_str()) {
+                continue;
+            }
+            let review_seq: i64 = tx
+                .query_row(
+                    "SELECT COALESCE(MAX(seq), 0) + 1 FROM review_events",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            let at = rfc3339_text(latest.at)?;
+            let reason = format!(
+                "foreign review state normalized to proposal (latest={})",
+                latest.verdict.as_str()
+            );
+            tx.execute(
+                "INSERT INTO review_events (seq, capsule_id, verdict, reason, actor, at) \
+                 VALUES (?1, ?2, 'proposed', ?3, 'memory_merge', ?4)",
+                params![review_seq, local_id, reason, at],
+            )
+            .map_err(backend)?;
+        }
+
         // 2. New relations — the plan already remapped, deduped, and dropped
         //    danglers; INSERT OR IGNORE is an idempotent backstop.
         for edge in &plan.new_relations {
@@ -3462,6 +5643,82 @@ impl Store {
             )
             .map_err(backend)?;
         let rows = stmt.query_map([], row_to_session).map_err(backend)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(backend)?.decode()?);
+        }
+        Ok(out)
+    }
+
+    /// Atomic store-local activity projection over every exact session label
+    /// present in `sessions`, `capsules`, or `recall_receipts`. One SQLite
+    /// statement holds the read snapshot: capsule and receipt sources are
+    /// pre-aggregated independently before their LEFT JOIN, so `2` saves and
+    /// `3` recalls stay `2/3` rather than multiplying through a raw-row join.
+    ///
+    /// Equality and label-only ordering are explicitly `BINARY`: case,
+    /// leading/trailing space, Unicode normalization, NUL, and hostile bytes
+    /// remain distinct accepted labels. Local brackets lead in
+    /// `(started_at, session_id)` order; rows without a local bracket follow
+    /// in exact label order. Persisted NULL, wrong-storage-class,
+    /// invalid-UTF-8, or whitespace-only labels and malformed/incorrectly
+    /// typed bracket timestamps are typed corruption, never filtered or
+    /// rendered as plausible activity.
+    pub fn session_activity(&self) -> Result<Vec<SessionActivityRow>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "WITH labels(session_id) AS ( \
+                     SELECT session_id COLLATE BINARY FROM sessions \
+                     UNION \
+                     SELECT session_id COLLATE BINARY FROM capsules \
+                     WHERE session_id IS NOT NULL \
+                     UNION \
+                     SELECT session_id COLLATE BINARY FROM recall_receipts \
+                     WHERE session_id IS NOT NULL \
+                 ), \
+                 capsule_counts(session_id, saves) AS ( \
+                     SELECT session_id COLLATE BINARY, COUNT(*) \
+                     FROM capsules \
+                     WHERE session_id IS NOT NULL \
+                     GROUP BY session_id COLLATE BINARY \
+                 ), \
+                 receipt_counts(session_id, recalls) AS ( \
+                     SELECT session_id COLLATE BINARY, COUNT(*) \
+                     FROM recall_receipts \
+                     WHERE session_id IS NOT NULL \
+                     GROUP BY session_id COLLATE BINARY \
+                 ) \
+                 SELECT labels.session_id, \
+                        COALESCE(capsule_counts.saves, 0), \
+                        COALESCE(receipt_counts.recalls, 0), \
+                        sessions.session_id, sessions.started_at, sessions.finished_at \
+                 FROM labels \
+                 LEFT JOIN capsule_counts \
+                   ON capsule_counts.session_id COLLATE BINARY \
+                    = labels.session_id COLLATE BINARY \
+                 LEFT JOIN receipt_counts \
+                   ON receipt_counts.session_id COLLATE BINARY \
+                    = labels.session_id COLLATE BINARY \
+                 LEFT JOIN sessions \
+                   ON sessions.session_id COLLATE BINARY \
+                    = labels.session_id COLLATE BINARY \
+                 ORDER BY CASE WHEN sessions.session_id IS NULL THEN 1 ELSE 0 END, \
+                          sessions.started_at, labels.session_id COLLATE BINARY",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(RawSessionActivity {
+                    session_id: RawSqlValue::read(row, 0)?,
+                    saves: row.get(1)?,
+                    recalls: row.get(2)?,
+                    bracket_session_id: RawSqlValue::read(row, 3)?,
+                    started_at: RawSqlValue::read(row, 4)?,
+                    finished_at: RawSqlValue::read(row, 5)?,
+                })
+            })
+            .map_err(backend)?;
         let mut out = Vec::new();
         for row in rows {
             out.push(row.map_err(backend)?.decode()?);
@@ -3883,8 +6140,9 @@ impl Store {
     /// The vector-lane candidate source (w3 u6a recall): every LIVE capsule
     /// carrying an embedding, paired with its decoded vector, under the SAME
     /// scope fences [`Store::search_fts_scoped`] applies (`project_id` exact +
-    /// `project_prefix` subtree, AND-composed; a `None` disables its clause,
-    /// `substr` keeps prefix bytes metacharacter-free). Tombstoned
+    /// `project_prefix` subtree + character-exact store-local `session_id`,
+    /// AND-composed; a `None` disables its clause, `substr` keeps prefix
+    /// bytes metacharacter-free). Tombstoned
     /// rows are excluded (`canonical_json IS NOT NULL`) — a destroyed
     /// capsule can never ground, by any lane. Append (`seq`) order, so the
     /// engine's dimension check and cosine tiebreak stay deterministic. The
@@ -3896,7 +6154,27 @@ impl Store {
         &self,
         project_id: Option<&str>,
         project_prefix: Option<&str>,
+        session_id: Option<&str>,
     ) -> Result<Vec<(StoredCapsule, StoredEmbedding)>, StoreError> {
+        self.embeddings_for_recall_effort(project_id, project_prefix, session_id, None)
+    }
+
+    /// [`Store::embeddings_for_recall`] with the S3 effort-lifecycle
+    /// membership fence AND-composed onto the project/session fences — the
+    /// vector lane's twin of [`Store::search_fts_effort`]. `effort_ids`
+    /// (the effort's members ∪ {epic}) is a single JSON-array bind matched
+    /// with `json_each` (never a per-id variable, never a post-filter), so a
+    /// 1000-member effort stays a single parameter and the unique `id` index
+    /// probes membership. `None` is byte-identical to
+    /// [`Store::embeddings_for_recall`] (dormancy).
+    pub fn embeddings_for_recall_effort(
+        &self,
+        project_id: Option<&str>,
+        project_prefix: Option<&str>,
+        session_id: Option<&str>,
+        effort_ids: Option<&[String]>,
+    ) -> Result<Vec<(StoredCapsule, StoredEmbedding)>, StoreError> {
+        let effort_json = effort_ids_json(effort_ids)?;
         let mut stmt = self
             .conn
             .prepare(
@@ -3908,17 +6186,22 @@ impl Store {
                    AND (?1 IS NULL OR c.project_id = ?1) \
                    AND (?2 IS NULL OR c.project_id = ?2 \
                         OR substr(c.project_id, 1, length(?2) + 1) = ?2 || '/') \
+                   AND (?3 IS NULL OR c.session_id = ?3) \
+                   AND (?4 IS NULL OR c.id IN (SELECT value FROM json_each(?4))) \
                  ORDER BY c.seq",
             )
             .map_err(backend)?;
         let rows = stmt
-            .query_map(params![project_id, project_prefix], |row| {
-                let raw = row_to_raw(row)?;
-                let dimension: i64 = row.get(5)?;
-                let model_tag: String = row.get(6)?;
-                let blob: Vec<u8> = row.get(7)?;
-                Ok((raw, dimension, model_tag, blob))
-            })
+            .query_map(
+                params![project_id, project_prefix, session_id, effort_json],
+                |row| {
+                    let raw = row_to_raw(row)?;
+                    let dimension: i64 = row.get(5)?;
+                    let model_tag: String = row.get(6)?;
+                    let blob: Vec<u8> = row.get(7)?;
+                    Ok((raw, dimension, model_tag, blob))
+                },
+            )
             .map_err(backend)?;
         let mut out = Vec::new();
         for row in rows {
@@ -3940,6 +6223,126 @@ impl Store {
         }
         Ok(out)
     }
+}
+
+fn validate_feedback_score(score: f64) -> Result<(), StoreError> {
+    if !score.is_finite() || !(0.0..=1.0).contains(&score) {
+        return Err(StoreError::InvalidOutcomeScoring(
+            "score must be finite and within 0.0..=1.0",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_outcome_scoring(receipt_id: &str, score: f64) -> Result<(), StoreError> {
+    if receipt_id.trim().is_empty() {
+        return Err(StoreError::InvalidOutcomeScoring(
+            "receipt_id must be non-empty",
+        ));
+    }
+    validate_feedback_score(score)
+}
+
+fn decode_feedback_weight(capsule_id: &str, weight: f64) -> Result<f64, StoreError> {
+    if !weight.is_finite() || !(0.0..=1.0).contains(&weight) {
+        return Err(StoreError::Corrupt {
+            id: capsule_id.to_string(),
+            reason: format!("feedback_weights.weight {weight:?} is not finite within 0.0..=1.0"),
+        });
+    }
+    Ok(weight)
+}
+
+fn feedback_weight_on(conn: &Connection, capsule_id: &str) -> Result<Option<f64>, StoreError> {
+    conn.query_row(
+        "SELECT weight FROM feedback_weights WHERE capsule_id = ?1",
+        [capsule_id],
+        |row| row.get::<_, f64>(0),
+    )
+    .optional()
+    .map_err(backend)?
+    .map(|weight| decode_feedback_weight(capsule_id, weight))
+    .transpose()
+}
+
+fn apply_feedback_on(
+    tx: &rusqlite::Transaction<'_>,
+    ids: &[&str],
+    score: f64,
+    at: &str,
+) -> Result<Vec<(String, f64)>, StoreError> {
+    validate_feedback_score(score)?;
+    let mut updated = Vec::with_capacity(ids.len());
+    for capsule_id in ids {
+        let weight = feedback_weight_on(tx, capsule_id)?.unwrap_or(FEEDBACK_NEUTRAL_WEIGHT);
+        let next = (weight + FEEDBACK_EMA_ALPHA * (score - weight)).clamp(0.0, 1.0);
+        let next = decode_feedback_weight(capsule_id, next)?;
+        tx.execute(
+            "INSERT INTO feedback_weights (capsule_id, weight, at) \
+             VALUES (?1, ?2, ?3) \
+             ON CONFLICT(capsule_id) DO UPDATE SET \
+                 weight = excluded.weight, \
+                 at = excluded.at",
+            params![capsule_id, next, at],
+        )
+        .map_err(backend)?;
+        updated.push(((*capsule_id).to_string(), next));
+    }
+    Ok(updated)
+}
+
+fn receipt_returned_ids_on(
+    conn: &Connection,
+    receipt_id: &str,
+) -> Result<Option<Vec<String>>, StoreError> {
+    let returned_ids: Option<String> = conn
+        .query_row(
+            "SELECT returned_ids FROM recall_receipts WHERE id = ?1",
+            [receipt_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?;
+    returned_ids
+        .map(|json| {
+            serde_json::from_str(&json).map_err(|error| StoreError::Corrupt {
+                id: receipt_id.to_string(),
+                reason: format!("recall_receipts.returned_ids: {error}"),
+            })
+        })
+        .transpose()
+}
+
+fn validate_receipt_capsules_on(
+    conn: &Connection,
+    receipt_id: &str,
+    returned_ids: &[String],
+) -> Result<(), StoreError> {
+    let mut seen = BTreeSet::new();
+    for capsule_id in returned_ids {
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM capsules WHERE id = ?1)",
+                [capsule_id],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if capsule_id.trim().is_empty() || !exists {
+            return Err(StoreError::Corrupt {
+                id: receipt_id.to_string(),
+                reason: format!(
+                    "recall_receipts.returned_ids names unknown capsule {capsule_id:?}"
+                ),
+            });
+        }
+        if !seen.insert(capsule_id.as_str()) {
+            return Err(StoreError::Corrupt {
+                id: receipt_id.to_string(),
+                reason: format!("recall_receipts.returned_ids repeats capsule {capsule_id:?}"),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// The explicit schema upgrade: brings any migratable file (version 0
@@ -3997,6 +6400,31 @@ impl Store {
 ///   ([`classifications_has_old_check`], newest-token `'constraint'`) —
 ///   one rebuild serves BOTH legacy shapes (v3 3-kind and v4–v6 7-kind),
 ///   every legacy label satisfies the wider set, so the copy is total.
+///
+/// v12 → v13 (u04 scored outcomes):
+/// - `outcomes` gains nullable `receipt_id` and `score` columns, guarded
+///   independently so interrupted or hand-shaped files still converge.
+/// - `feedback_weights` is an additive empty advisory sidecar.
+///
+/// v13 → v14 (u05 lane router):
+/// - `lane_overrides` is an additive empty append-only advisory telemetry
+///   sidecar. Its CHECK admits only the four unequal forced/auto pairs.
+///
+/// v14 → v15 (u06 event time):
+/// - `event_time` is an additive empty caller-declared fact-time sidecar.
+///   Capsule bytes and prior sidecars are untouched.
+///
+/// v15 → v16 (S1 pin):
+/// - `pin_events` is an additive empty append-only pin/unpin ledger + its
+///   index. Capsule bytes and prior sidecars are untouched.
+///
+/// v15/v16 → v17 (S2 git witness lane):
+/// - `corroborations` + `source_cursors` are additive empty append-only
+///   witness sidecars ([`CORROBORATIONS_DDL`] / [`SOURCE_CURSORS_DDL`],
+///   `IF NOT EXISTS`). Version-integer-independent: a v15 file (no pin) and
+///   a v16 file (S1's parallel `pin_events` present) both converge here by
+///   `IF NOT EXISTS`, and this tree leaves any `pin_events` table untouched.
+///   Capsule bytes and prior sidecars are untouched.
 fn migrate_to_current(conn: &mut Connection) -> Result<(), StoreError> {
     let tx = conn.transaction().map_err(backend)?;
     // v1 capsules shape = no session_id column yet (a fresh file has no
@@ -4167,6 +6595,17 @@ fn migrate_to_current(conn: &mut Connection) -> Result<(), StoreError> {
         tx.execute_batch("ALTER TABLE tombstones ADD COLUMN source_hash TEXT;")
             .map_err(backend)?;
     }
+    // v13 (u04 scored outcomes): nullable columns preserve every unscored
+    // v12 row byte-for-byte at the wire. Separate shape guards converge a
+    // partially upgraded file without guessing from its version stamp.
+    if !table_has_column(&tx, "outcomes", "receipt_id")? {
+        tx.execute_batch("ALTER TABLE outcomes ADD COLUMN receipt_id TEXT;")
+            .map_err(backend)?;
+    }
+    if !table_has_column(&tx, "outcomes", "score")? {
+        tx.execute_batch("ALTER TABLE outcomes ADD COLUMN score REAL;")
+            .map_err(backend)?;
+    }
     tx.execute_batch(FTS_DDL).map_err(backend)?;
     tx.execute_batch(USAGE_DDL).map_err(backend)?;
     // w3 u6a vector sidecar: additive `IF NOT EXISTS`, self-contained and
@@ -4184,6 +6623,30 @@ fn migrate_to_current(conn: &mut Connection) -> Result<(), StoreError> {
     // v10 (u-r8-REDESIGN stale-import-supersession): the import-block
     // lineage sidecar — additive `IF NOT EXISTS`, same order-independence.
     tx.execute_batch(IMPORT_BLOCKS_DDL).map_err(backend)?;
+    // v12 (u03 recall receipts): the grounded-only, append-only feedback
+    // address ledger — additive `IF NOT EXISTS`, same order-independence.
+    tx.execute_batch(RECALL_RECEIPTS_DDL).map_err(backend)?;
+    // v13 (u04 scored outcomes): opt-in ranking EMA sidecar. Additive and
+    // disposable; capsule authority and eligibility never depend on it.
+    tx.execute_batch(FEEDBACK_WEIGHTS_DDL).map_err(backend)?;
+    // v14 (u05 lane router): successful explicit lane disagreements only.
+    // Additive and disposable; recall never depends on telemetry writes.
+    tx.execute_batch(LANE_OVERRIDES_DDL).map_err(backend)?;
+    // v15 (u06 event time): caller-declared fact-time ranges. Additive,
+    // local-only, and absent by default; no canonical capsule byte moves.
+    tx.execute_batch(EVENT_TIME_DDL).map_err(backend)?;
+    // v17 (S2 git witness lane): the append-only corroboration ledger and
+    // its per-source scan cursor — additive `IF NOT EXISTS`, same
+    // order-independence, so a v15 or v16 file converges here identically
+    // (S1's v16 pin_events, when present, is left untouched).
+    tx.execute_batch(CORROBORATIONS_DDL).map_err(backend)?;
+    tx.execute_batch(SOURCE_CURSORS_DDL).map_err(backend)?;
+    // v18: a bounded scan pins its target and checkpoints its newest-first
+    // offset until the complete range is consumed. Additive and disposable.
+    tx.execute_batch(SOURCE_BACKFILLS_DDL).map_err(backend)?;
+    // v18 (b2 staged review): the append-only review-verdict ledger —
+    // additive `IF NOT EXISTS`, same order-independence.
+    tx.execute_batch(REVIEW_EVENTS_DDL).map_err(backend)?;
     // v10 (u-r8 round 3): relation edges carry their writer — `manual`
     // (caller) vs `import` (stale-import supersession). Guarded additive
     // ALTER (a rebuild above already created the column; a fresh file has
@@ -4194,6 +6657,50 @@ fn migrate_to_current(conn: &mut Connection) -> Result<(), StoreError> {
         tx.execute_batch(
             "ALTER TABLE relations ADD COLUMN origin TEXT NOT NULL DEFAULT 'manual' \
              CHECK (origin IN ('manual', 'import'))",
+        )
+        .map_err(backend)?;
+    }
+    // v16 (S1 pin): the append-only pin/unpin ledger + its index — additive
+    // `IF NOT EXISTS`, order-independent, no canonical capsule byte moves.
+    tx.execute_batch(PIN_EVENTS_DDL).map_err(backend)?;
+    // v18 (b2 staged review) + v19 (effort-lifecycle s1) + v20
+    // (planning-plane s1): widen the `relations.kind` CHECK to admit
+    // `proposes`, `part_of`, AND `grounded_in`. SQLite cannot ALTER a CHECK,
+    // so this is a shared-DDL table rebuild through [`relations_create_sql`]
+    // (now the EIGHT-kind set) — shape-probed on the stored CHECK text, the
+    // SAME no-drift discipline as the `falsifies` rebuild. ONE rebuild
+    // reconciles ALL THREE lineages: it fires when ANY token is absent
+    // ([`relations_missing_proposes_check`] OR
+    // [`relations_missing_part_of_check`] OR [`relations_lacks_grounded_in`]),
+    // so the #131 `proposes` store (lacking `part_of`/`grounded_in`), an
+    // out-of-order `part_of` store (lacking `proposes`/`grounded_in` — e.g. a
+    // live store migrated by an S1-lineage binary before this integration),
+    // and a `grounded_in`-only store each converge to the eight-kind set in a
+    // SINGLE pass; a store already carrying ALL THREE tokens is skipped by
+    // every probe (no double rebuild, idempotent under crash-rerun). Runs
+    // AFTER the `origin` guarantee above so the copy PRESERVES `origin`
+    // byte-for-byte — the v5 falsifies template predates `origin` and copies
+    // only (kind, from, to, at); dropping it HERE would erase import
+    // provenance. Every legacy edge (all prior kinds) satisfies the wider
+    // set, so the copy is total; the DROP takes the `from`/`to` indexes with
+    // the old table (SIDECAR_SCHEMA already ran above), so they are
+    // re-created inline. Order-independent: probes the DDL, not the version.
+    // The shadow table is `relations_v7` — the next free name after the v19
+    // fold's `relations_v6` (already taken by the two-token fold this
+    // extends).
+    if relations_missing_proposes_check(&tx)?
+        || relations_missing_part_of_check(&tx)?
+        || relations_lacks_grounded_in(&tx)?
+    {
+        tx.execute_batch(&relations_create_sql("CREATE TABLE relations_v7"))
+            .map_err(backend)?;
+        tx.execute_batch(
+            "INSERT INTO relations_v7 (kind, from_id, to_id, at, origin) \
+                 SELECT kind, from_id, to_id, at, origin FROM relations;
+             DROP TABLE relations;
+             ALTER TABLE relations_v7 RENAME TO relations;
+             CREATE INDEX IF NOT EXISTS idx_relations_from ON relations (from_id);
+             CREATE INDEX IF NOT EXISTS idx_relations_to ON relations (to_id);",
         )
         .map_err(backend)?;
     }
@@ -4258,6 +6765,74 @@ fn relations_has_old_check(conn: &rusqlite::Transaction<'_>) -> Result<bool, Sto
     Ok(sql.is_some_and(|ddl| !ddl.contains("'falsifies'")))
 }
 
+/// Whether a `relations` table exists with a CHECK that does NOT yet admit
+/// `proposes` (false when the table is absent or already carries it). The
+/// probe reads the stored CREATE sql from `sqlite_master` — the CHECK text is
+/// the shape; the QUOTED token `'proposes'` is in the CHECK iff the table
+/// carries the b2-staged-review widening (edge kind/id VALUES never appear in
+/// the DDL, so the token is unambiguous), exactly the
+/// [`relations_has_old_check`] newest-token discipline one rung wider.
+fn relations_missing_proposes_check(conn: &rusqlite::Transaction<'_>) -> Result<bool, StoreError> {
+    let sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'relations'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?
+        .flatten();
+    Ok(sql.is_some_and(|ddl| !ddl.contains("'proposes'")))
+}
+
+/// Whether a `relations` table exists with a CHECK that predates the v19
+/// `'part_of'` widening (false when the table does not exist or already
+/// carries `part_of`). Same newest-token discipline as
+/// [`relations_has_old_check`]: `'part_of'` is in the CHECK iff the table
+/// carries the effort-lifecycle-s1 widening (edge kind VALUES never appear in
+/// the DDL, so the token is unambiguous). This probe,
+/// [`relations_missing_proposes_check`], and [`relations_lacks_grounded_in`]
+/// jointly gate ONE shared rebuild to the eight-kind set, so a store carrying
+/// only some of the three tokens (the #131 `proposes` lineage lacking
+/// `part_of`/`grounded_in`, an out-of-order `part_of` store lacking
+/// `proposes`/`grounded_in`, or a `grounded_in`-only store) converges in a
+/// single pass; a table already carrying ALL THREE tokens is skipped by
+/// every probe — no double rebuild, idempotent under crash-rerun.
+fn relations_missing_part_of_check(conn: &rusqlite::Transaction<'_>) -> Result<bool, StoreError> {
+    let sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'relations'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?
+        .flatten();
+    Ok(sql.is_some_and(|ddl| !ddl.contains("'part_of'")))
+}
+
+/// Whether a `relations` table exists with a pre-v20 CHECK that does NOT yet
+/// admit `grounded_in` (false when the table is absent or already carries
+/// it). The probe reads the stored CREATE sql from `sqlite_master` — the
+/// CHECK text is the shape; the QUOTED token `'grounded_in'` is in the CHECK
+/// iff the table is v20 (edge kind/id VALUES never appear in the DDL, so the
+/// token is unambiguous), exactly the [`relations_missing_proposes_check`]
+/// newest-token discipline one rung wider. Jointly gates the three-token
+/// fold above with [`relations_missing_proposes_check`] and
+/// [`relations_missing_part_of_check`].
+fn relations_lacks_grounded_in(conn: &rusqlite::Transaction<'_>) -> Result<bool, StoreError> {
+    let sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'relations'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?
+        .flatten();
+    Ok(sql.is_some_and(|ddl| !ddl.contains("'grounded_in'")))
+}
+
 /// Raw column tuple read back from `capsules`, decoded OUTSIDE the rusqlite
 /// row closure so decode failures surface as typed [`StoreError`]s, not as
 /// stringified backend errors. `canonical_json` is `None` for a tombstoned
@@ -4283,6 +6858,21 @@ fn row_to_raw(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawRow> {
 /// [`row_to_raw`] plus the trailing bm25 score column of a search row.
 fn row_to_scored(row: &rusqlite::Row<'_>) -> rusqlite::Result<(RawRow, f64)> {
     Ok((row_to_raw(row)?, row.get(5)?))
+}
+
+/// Encode the S3 effort membership fence as a bindable JSON array (one bound
+/// parameter, expanded in-engine by `json_each` — the ceiling-proof
+/// alternative to `params_from_iter`). `None` stays `None`, disabling the
+/// `json_each` clause entirely (byte-identical dormancy). The ids are exact
+/// store handles (`cap-<n>`) so serialization never fails in practice; a
+/// failure surfaces as a backend error rather than a silent unfenced query.
+fn effort_ids_json(effort_ids: Option<&[String]>) -> Result<Option<String>, StoreError> {
+    effort_ids
+        .map(|ids| {
+            serde_json::to_string(ids)
+                .map_err(|e| StoreError::Backend(format!("effort fence serialization: {e}")))
+        })
+        .transpose()
 }
 
 /// Raw relation row; decoded outside the closure (same pattern as
@@ -4333,6 +6923,53 @@ impl RawRelation {
     }
 }
 
+/// Raw tombstone projection shared by the legacy global id probe and the
+/// session-label-private id probe. Their SQL predicates differ; their
+/// decoding and corruption semantics do not.
+struct RawTombstone {
+    capsule_id: String,
+    mode: String,
+    content_hmac: String,
+    at: String,
+    reason: String,
+    provenance_source: Option<String>,
+    provenance_anchor: Option<String>,
+    source_hash: Option<String>,
+}
+
+fn row_to_tombstone(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawTombstone> {
+    Ok(RawTombstone {
+        capsule_id: row.get(0)?,
+        mode: row.get(1)?,
+        content_hmac: row.get(2)?,
+        at: row.get(3)?,
+        reason: row.get(4)?,
+        provenance_source: row.get(5)?,
+        provenance_anchor: row.get(6)?,
+        source_hash: row.get(7)?,
+    })
+}
+
+impl RawTombstone {
+    fn decode(self) -> Result<TombstoneRecord, StoreError> {
+        let mode = TombstoneMode::from_wire(&self.mode).ok_or_else(|| StoreError::Corrupt {
+            id: self.capsule_id.clone(),
+            reason: format!("tombstones.mode: unknown value {:?}", self.mode),
+        })?;
+        let at = parse_at(&self.capsule_id, "tombstones.at", &self.at)?;
+        Ok(TombstoneRecord {
+            capsule_id: self.capsule_id,
+            mode,
+            content_hmac: self.content_hmac,
+            at,
+            reason: self.reason,
+            provenance_source: self.provenance_source,
+            provenance_anchor: self.provenance_anchor,
+            source_hash: self.source_hash,
+        })
+    }
+}
+
 /// Raw outcome row (u6h); decoded outside the closure so a re-validation
 /// failure surfaces as a typed [`StoreError`], not a stringified backend
 /// error — the same pattern as [`RawRelation`].
@@ -4342,6 +6979,8 @@ struct RawOutcome {
     actor: String,
     evidence_ref: Option<String>,
     capsule_id: Option<String>,
+    receipt_id: Option<String>,
+    score: Option<f64>,
     at: String,
 }
 
@@ -4352,7 +6991,9 @@ fn row_to_outcome(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawOutcome> {
         actor: row.get(2)?,
         evidence_ref: row.get(3)?,
         capsule_id: row.get(4)?,
-        at: row.get(5)?,
+        receipt_id: row.get(5)?,
+        score: row.get(6)?,
+        at: row.get(7)?,
     })
 }
 
@@ -4366,6 +7007,8 @@ impl RawOutcome {
             self.actor,
             self.evidence_ref,
             self.capsule_id,
+            self.receipt_id,
+            self.score,
             at,
         )
         .map_err(|e| StoreError::Corrupt {
@@ -4485,6 +7128,158 @@ impl RawSession {
             started_at,
             finished_at,
             summary: self.summary,
+        })
+    }
+}
+
+/// Raw row from the one-statement session-activity projection. SQLite rowid
+/// tables can persist a NULL or wrongly typed TEXT PRIMARY KEY, and every
+/// projected text field can carry the wrong storage class or invalid UTF-8.
+/// Those impossible domain values must reach typed decoding rather than become
+/// generic rusqlite conversion errors or disappear.
+struct RawSessionActivity {
+    session_id: RawSqlValue,
+    saves: i64,
+    recalls: i64,
+    bracket_session_id: RawSqlValue,
+    started_at: RawSqlValue,
+    finished_at: RawSqlValue,
+}
+
+/// Owned SQLite value that preserves storage class and raw TEXT bytes. Reading
+/// through `row.get::<String>` or `row.get::<Value>` would convert inside
+/// rusqlite: a wrong storage class or invalid-UTF-8 TEXT would escape as a
+/// backend error before the store could name persisted corruption. `get_ref`
+/// performs no such conversion; this enum owns the bytes past the row callback.
+enum RawSqlValue {
+    Null,
+    Integer(i64),
+    Real(f64),
+    Text(Vec<u8>),
+    Blob(Vec<u8>),
+}
+
+impl RawSqlValue {
+    fn read(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Self> {
+        Ok(match row.get_ref(index)? {
+            ValueRef::Null => Self::Null,
+            ValueRef::Integer(value) => Self::Integer(value),
+            ValueRef::Real(value) => Self::Real(value),
+            ValueRef::Text(bytes) => Self::Text(bytes.to_vec()),
+            ValueRef::Blob(bytes) => Self::Blob(bytes.to_vec()),
+        })
+    }
+
+    fn required_text(self, id: &str, field: &str) -> Result<String, StoreError> {
+        match self {
+            Self::Text(bytes) => decode_sql_text(id, field, bytes),
+            other => Err(other.wrong_storage_class(id, field, "TEXT")),
+        }
+    }
+
+    fn optional_text(self, id: &str, field: &str) -> Result<Option<String>, StoreError> {
+        match self {
+            Self::Null => Ok(None),
+            Self::Text(bytes) => decode_sql_text(id, field, bytes).map(Some),
+            other => Err(other.wrong_storage_class(id, field, "NULL or TEXT")),
+        }
+    }
+
+    fn wrong_storage_class(self, id: &str, field: &str, expected: &str) -> StoreError {
+        let actual = match self {
+            Self::Null => "NULL storage class".to_string(),
+            Self::Integer(value) => format!("INTEGER storage class ({value})"),
+            Self::Real(value) => format!("REAL storage class ({value})"),
+            Self::Text(_) => "TEXT storage class".to_string(),
+            Self::Blob(bytes) => format!("BLOB storage class ({} bytes)", bytes.len()),
+        };
+        StoreError::Corrupt {
+            id: id.to_string(),
+            reason: format!("{field} has {actual}; expected {expected}"),
+        }
+    }
+}
+
+fn decode_sql_text(id: &str, field: &str, bytes: Vec<u8>) -> Result<String, StoreError> {
+    String::from_utf8(bytes).map_err(|error| StoreError::Corrupt {
+        id: id.to_string(),
+        reason: format!("{field} TEXT is not valid UTF-8: {error}"),
+    })
+}
+
+impl RawSessionActivity {
+    fn decode(self) -> Result<SessionActivityRow, StoreError> {
+        let session_id = self
+            .session_id
+            .required_text("session_activity", "session_activity.session_id")?;
+        if session_id.trim().is_empty() {
+            return Err(StoreError::Corrupt {
+                id: session_id,
+                reason: "sessions/session activity session_id must be non-empty".to_string(),
+            });
+        }
+        let saves = usize::try_from(self.saves).map_err(|_| StoreError::Corrupt {
+            id: session_id.clone(),
+            reason: format!(
+                "session activity saves must be non-negative, got {}",
+                self.saves
+            ),
+        })?;
+        let recalls = usize::try_from(self.recalls).map_err(|_| StoreError::Corrupt {
+            id: session_id.clone(),
+            reason: format!(
+                "session activity recalls must be non-negative, got {}",
+                self.recalls
+            ),
+        })?;
+        let bracket_session_id = self
+            .bracket_session_id
+            .optional_text(&session_id, "sessions.session_id")?;
+        let started_at = self
+            .started_at
+            .optional_text(&session_id, "sessions.started_at")?;
+        let finished_at = self
+            .finished_at
+            .optional_text(&session_id, "sessions.finished_at")?;
+        let state = match bracket_session_id {
+            None => {
+                if started_at.is_some() || finished_at.is_some() {
+                    return Err(StoreError::Corrupt {
+                        id: session_id.clone(),
+                        reason: "session activity label-only row carries bracket timestamps"
+                            .to_string(),
+                    });
+                }
+                SessionLabelState::LabelOnly
+            }
+            Some(bracket_session_id) => {
+                if bracket_session_id != session_id {
+                    return Err(StoreError::Corrupt {
+                        id: session_id.clone(),
+                        reason: format!(
+                            "session activity bracket label mismatch {bracket_session_id:?}"
+                        ),
+                    });
+                }
+                let started_at = started_at.ok_or_else(|| StoreError::Corrupt {
+                    id: session_id.clone(),
+                    reason: "sessions.started_at is NULL".to_string(),
+                })?;
+                parse_at(&session_id, "sessions.started_at", &started_at)?;
+                match finished_at {
+                    None => SessionLabelState::Open,
+                    Some(finished_at) => {
+                        parse_at(&session_id, "sessions.finished_at", &finished_at)?;
+                        SessionLabelState::Closed
+                    }
+                }
+            }
+        };
+        Ok(SessionActivityRow {
+            session_id,
+            saves,
+            recalls,
+            state,
         })
     }
 }
@@ -4734,6 +7529,124 @@ fn parse_at(id: &str, column: &str, text: &str) -> Result<OffsetDateTime, StoreE
     })
 }
 
+/// Prove that the indexed capsule identity projection still names the
+/// authoritative row bytes. Live rows derive identity from decoded canonical
+/// provenance; forgotten skeletons derive it from their retained tombstone.
+/// A projection is lookup fuel only — never authority by itself.
+fn validate_capsule_identity_projection(
+    id: &str,
+    projected_source_hash: &str,
+    canonical_json: Option<&str>,
+    tombstone_id: Option<&str>,
+    tombstone_source_hash: Option<&str>,
+) -> Result<(), StoreError> {
+    if projected_source_hash.trim().is_empty() {
+        return Err(StoreError::Corrupt {
+            id: id.to_string(),
+            reason: "capsules.source_hash is empty, so content identity cannot be proven"
+                .to_string(),
+        });
+    }
+    if let Some(canonical_json) = canonical_json {
+        if tombstone_id.is_some() {
+            return Err(StoreError::Corrupt {
+                id: id.to_string(),
+                reason: "live canonical capsule also has a tombstone marker".to_string(),
+            });
+        }
+        let capsule: Capsule =
+            serde_json::from_str(canonical_json).map_err(|error| StoreError::Corrupt {
+                id: id.to_string(),
+                reason: format!("canonical_json: {error}"),
+            })?;
+        let canonical_source_hash = capsule.provenance().source_hash.as_str();
+        if projected_source_hash != canonical_source_hash {
+            return Err(StoreError::Corrupt {
+                id: id.to_string(),
+                reason: format!(
+                    "capsules.source_hash {projected_source_hash:?} disagrees with \
+                     canonical provenance.source_hash {canonical_source_hash:?}"
+                ),
+            });
+        }
+        return Ok(());
+    }
+
+    if tombstone_id.is_none() {
+        return Err(StoreError::Corrupt {
+            id: id.to_string(),
+            reason: "capsule skeleton has neither canonical bytes nor a tombstone marker"
+                .to_string(),
+        });
+    }
+    let tombstone_source_hash = tombstone_source_hash.ok_or_else(|| StoreError::Corrupt {
+        id: id.to_string(),
+        reason: "tombstone identity is missing source_hash".to_string(),
+    })?;
+    if tombstone_source_hash.trim().is_empty() {
+        return Err(StoreError::Corrupt {
+            id: id.to_string(),
+            reason: "tombstone source_hash is empty, so content identity cannot be proven"
+                .to_string(),
+        });
+    }
+    if projected_source_hash != tombstone_source_hash {
+        return Err(StoreError::Corrupt {
+            id: id.to_string(),
+            reason: format!(
+                "capsules.source_hash {projected_source_hash:?} disagrees with \
+                 tombstone source_hash {tombstone_source_hash:?}"
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Validate every identity projection a sync push might resolve through.
+/// Pre-v11 tombstones can legitimately lack their retained source hash; they
+/// remain unresolvable and are rejected later only if a destination event row
+/// needs them. Every identity that IS present must agree with its authority.
+fn validate_all_capsule_identity_projections(conn: &Connection) -> Result<(), StoreError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT c.id, c.source_hash, c.canonical_json, \
+                    t.capsule_id, t.source_hash \
+             FROM capsules c \
+             LEFT JOIN tombstones t ON t.capsule_id = c.id \
+             ORDER BY c.seq",
+        )
+        .map_err(backend)?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+            ))
+        })
+        .map_err(backend)?;
+    for row in rows {
+        let (id, projected_source_hash, canonical_json, tombstone_id, tombstone_source_hash) =
+            row.map_err(backend)?;
+        if canonical_json.is_none() && tombstone_id.is_some() && tombstone_source_hash.is_none() {
+            // A migrated pre-v11 tombstone has no portable content identity.
+            // It cannot participate in event-time rebinding, but must not
+            // block an unrelated push merely by existing.
+            continue;
+        }
+        validate_capsule_identity_projection(
+            &id,
+            &projected_source_hash,
+            canonical_json.as_deref(),
+            tombstone_id.as_deref(),
+            tombstone_source_hash.as_deref(),
+        )?;
+    }
+    Ok(())
+}
+
 /// The kebab-case wire name of an authority class, derived from the
 /// Capsule's own serde — a single source of truth, no duplicated name
 /// table in the store.
@@ -4818,6 +7731,108 @@ mod tests {
                 .unwrap();
             assert_eq!(id.as_str(), format!("cap-{}", n + 1));
         }
+    }
+
+    /// S1: pin state is the LATEST event per capsule. Pin, then unpin — the
+    /// newest row decides `is_pinned` / `list_pinned`, while `pin_state_of`
+    /// always reports the newest event (pinned or not). The dormant default
+    /// (no event) is not pinned, absent from the list, and no state.
+    #[test]
+    fn pin_state_is_the_latest_event() {
+        let mut store = Store::open_in_memory().unwrap();
+        let id = store
+            .append(&capsule("load-bearing anchor", "nmemory"), injected_now())
+            .unwrap();
+        let cap = id.as_str().to_string();
+
+        // Dormant default.
+        assert!(!store.is_pinned(&cap).unwrap());
+        assert!(store.pin_state_of(&cap).unwrap().is_none());
+        assert!(store.list_pinned().unwrap().is_empty());
+
+        // Pin.
+        let rec = store
+            .append_pin_event(&cap, true, "load-bearing", "tester", injected_now())
+            .unwrap();
+        assert!(rec.pinned);
+        assert_eq!(rec.capsule_id, cap);
+        assert!(store.is_pinned(&cap).unwrap());
+        assert_eq!(
+            store
+                .list_pinned()
+                .unwrap()
+                .iter()
+                .map(|c| c.as_str().to_string())
+                .collect::<Vec<_>>(),
+            vec![cap.clone()]
+        );
+        let state = store.pin_state_of(&cap).unwrap().unwrap();
+        assert!(state.pinned);
+        assert_eq!(state.reason, "load-bearing");
+        assert_eq!(state.actor, "tester");
+
+        // Unpin: newest event wins.
+        store
+            .append_pin_event(&cap, false, "no longer load-bearing", "tester", later_now())
+            .unwrap();
+        assert!(!store.is_pinned(&cap).unwrap());
+        assert!(store.list_pinned().unwrap().is_empty());
+        let state = store.pin_state_of(&cap).unwrap().unwrap();
+        assert!(!state.pinned);
+        assert_eq!(state.reason, "no longer load-bearing");
+    }
+
+    /// S1: `append_pin_event` rejects an empty reason/actor and an id that
+    /// names no stored capsule — a rejected append leaves no pin state.
+    #[test]
+    fn append_pin_event_rejects_empty_fields_and_unknown_capsule() {
+        let mut store = Store::open_in_memory().unwrap();
+        let id = store
+            .append(&capsule("anchor", "nmemory"), injected_now())
+            .unwrap();
+        let cap = id.as_str().to_string();
+        assert_eq!(
+            store.append_pin_event(&cap, true, "   ", "tester", injected_now()),
+            Err(StoreError::EmptyField("reason"))
+        );
+        assert_eq!(
+            store.append_pin_event(&cap, true, "why", "", injected_now()),
+            Err(StoreError::EmptyField("actor"))
+        );
+        assert_eq!(
+            store.append_pin_event("cap-999", true, "why", "tester", injected_now()),
+            Err(StoreError::UnknownCapsule("cap-999".to_string()))
+        );
+        assert!(!store.is_pinned(&cap).unwrap());
+    }
+
+    /// S1 red-test (6) essence: pin is a SIDECAR — `canonical_snapshot` reads
+    /// only `capsules`, so pin/unpin events (and the v16 migration that adds
+    /// the table) leave the capsule comparand byte-identical. This is the
+    /// determinism proof the migration red-test leans on.
+    #[test]
+    fn pin_events_never_move_the_canonical_snapshot() {
+        let mut store = Store::open_in_memory().unwrap();
+        for text in ["first anchor", "second anchor", "third anchor"] {
+            store
+                .append(&capsule(text, "nmemory"), injected_now())
+                .unwrap();
+        }
+        let before = store.canonical_snapshot().unwrap();
+        store
+            .append_pin_event("cap-1", true, "pin one", "tester", injected_now())
+            .unwrap();
+        store
+            .append_pin_event("cap-2", true, "pin two", "tester", injected_now())
+            .unwrap();
+        store
+            .append_pin_event("cap-1", false, "unpin one", "tester", later_now())
+            .unwrap();
+        let after = store.canonical_snapshot().unwrap();
+        assert_eq!(
+            before, after,
+            "pin events must never move the capsule snapshot"
+        );
     }
 
     #[test]
@@ -5027,14 +8042,17 @@ mod tests {
         let path = dir.path().join("memory.sqlite3");
         Store::open(&path).unwrap();
 
-        // One past the current stamp (v11): a version this build cannot
-        // know is refused, never guessed at.
+        // Schema v21 is one past this build's current v20 stamp: an unknown
+        // version is refused, never guessed at. v16 (pin), v17 (git), v18
+        // (staged review), v19 (part_of), and v20 (planning-plane
+        // grounded_in) all migrate in place, so the first genuinely unknown
+        // version is 21.
         let conn = rusqlite::Connection::open(&path).unwrap();
-        conn.execute_batch("PRAGMA user_version = 12").unwrap();
+        conn.execute_batch("PRAGMA user_version = 21").unwrap();
         drop(conn);
 
         let err = Store::open(&path).unwrap_err();
-        assert_eq!(err, StoreError::UnsupportedSchemaVersion(12));
+        assert_eq!(err, StoreError::UnsupportedSchemaVersion(21));
     }
 
     #[test]
@@ -5898,6 +8916,69 @@ PRAGMA user_version = 1;
     }
 
     #[test]
+    fn tombstone_id_probe_is_private_to_the_supplied_session_label() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.open_session("sess-a", injected_now()).unwrap();
+        store.open_session("sess-b", injected_now()).unwrap();
+        store
+            .append_with_session(
+                &capsule("private tombstone alpha", "nmemory"),
+                "sess-a",
+                injected_now(),
+            )
+            .unwrap();
+        store
+            .append_with_session(
+                &capsule("private tombstone beta", "nmemory"),
+                "sess-b",
+                injected_now(),
+            )
+            .unwrap();
+        store
+            .forget_capsule(
+                "cap-1",
+                TombstoneMode::Purged,
+                "session privacy probe",
+                b"k",
+                later_now(),
+            )
+            .unwrap();
+        store
+            .forget_capsule(
+                "cap-2",
+                TombstoneMode::Purged,
+                "session privacy probe",
+                b"k",
+                later_now(),
+            )
+            .unwrap();
+
+        assert!(
+            store
+                .get_tombstone_for_session_label("cap-1", "sess-a")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            store
+                .get_tombstone_for_session_label("cap-1", "sess-b")
+                .unwrap()
+                .is_none(),
+            "another session label must not learn that cap-1 was forgotten"
+        );
+        assert!(
+            store
+                .get_tombstone_for_session_label("cap-2", "sess-a")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store.get_tombstone("cap-1").unwrap().is_some(),
+            "the omitted-session legacy probe remains global"
+        );
+    }
+
+    #[test]
     fn forget_survives_reopen_and_fts_rebuild() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("memory.sqlite3");
@@ -6093,6 +9174,485 @@ PRAGMA user_version = 1;
     }
 
     #[test]
+    fn session_activity_preaggregates_rows_without_capsule_receipt_fanout() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.open_session("shared", injected_now()).unwrap();
+        store
+            .append_with_session(
+                &capsule("session activity first", "nmemory"),
+                "shared",
+                injected_now(),
+            )
+            .unwrap();
+        store
+            .append_with_session(
+                &capsule("session activity second", "nmemory"),
+                "shared",
+                injected_now(),
+            )
+            .unwrap();
+        // A forgotten capsule keeps its canonical skeleton and therefore
+        // remains one save in the label projection.
+        store
+            .forget_capsule(
+                "cap-2",
+                TombstoneMode::Purged,
+                "session activity fixture",
+                b"session-activity-key",
+                later_now(),
+            )
+            .unwrap();
+        for _ in 0..3 {
+            store
+                .record_recall_receipt(
+                    &["session activity".to_string()],
+                    &["cap-1"],
+                    None,
+                    None,
+                    Some("shared"),
+                    later_now(),
+                )
+                .unwrap();
+        }
+
+        assert_eq!(
+            store.session_activity().unwrap(),
+            vec![SessionActivityRow {
+                session_id: "shared".to_string(),
+                saves: 2,
+                recalls: 3,
+                state: SessionLabelState::Open,
+            }],
+            "2 capsule rows plus 3 receipt rows must stay 2/3, never fan out to 6/6"
+        );
+    }
+
+    #[test]
+    fn session_activity_unions_exact_local_imported_and_receipt_only_labels() {
+        let dir = tempfile::tempdir().unwrap();
+        let incoming_path = dir.path().join("incoming.sqlite3");
+        let mut local = Store::open_in_memory().unwrap();
+        let started = injected_now();
+        local.open_session("local-b", started).unwrap();
+        local.open_session("local-a", started).unwrap();
+        local
+            .finish_session("local-a", Some("closed"), later_now())
+            .unwrap();
+        let grounded_id = local
+            .append(
+                &capsule("receipt-only grounding capsule", "nmemory"),
+                started,
+            )
+            .unwrap();
+        let receipt_id = local
+            .record_recall_receipt(
+                &["receipt only".to_string()],
+                &[grounded_id.as_str()],
+                None,
+                None,
+                Some("receipt-only"),
+                later_now(),
+            )
+            .unwrap();
+        let returned_ids = local.receipt_returned_ids(&receipt_id).unwrap().unwrap();
+        validate_receipt_capsules_on(&local.conn, &receipt_id, &returned_ids).unwrap();
+
+        let imported_labels = vec![
+            "Case".to_string(),
+            "case".to_string(),
+            " spaced ".to_string(),
+            "\u{00e9}".to_string(),
+            "e\u{0301}".to_string(),
+            "evil \" ] } |\nnode".to_string(),
+            "nul\0label".to_string(),
+        ];
+        {
+            let mut incoming = Store::open(&incoming_path).unwrap();
+            for (index, label) in imported_labels.iter().enumerate() {
+                incoming.open_session(label, started).unwrap();
+                incoming
+                    .append_with_session(
+                        &capsule(&format!("imported session label {index}"), "nmemory"),
+                        label,
+                        started,
+                    )
+                    .unwrap();
+            }
+        }
+        local
+            .merge_from(&incoming_path, b"session-activity-key")
+            .unwrap();
+
+        let rows = local.session_activity().unwrap();
+        assert_eq!(rows[0].session_id, "local-a");
+        assert_eq!(rows[0].state, SessionLabelState::Closed);
+        assert_eq!(rows[1].session_id, "local-b");
+        assert_eq!(rows[1].state, SessionLabelState::Open);
+
+        let actual_label_only: Vec<&str> = rows[2..]
+            .iter()
+            .map(|row| {
+                assert_eq!(row.state, SessionLabelState::LabelOnly);
+                row.session_id.as_str()
+            })
+            .collect();
+        let mut expected_label_only = imported_labels.clone();
+        expected_label_only.push("receipt-only".to_string());
+        expected_label_only.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+        assert_eq!(
+            actual_label_only,
+            expected_label_only
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            "label-only rows follow exact BINARY label order"
+        );
+        for label in &imported_labels {
+            let row = rows.iter().find(|row| &row.session_id == label).unwrap();
+            assert_eq!((row.saves, row.recalls), (1, 0), "label {label:?}");
+        }
+        let receipt_only = rows
+            .iter()
+            .find(|row| row.session_id == "receipt-only")
+            .unwrap();
+        assert_eq!((receipt_only.saves, receipt_only.recalls), (0, 1));
+    }
+
+    #[test]
+    fn session_activity_merge_collision_aggregates_under_local_bracket_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let incoming_path = dir.path().join("incoming.sqlite3");
+        let mut local = Store::open_in_memory().unwrap();
+        local
+            .open_session("sess-collision", injected_now())
+            .unwrap();
+        local
+            .append_with_session(
+                &capsule("local collision capsule", "nmemory"),
+                "sess-collision",
+                injected_now(),
+            )
+            .unwrap();
+        local
+            .finish_session("sess-collision", None, later_now())
+            .unwrap();
+        local
+            .record_recall_receipt(
+                &["collision".to_string()],
+                &["cap-1"],
+                None,
+                None,
+                Some("sess-collision"),
+                later_now(),
+            )
+            .unwrap();
+        {
+            let mut incoming = Store::open(&incoming_path).unwrap();
+            incoming
+                .open_session("sess-collision", injected_now())
+                .unwrap();
+            incoming
+                .append_with_session(
+                    &capsule("incoming collision capsule", "nmemory"),
+                    "sess-collision",
+                    injected_now(),
+                )
+                .unwrap();
+            incoming
+                .open_session("import-only", injected_now())
+                .unwrap();
+            incoming
+                .append_with_session(
+                    &capsule("incoming orphan label", "nmemory"),
+                    "import-only",
+                    injected_now(),
+                )
+                .unwrap();
+        }
+        local
+            .merge_from(&incoming_path, b"session-activity-key")
+            .unwrap();
+
+        assert_eq!(
+            local.session_activity().unwrap(),
+            vec![
+                SessionActivityRow {
+                    session_id: "sess-collision".to_string(),
+                    saves: 2,
+                    recalls: 1,
+                    state: SessionLabelState::Closed,
+                },
+                SessionActivityRow {
+                    session_id: "import-only".to_string(),
+                    saves: 1,
+                    recalls: 0,
+                    state: SessionLabelState::LabelOnly,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn session_activity_rejects_corrupt_labels_and_bracket_timestamps() {
+        fn assert_corrupt(store: &Store, needle: &str) {
+            let error = store.session_activity().unwrap_err();
+            assert!(
+                matches!(error, StoreError::Corrupt { ref reason, .. } if reason.contains(needle)),
+                "typed corruption must name {needle:?}, got {error:?}"
+            );
+        }
+
+        let started = rfc3339_text(injected_now()).unwrap();
+        let store = Store::open_in_memory().unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO sessions (session_id, started_at, finished_at, summary) \
+                 VALUES (?1, ?2, NULL, NULL)",
+                params![Option::<String>::None, started],
+            )
+            .unwrap();
+        assert_corrupt(&store, "session_id");
+
+        let mut store = Store::open_in_memory().unwrap();
+        store.open_session("bad-start", injected_now()).unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE sessions SET started_at = 'not-rfc3339' WHERE session_id = 'bad-start'",
+                [],
+            )
+            .unwrap();
+        assert_corrupt(&store, "started_at");
+
+        let mut store = Store::open_in_memory().unwrap();
+        store.open_session("bad-finish", injected_now()).unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE sessions SET finished_at = 'not-rfc3339' \
+                 WHERE session_id = 'bad-finish'",
+                [],
+            )
+            .unwrap();
+        assert_corrupt(&store, "finished_at");
+
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append(
+                &capsule("invalid label grounding capsule", "nmemory"),
+                injected_now(),
+            )
+            .unwrap();
+        store
+            .record_recall_receipt(
+                &["invalid label".to_string()],
+                &["cap-1"],
+                None,
+                None,
+                Some(" \t "),
+                injected_now(),
+            )
+            .unwrap();
+        assert_corrupt(&store, "session_id");
+
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append(&capsule("invalid capsule label", "nmemory"), injected_now())
+            .unwrap();
+        store
+            .conn
+            .execute("UPDATE capsules SET session_id = '' WHERE id = 'cap-1'", [])
+            .unwrap();
+        assert_corrupt(&store, "session_id");
+    }
+
+    #[test]
+    fn session_activity_rejects_blob_storage_classes_at_every_text_seam() {
+        fn assert_blob_corrupt(store: &Store, field: &str) {
+            let error = store.session_activity().unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    StoreError::Corrupt { ref reason, .. }
+                        if reason.contains(field) && reason.contains("BLOB")
+                ),
+                "persisted {field} BLOB must be typed corruption naming its storage class, got {error:?}"
+            );
+        }
+
+        let started = rfc3339_text(injected_now()).unwrap();
+        let store = Store::open_in_memory().unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO sessions (session_id, started_at, finished_at, summary) \
+                 VALUES (x'FF', ?1, NULL, NULL)",
+                [started],
+            )
+            .unwrap();
+        assert_blob_corrupt(&store, "session_id");
+
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append(&capsule("blob capsule label", "nmemory"), injected_now())
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE capsules SET session_id = x'FF' WHERE id = 'cap-1'",
+                [],
+            )
+            .unwrap();
+        assert_blob_corrupt(&store, "session_id");
+
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append(&capsule("blob receipt label", "nmemory"), injected_now())
+            .unwrap();
+        let receipt_id = store
+            .record_recall_receipt(
+                &["blob receipt label".to_string()],
+                &["cap-1"],
+                None,
+                None,
+                Some("valid-label"),
+                injected_now(),
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE recall_receipts SET session_id = x'FF' WHERE id = ?1",
+                [&receipt_id],
+            )
+            .unwrap();
+        assert_blob_corrupt(&store, "session_id");
+
+        let mut store = Store::open_in_memory().unwrap();
+        store.open_session("blob-start", injected_now()).unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE sessions SET started_at = x'FF' WHERE session_id = 'blob-start'",
+                [],
+            )
+            .unwrap();
+        assert_blob_corrupt(&store, "started_at");
+
+        let mut store = Store::open_in_memory().unwrap();
+        store.open_session("blob-finish", injected_now()).unwrap();
+        store
+            .finish_session("blob-finish", None, later_now())
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE sessions SET finished_at = x'FF' WHERE session_id = 'blob-finish'",
+                [],
+            )
+            .unwrap();
+        assert_blob_corrupt(&store, "finished_at");
+    }
+
+    #[test]
+    fn session_activity_rejects_invalid_utf8_text_as_corrupt() {
+        fn assert_utf8_corrupt(store: &Store, field: &str) {
+            let error = store.session_activity().unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    StoreError::Corrupt { ref reason, .. }
+                        if reason.contains(field) && reason.contains("UTF-8")
+                ),
+                "persisted invalid-UTF-8 TEXT {field} must be typed corruption, got {error:?}"
+            );
+        }
+
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append(
+                &capsule("invalid utf8 text label", "nmemory"),
+                injected_now(),
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE capsules SET session_id = CAST(x'FF' AS TEXT) WHERE id = 'cap-1'",
+                [],
+            )
+            .unwrap();
+        let storage_class: String = store
+            .conn
+            .query_row(
+                "SELECT typeof(session_id) FROM capsules WHERE id = 'cap-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(storage_class, "text");
+        assert_utf8_corrupt(&store, "session_id");
+
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .open_session("invalid-utf8-start", injected_now())
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE sessions SET started_at = CAST(x'FF' AS TEXT) \
+                 WHERE session_id = 'invalid-utf8-start'",
+                [],
+            )
+            .unwrap();
+        assert_utf8_corrupt(&store, "started_at");
+    }
+
+    #[test]
+    fn raw_session_activity_text_decoder_rejects_every_wrong_storage_class() {
+        for (raw, class) in [
+            (RawSqlValue::Null, "NULL"),
+            (RawSqlValue::Integer(7), "INTEGER"),
+            (RawSqlValue::Real(1.25), "REAL"),
+            (RawSqlValue::Blob(vec![0xFF]), "BLOB"),
+        ] {
+            let error = raw
+                .required_text("session_activity", "session_activity.session_id")
+                .unwrap_err();
+            assert!(
+                matches!(error, StoreError::Corrupt { ref reason, .. } if reason.contains(class)),
+                "required TEXT must reject {class}: {error:?}"
+            );
+        }
+        for (raw, class) in [
+            (RawSqlValue::Integer(7), "INTEGER"),
+            (RawSqlValue::Real(1.25), "REAL"),
+            (RawSqlValue::Blob(vec![0xFF]), "BLOB"),
+        ] {
+            let error = raw
+                .optional_text("sess-1", "sessions.finished_at")
+                .unwrap_err();
+            assert!(
+                matches!(error, StoreError::Corrupt { ref reason, .. } if reason.contains(class)),
+                "optional NULL/TEXT must reject {class}: {error:?}"
+            );
+        }
+        assert_eq!(
+            RawSqlValue::Null
+                .optional_text("sess-1", "sessions.finished_at")
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            RawSqlValue::Text(b"sess-1".to_vec())
+                .required_text("session_activity", "session_activity.session_id")
+                .unwrap(),
+            "sess-1"
+        );
+    }
+
+    #[test]
     fn append_with_session_links_and_validates() {
         let mut store = Store::open_in_memory().unwrap();
         let t1 = injected_now();
@@ -6174,6 +9734,13 @@ PRAGMA user_version = 1;
         store
             .add_alias("tokio", "async runtime", later_now())
             .unwrap();
+        store
+            .record_lane_override(LaneOverride::TermOverFused, later_now())
+            .unwrap();
+        assert_eq!(
+            store.lane_override_totals().unwrap(),
+            vec![("term".to_string(), "fused".to_string(), 1)]
+        );
 
         assert_eq!(store.canonical_snapshot().unwrap(), before);
     }
@@ -7332,9 +10899,17 @@ PRAGMA user_version = 2;
         // The CHECK moved: a falsifies edge (from a fresh outcome) now
         // writes, and the outcomes sidecar was recreated by the migration.
         let outcome = store
-            .append_outcome("observed", "tester", None, Some("cap-1"), injected_now())
+            .append_outcome(
+                "observed",
+                "tester",
+                None,
+                Some("cap-1"),
+                None,
+                None,
+                injected_now(),
+            )
             .unwrap();
-        assert_eq!(outcome.id, "out-1");
+        assert_eq!(outcome.record.id, "out-1");
         assert!(
             store
                 .upsert_relation(RelationKind::Falsifies, "out-1", "cap-1", injected_now())
@@ -7578,12 +11153,17 @@ PRAGMA user_version = 2;
         // Unfenced: all four match (delegating wrapper unchanged).
         assert_eq!(store.search_fts(&terms, None).unwrap().len(), 4);
         assert_eq!(
-            store.search_fts_scoped(&terms, None, None).unwrap().len(),
+            store
+                .search_fts_scoped(&terms, None, None, None)
+                .unwrap()
+                .len(),
             4
         );
 
         // Prefix fence: subtree only — nott + nott/x, never nottx.
-        let fenced = store.search_fts_scoped(&terms, None, Some("nott")).unwrap();
+        let fenced = store
+            .search_fts_scoped(&terms, None, Some("nott"), None)
+            .unwrap();
         assert_eq!(
             fenced
                 .iter()
@@ -7596,23 +11176,105 @@ PRAGMA user_version = 2;
         // fences AND-compose.
         assert_eq!(
             store
-                .search_fts_scoped(&terms, Some("nottx"), None)
+                .search_fts_scoped(&terms, Some("nottx"), None, None)
                 .unwrap()
                 .len(),
             1
         );
         assert_eq!(
             store
-                .search_fts_scoped(&terms, Some("nott/x"), Some("nott"))
+                .search_fts_scoped(&terms, Some("nott/x"), Some("nott"), None)
                 .unwrap()
                 .len(),
             1
         );
         assert!(
             store
-                .search_fts_scoped(&terms, Some("other"), Some("nott"))
+                .search_fts_scoped(&terms, Some("other"), Some("nott"), None)
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn search_fts_session_label_fence_is_exact_and_composes_before_ranking() {
+        let mut store = Store::open_in_memory().unwrap();
+        let exact = " Sess-\u{00e9}\0 ";
+        let other = "sess-other";
+        store.open_session(exact, injected_now()).unwrap();
+        store.open_session(other, injected_now()).unwrap();
+        store
+            .append_with_session(
+                &capsule("shared recall selected", "nott/sub"),
+                exact,
+                injected_now(),
+            )
+            .unwrap();
+        store
+            .append_with_session(
+                &capsule("shared recall wrong session", "nott/sub"),
+                other,
+                injected_now(),
+            )
+            .unwrap();
+        store
+            .append_with_session(
+                &capsule("shared recall wrong project", "other"),
+                exact,
+                injected_now(),
+            )
+            .unwrap();
+
+        let terms = ["shared recall".to_string()];
+        let scoped = store
+            .search_fts_scoped(&terms, Some("nott/sub"), Some("nott"), Some(exact))
+            .unwrap();
+        let ids: Vec<&str> = scoped
+            .iter()
+            .map(|(stored, _)| stored.id.as_str())
+            .collect();
+        assert_eq!(ids, ["cap-1"]);
+
+        for non_match in [
+            "Sess-\u{00e9}\0",
+            " sess-\u{00e9}\0 ",
+            " Sess-e\u{0301}\0 ",
+            " Sess-\u{00c9}\0 ",
+        ] {
+            assert!(
+                store
+                    .search_fts_scoped(&terms, None, None, Some(non_match))
+                    .unwrap()
+                    .is_empty(),
+                "session label equality must preserve every byte: {non_match:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn absent_session_scope_is_bit_identical_to_the_legacy_fts_wrapper() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.open_session("sess-labeled", injected_now()).unwrap();
+        store
+            .append_with_session(
+                &capsule("dormant session fts", "nott"),
+                "sess-labeled",
+                injected_now(),
+            )
+            .unwrap();
+        store
+            .append(
+                &capsule("dormant session fts sibling", "nott"),
+                injected_now(),
+            )
+            .unwrap();
+        let terms = ["dormant session".to_string()];
+        assert_eq!(
+            store.search_fts(&terms, Some("nott")).unwrap(),
+            store
+                .search_fts_scoped(&terms, Some("nott"), None, None)
+                .unwrap(),
+            "a NULL session fence must preserve rows, bm25 scores, and order"
         );
     }
 
@@ -7773,7 +11435,9 @@ PRAGMA user_version = 2;
                 .unwrap();
         }
         // Prefix fence "nott" covers nott and nott/sub, never "other".
-        let scoped = store.embeddings_for_recall(None, Some("nott")).unwrap();
+        let scoped = store
+            .embeddings_for_recall(None, Some("nott"), None)
+            .unwrap();
         let ids: Vec<&str> = scoped.iter().map(|(s, _)| s.id.as_str()).collect();
         assert_eq!(ids, vec!["cap-1", "cap-2"]);
         // Forget cap-1: its embedding row remains but the capsule is
@@ -7782,7 +11446,9 @@ PRAGMA user_version = 2;
         store
             .forget_capsule("cap-1", TombstoneMode::Purged, "test", &key, later_now())
             .unwrap();
-        let live = store.embeddings_for_recall(Some("nott"), None).unwrap();
+        let live = store
+            .embeddings_for_recall(Some("nott"), None, None)
+            .unwrap();
         let live_ids: Vec<&str> = live.iter().map(|(s, _)| s.id.as_str()).collect();
         assert_eq!(
             live_ids,
@@ -7791,10 +11457,53 @@ PRAGMA user_version = 2;
         );
     }
 
-    /// A fresh store is stamped at the current version and carries the
-    /// `embeddings` table.
     #[test]
-    fn fresh_store_is_current_version_with_embeddings_table() {
+    fn embeddings_for_recall_session_fence_precedes_vector_decode() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.open_session("sess-selected", injected_now()).unwrap();
+        store.open_session("sess-other", injected_now()).unwrap();
+        store
+            .append_with_session(
+                &capsule("selected vector", "nott/sub"),
+                "sess-selected",
+                injected_now(),
+            )
+            .unwrap();
+        store
+            .append_with_session(
+                &capsule("wrong-session corrupt vector", "nott/sub"),
+                "sess-other",
+                injected_now(),
+            )
+            .unwrap();
+        store
+            .put_embedding("cap-1", &[1.0, 0.0], "m", injected_now())
+            .unwrap();
+        store
+            .put_embedding("cap-2", &[0.0, 1.0], "m", injected_now())
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE embeddings SET vector = X'00' WHERE capsule_id = 'cap-2'",
+                [],
+            )
+            .unwrap();
+
+        let scoped = store
+            .embeddings_for_recall(Some("nott/sub"), Some("nott"), Some("sess-selected"))
+            .unwrap();
+        let ids: Vec<&str> = scoped
+            .iter()
+            .map(|(stored, _)| stored.id.as_str())
+            .collect();
+        assert_eq!(ids, ["cap-1"]);
+    }
+
+    /// A fresh store is stamped at the current version and carries the
+    /// vector, lane-override, event-time, and source-backfill sidecars.
+    #[test]
+    fn fresh_store_is_current_version_with_additive_sidecar_tables() {
         let store = Store::open_in_memory().unwrap();
         let version: i64 = store
             .conn
@@ -7802,12 +11511,22 @@ PRAGMA user_version = 2;
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
         assert_eq!(
-            SCHEMA_VERSION, 11,
+            SCHEMA_VERSION, 20,
             "u6a vector took slot 5, u6h/u6i substrates took slot 6, \
              u-r11 kind-vocabulary took slot 7, u-r2 anchor-drift + \
              epistemics took slot 8, u-r5 miss-ledger took slot 9, \
              u-r8-REDESIGN stale-import-supersession took slot 10, \
-             store-merge tombstone source_hash took slot 11"
+             store-merge tombstone source_hash took slot 11, \
+             u03 recall receipts took slot 12, \
+             u04 scored-outcome feedback took slot 13, \
+             u05 lane overrides took slot 14, \
+             u06 caller-declared fact time took slot 15, \
+             S1 pin took slot 16 and S2 git-corroboration took slot 17 \
+             (sibling slices, integrated separately), \
+             b2 staged review and bounded git-history checkpoints share \
+             slot 18, \
+             effort-lifecycle s1 part_of relation kind took slot 19, \
+             planning-plane s1 grounded_in relation kind took slot 20"
         );
         let has_table: bool = store
             .conn
@@ -7819,6 +11538,237 @@ PRAGMA user_version = 2;
             )
             .unwrap();
         assert!(has_table, "fresh store has the embeddings table");
+        let has_lane_overrides: bool = store
+            .conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master \
+                 WHERE type='table' AND name='lane_overrides')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            has_lane_overrides,
+            "fresh store has the lane_overrides table"
+        );
+        let has_event_time: bool = store
+            .conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master \
+                 WHERE type='table' AND name='event_time')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(has_event_time, "fresh store has the event_time table");
+        let has_review_events: bool = store
+            .conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master \
+                 WHERE type='table' AND name='review_events')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(has_review_events, "fresh store has the review_events table");
+        let has_pin_events: bool = store
+            .conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master \
+                 WHERE type='table' AND name='pin_events')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(has_pin_events, "fresh store has the pin_events table");
+        for table in ["corroborations", "source_cursors", "source_backfills"] {
+            let present: bool = store
+                .conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master \
+                     WHERE type='table' AND name=?1)",
+                    [table],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(present, "fresh store has the {table} table");
+        }
+    }
+
+    /// u05 negative proof: equal lanes are not overrides and therefore
+    /// cannot be represented in the telemetry table, even through raw SQL.
+    #[test]
+    fn lane_override_schema_rejects_an_equal_pair() {
+        let store = Store::open_in_memory().unwrap();
+        let inserted = store.conn.execute(
+            "INSERT INTO lane_overrides (forced, auto_pick, at) VALUES ('term', 'term', ?1)",
+            [rfc3339_text(injected_now()).unwrap()],
+        );
+        assert!(
+            inserted.is_err(),
+            "schema accepted illegal equal override term/term: {inserted:?}"
+        );
+    }
+
+    #[test]
+    fn lane_override_schema_accepts_exactly_the_four_disagreement_pairs() {
+        let store = Store::open_in_memory().unwrap();
+        let values = ["auto", "term", "vector", "fused", "invalid"];
+        let at = rfc3339_text(injected_now()).unwrap();
+        for forced in values {
+            for auto_pick in values {
+                let legal = matches!(
+                    (forced, auto_pick),
+                    ("term", "fused")
+                        | ("vector", "fused")
+                        | ("vector", "term")
+                        | ("fused", "term")
+                );
+                let inserted = store.conn.execute(
+                    "INSERT INTO lane_overrides (forced, auto_pick, at) VALUES (?1, ?2, ?3)",
+                    params![forced, auto_pick, at],
+                );
+                assert_eq!(
+                    inserted.is_ok(),
+                    legal,
+                    "forced={forced:?}, auto_pick={auto_pick:?}: {inserted:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lane_override_writer_is_typed_and_totals_are_grouped_and_ordered() {
+        let mut store = Store::open_in_memory().unwrap();
+        for override_ in [
+            LaneOverride::VectorOverTerm,
+            LaneOverride::TermOverFused,
+            LaneOverride::VectorOverFused,
+            LaneOverride::FusedOverTerm,
+            LaneOverride::TermOverFused,
+        ] {
+            store
+                .record_lane_override(override_, injected_now())
+                .unwrap();
+        }
+        assert_eq!(
+            store.lane_override_totals().unwrap(),
+            vec![
+                ("fused".to_string(), "term".to_string(), 1),
+                ("term".to_string(), "fused".to_string(), 2),
+                ("vector".to_string(), "fused".to_string(), 1),
+                ("vector".to_string(), "term".to_string(), 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn lane_override_totals_rejects_illegal_rows_from_a_hand_shaped_v14_table() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .conn
+            .execute_batch(
+                "DROP TABLE lane_overrides;
+                 CREATE TABLE lane_overrides (
+                     seq INTEGER PRIMARY KEY,
+                     forced TEXT NOT NULL,
+                     auto_pick TEXT NOT NULL,
+                     at TEXT NOT NULL
+                 );",
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO lane_overrides (forced, auto_pick, at) \
+                 VALUES ('term', 'term', ?1)",
+                [rfc3339_text(injected_now()).unwrap()],
+            )
+            .unwrap();
+
+        assert_eq!(
+            store.lane_override_totals().unwrap_err(),
+            StoreError::Corrupt {
+                id: "lane_overrides:1".to_string(),
+                reason: "illegal lane override pair forced=\"term\", auto_pick=\"term\""
+                    .to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn lane_override_totals_rejects_bad_seq_and_time_from_a_hand_shaped_v14_table() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .conn
+            .execute_batch(
+                "DROP TABLE lane_overrides;
+                 CREATE TABLE lane_overrides (
+                     seq INTEGER PRIMARY KEY,
+                     forced TEXT NOT NULL,
+                     auto_pick TEXT NOT NULL,
+                     at TEXT NOT NULL
+                 );",
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO lane_overrides (seq, forced, auto_pick, at) \
+                 VALUES (0, 'vector', 'term', ?1)",
+                [rfc3339_text(injected_now()).unwrap()],
+            )
+            .unwrap();
+        assert_eq!(
+            store.lane_override_totals().unwrap_err(),
+            StoreError::Corrupt {
+                id: "lane_overrides:0".to_string(),
+                reason: "lane override seq must be positive, got 0".to_string(),
+            }
+        );
+
+        store
+            .conn
+            .execute("DELETE FROM lane_overrides", [])
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO lane_overrides (forced, auto_pick, at) \
+                 VALUES ('vector', 'term', 'not-rfc3339')",
+                [],
+            )
+            .unwrap();
+
+        match store.lane_override_totals().unwrap_err() {
+            StoreError::Corrupt { id, reason } => {
+                assert_eq!(id, "lane_overrides:1");
+                assert!(
+                    reason.starts_with("lane override timestamp is not RFC3339:"),
+                    "unexpected reason: {reason}"
+                );
+            }
+            other => panic!("malformed timestamp must be typed corrupt: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_lane_override_table_is_an_honest_store_error() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .conn
+            .execute_batch("DROP TABLE lane_overrides")
+            .unwrap();
+        assert!(matches!(
+            store
+                .record_lane_override(LaneOverride::TermOverFused, injected_now())
+                .unwrap_err(),
+            StoreError::Backend(_)
+        ));
+        assert!(matches!(
+            store.lane_override_totals().unwrap_err(),
+            StoreError::Backend(_)
+        ));
     }
 
     /// RED (migration v4 -> current): a genuine v4 file lacks the
@@ -7923,13 +11873,21 @@ PRAGMA user_version = 2;
         // The substrates arrived: an outcome writes, and its falsifies edge
         // passes the rebuilt CHECK and fences the capsule.
         let outcome = store
-            .append_outcome("observed", "tester", None, Some("cap-1"), injected_now())
+            .append_outcome(
+                "observed",
+                "tester",
+                None,
+                Some("cap-1"),
+                None,
+                None,
+                injected_now(),
+            )
             .unwrap();
         assert!(
             store
                 .upsert_relation(
                     RelationKind::Falsifies,
-                    &outcome.id,
+                    &outcome.record.id,
                     "cap-1",
                     injected_now()
                 )
@@ -8103,6 +12061,152 @@ PRAGMA user_version = 2;
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].capsule_id, "cap-1");
         assert_eq!(rows[0].block_hash, block);
+    }
+
+    /// A faithful v11 file predates the recall-receipt ledger, scored-outcome
+    /// columns, and feedback sidecar. Opening it migrates in place to the
+    /// current schema and leaves every canonical capsule byte untouched.
+    #[test]
+    fn v11_file_migrates_to_current_and_gains_recall_receipts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.sqlite3");
+        let before = {
+            let mut store = Store::open(&path).unwrap();
+            store
+                .append(&capsule("v11 receipt migration", "nott"), injected_now())
+                .unwrap();
+            store.canonical_snapshot().unwrap()
+        };
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "DROP TABLE recall_receipts; \
+                 DROP TABLE feedback_weights; \
+                 ALTER TABLE outcomes DROP COLUMN receipt_id; \
+                 ALTER TABLE outcomes DROP COLUMN score; \
+                 PRAGMA user_version = 11;",
+            )
+            .unwrap();
+        }
+
+        let mut store = Store::open(&path).unwrap();
+        let version: i64 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        assert_eq!(store.canonical_snapshot().unwrap(), before);
+        assert_eq!(store.receipt_returned_ids("rcpt-1").unwrap(), None);
+        assert_eq!(
+            store
+                .record_recall_receipt(
+                    &["migration".to_string()],
+                    &["cap-1"],
+                    Some("nott"),
+                    None,
+                    None,
+                    later_now(),
+                )
+                .unwrap(),
+            "rcpt-1"
+        );
+        assert_eq!(
+            store.receipt_returned_ids("rcpt-1").unwrap(),
+            Some(vec!["cap-1".to_string()])
+        );
+    }
+
+    /// A faithful v12 file has recall receipts and legacy unscored outcomes,
+    /// but no scored columns or feedback sidecar. Migration adds only NULL
+    /// columns plus the empty sidecar: canonical capsules and the legacy
+    /// outcome decode identically, then the new table is writable.
+    #[test]
+    fn v12_file_migrates_to_current_and_gains_scored_outcome_feedback() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.sqlite3");
+        let (before_snapshot, before_outcome) = {
+            let mut store = Store::open(&path).unwrap();
+            store
+                .append(
+                    &capsule("v12 scored-outcome migration", "nott"),
+                    injected_now(),
+                )
+                .unwrap();
+            let outcome = store
+                .append_outcome(
+                    "legacy observation",
+                    "tester",
+                    Some("ci://legacy"),
+                    Some("cap-1"),
+                    None,
+                    None,
+                    injected_now(),
+                )
+                .unwrap()
+                .record;
+            (store.canonical_snapshot().unwrap(), outcome)
+        };
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "DROP TABLE feedback_weights; \
+                 ALTER TABLE outcomes DROP COLUMN receipt_id; \
+                 ALTER TABLE outcomes DROP COLUMN score; \
+                 PRAGMA user_version = 12;",
+            )
+            .unwrap();
+        }
+
+        let mut store = Store::open(&path).unwrap();
+        let version: i64 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        assert_eq!(store.canonical_snapshot().unwrap(), before_snapshot);
+        assert_eq!(store.list_outcomes().unwrap(), vec![before_outcome]);
+        assert_eq!(store.feedback_weight_of("cap-1").unwrap(), None);
+        assert_eq!(
+            store.apply_feedback(&["cap-1"], 1.0, later_now()).unwrap(),
+            vec![("cap-1".to_string(), 0.55)]
+        );
+    }
+
+    /// A faithful v13 file carries every scored-outcome surface but no lane
+    /// override telemetry. Migration adds only the empty u05 sidecar and
+    /// leaves canonical capsule bytes untouched.
+    #[test]
+    fn v13_file_migrates_to_v14_and_gains_lane_override_telemetry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.sqlite3");
+        let before = {
+            let mut store = Store::open(&path).unwrap();
+            store
+                .append(&capsule("v13 lane migration", "nott"), injected_now())
+                .unwrap();
+            store.canonical_snapshot().unwrap()
+        };
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch("DROP TABLE lane_overrides; PRAGMA user_version = 13;")
+                .unwrap();
+        }
+
+        let mut store = Store::open(&path).unwrap();
+        let version: i64 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        assert_eq!(store.canonical_snapshot().unwrap(), before);
+        assert!(store.lane_override_totals().unwrap().is_empty());
+        store
+            .record_lane_override(LaneOverride::TermOverFused, later_now())
+            .unwrap();
+        assert_eq!(
+            store.lane_override_totals().unwrap(),
+            vec![("term".to_string(), "fused".to_string(), 1)]
+        );
     }
 
     /// u-r8-REDESIGN: the import-block lineage sidecar records keep-first,
@@ -8379,8 +12483,8 @@ PRAGMA user_version = 2;
             .unwrap();
         assert_eq!(inserted, 2, "folded-dedup to {{cafe, tokio}}; junk dropped");
 
-        // A second missing query carrying "tokio" again — missing_evidence
-        // this time; the ledger does not care which ungrounded outcome.
+        // A second pre-trim term-lane miss carrying "tokio" again —
+        // missing_evidence this time; both typed miss outcomes contribute.
         store
             .record_recall_miss(
                 &["tokio".to_string()],
@@ -8422,6 +12526,533 @@ PRAGMA user_version = 2;
             0
         );
         assert_eq!(store.count_recall_misses().unwrap(), 3);
+    }
+
+    /// u10: the digest reader consumes folded-term ROWS, not grouped query
+    /// counts. Newest means sequence order, so terms appended by one query
+    /// appear in reverse insertion order when read newest-first.
+    #[test]
+    fn recent_recall_misses_returns_typed_rows_newest_by_sequence() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .record_recall_miss(
+                &["Alpha".to_string(), "Beta".to_string()],
+                RecallMissOutcome::Abstain,
+                injected_now(),
+            )
+            .unwrap();
+        store
+            .record_recall_miss(
+                &["Gamma".to_string()],
+                RecallMissOutcome::MissingEvidence,
+                later_now(),
+            )
+            .unwrap();
+
+        let rows = store.recent_recall_misses(3).unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            rows.iter().map(|row| row.seq).collect::<Vec<_>>(),
+            vec![3, 2, 1]
+        );
+        assert_eq!(
+            rows.iter().map(|row| row.term.as_str()).collect::<Vec<_>>(),
+            vec!["gamma", "beta", "alpha"]
+        );
+        assert_eq!(rows[0].outcome, RecallMissOutcome::MissingEvidence);
+        assert_eq!(rows[1].outcome, RecallMissOutcome::Abstain);
+        assert_eq!(rows[0].at, later_now());
+        assert_eq!(rows[2].at, injected_now());
+        assert_eq!(
+            store
+                .recent_recall_misses(2)
+                .unwrap()
+                .iter()
+                .map(|row| row.term.as_str())
+                .collect::<Vec<_>>(),
+            vec!["gamma", "beta"],
+            "N counts folded-term rows, not queries"
+        );
+        assert!(store.recent_recall_misses(0).unwrap().is_empty());
+    }
+
+    /// A hand-shaped current-version database cannot smuggle an open outcome,
+    /// non-positive sequence, non-canonical term, or malformed timestamp into
+    /// the digest. The reader returns one typed corruption error and no partial
+    /// vector even when an older valid row exists.
+    #[test]
+    fn recent_recall_misses_revalidates_every_persisted_field() {
+        fn hand_shaped_store(seq: i64, term: &str, outcome: &str, at: &str) -> Store {
+            let store = Store::open_in_memory().unwrap();
+            store
+                .conn
+                .execute_batch(
+                    "DROP TABLE recall_misses;
+                     CREATE TABLE recall_misses (
+                       seq INTEGER PRIMARY KEY,
+                       term TEXT NOT NULL,
+                       outcome TEXT NOT NULL,
+                       at TEXT NOT NULL
+                     );",
+                )
+                .unwrap();
+            store
+                .conn
+                .execute(
+                    "INSERT INTO recall_misses (seq, term, outcome, at)
+                     VALUES (1, 'older-valid', 'abstain', '2001-02-03T02:05:06Z')",
+                    [],
+                )
+                .unwrap();
+            store
+                .conn
+                .execute(
+                    "INSERT OR REPLACE INTO recall_misses (seq, term, outcome, at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![seq, term, outcome, at],
+                )
+                .unwrap();
+            store
+        }
+
+        for (label, store, reason) in [
+            (
+                "outcome",
+                hand_shaped_store(2, "term", "grounded", "2001-02-03T02:05:07Z"),
+                "outcome",
+            ),
+            (
+                "sequence",
+                hand_shaped_store(0, "term", "abstain", "2001-02-03T02:05:07Z"),
+                "positive",
+            ),
+            (
+                "term",
+                hand_shaped_store(2, " Term ", "abstain", "2001-02-03T02:05:07Z"),
+                "canonical",
+            ),
+            (
+                "timestamp",
+                hand_shaped_store(2, "term", "abstain", "not-a-time"),
+                "RFC3339",
+            ),
+        ] {
+            let err = store.recent_recall_misses(5).unwrap_err();
+            match err {
+                StoreError::Corrupt { id, reason: actual } => {
+                    assert!(id.starts_with("recall_misses:"), "{label}: {id}");
+                    assert!(
+                        actual.contains(reason),
+                        "{label} must name {reason:?}: {actual}"
+                    );
+                }
+                other => panic!("{label} must be typed Corrupt, got {other:?}"),
+            }
+        }
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn recent_recall_misses_rejects_unrepresentable_limit() {
+        let store = Store::open_in_memory().unwrap();
+        let err = store.recent_recall_misses(usize::MAX).unwrap_err();
+        assert!(
+            matches!(err, StoreError::Backend(ref message) if message.contains("limit")),
+            "usize-to-SQL limit conversion is checked: {err:?}"
+        );
+    }
+
+    #[test]
+    fn recall_receipts_round_trip_and_sequence() {
+        let mut store = Store::open_in_memory().unwrap();
+        let first_terms = vec![
+            "  SQLite  ".to_string(),
+            "sync".to_string(),
+            "sync".to_string(),
+        ];
+        let first = store
+            .record_recall_receipt(
+                &first_terms,
+                &["cap-2", "cap-1"],
+                Some("nott"),
+                Some("nott/sub"),
+                None,
+                injected_now(),
+            )
+            .unwrap();
+        let second_terms = vec!["next".to_string()];
+        let second = store
+            .record_recall_receipt(
+                &second_terms,
+                &["cap-3"],
+                None,
+                None,
+                Some("sess-9"),
+                later_now(),
+            )
+            .unwrap();
+
+        assert_eq!(first, "rcpt-1");
+        assert_eq!(second, "rcpt-2");
+        assert_eq!(
+            store.receipt_returned_ids(&first).unwrap(),
+            Some(vec!["cap-2".to_string(), "cap-1".to_string()]),
+            "returned ids round-trip in response order"
+        );
+        assert_eq!(
+            store.receipt_returned_ids(&second).unwrap(),
+            Some(vec!["cap-3".to_string()])
+        );
+        assert_eq!(store.receipt_returned_ids("rcpt-99").unwrap(), None);
+
+        let rows = {
+            let mut stmt = store
+                .conn
+                .prepare(
+                    "SELECT terms, returned_ids, project_id, project_prefix, session_id, at \
+                     FROM recall_receipts ORDER BY seq",
+                )
+                .unwrap();
+            stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, serde_json::to_string(&first_terms).unwrap());
+        assert_eq!(rows[0].1, r#"["cap-2","cap-1"]"#);
+        assert_eq!(rows[0].2.as_deref(), Some("nott"));
+        assert_eq!(rows[0].3.as_deref(), Some("nott/sub"));
+        assert_eq!(rows[0].4, None);
+        assert_eq!(rows[0].5, rfc3339_text(injected_now()).unwrap());
+        assert_eq!(rows[1].0, serde_json::to_string(&second_terms).unwrap());
+        assert_eq!(rows[1].2, None);
+        assert_eq!(rows[1].3, None);
+        assert_eq!(rows[1].4.as_deref(), Some("sess-9"));
+        assert_eq!(rows[1].5, rfc3339_text(later_now()).unwrap());
+    }
+
+    #[test]
+    fn record_recall_receipt_fails_typed_when_the_ledger_is_missing() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .conn
+            .execute_batch("DROP TABLE recall_receipts")
+            .unwrap();
+        let err = store
+            .record_recall_receipt(
+                &["sqlite".to_string()],
+                &["cap-1"],
+                None,
+                None,
+                None,
+                injected_now(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, StoreError::Backend(_)),
+            "a missing receipt ledger is a typed backend error, never a phantom id: {err:?}"
+        );
+    }
+
+    #[test]
+    fn receipt_returned_ids_rejects_corrupt_json() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO recall_receipts \
+                 (seq, id, terms, returned_ids, project_id, project_prefix, session_id, at) \
+                 VALUES (1, 'rcpt-1', '[]', 'not-json', NULL, NULL, NULL, ?1)",
+                [rfc3339_text(injected_now()).unwrap()],
+            )
+            .unwrap();
+
+        let err = store.receipt_returned_ids("rcpt-1").unwrap_err();
+        assert!(
+            matches!(
+                err,
+                StoreError::Corrupt { ref id, ref reason }
+                    if id == "rcpt-1" && reason.contains("recall_receipts.returned_ids")
+            ),
+            "malformed returned_ids must fail as the named corrupt receipt: {err:?}"
+        );
+    }
+
+    #[test]
+    fn feedback_ema_folds_toward_the_score_and_clamps() {
+        let mut store = Store::open_in_memory().unwrap();
+
+        let first = store
+            .apply_feedback(&["cap-1"], 1.0, injected_now())
+            .unwrap();
+        assert_eq!(first.len(), 1);
+        assert!((first[0].1 - 0.55).abs() < f64::EPSILON);
+
+        let second = store.apply_feedback(&["cap-1"], 0.0, later_now()).unwrap();
+        assert!((second[0].1 - 0.495).abs() < f64::EPSILON);
+
+        let mut previous = second[0].1;
+        for _ in 0..100 {
+            let next = store.apply_feedback(&["cap-1"], 1.0, later_now()).unwrap()[0].1;
+            assert!(next >= previous, "EMA toward 1.0 must not decrease");
+            assert!(next <= 1.0, "EMA must stay clamped to 1.0");
+            previous = next;
+        }
+        assert_eq!(store.feedback_weight_of("cap-1").unwrap(), Some(previous));
+    }
+
+    #[test]
+    fn feedback_weight_reads_and_updates_reject_corrupt_persisted_values() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO feedback_weights (capsule_id, weight, at) VALUES ('cap-1', 1.5, ?1)",
+                [rfc3339_text(injected_now()).unwrap()],
+            )
+            .unwrap();
+        assert!(matches!(
+            store.feedback_weight_of("cap-1").unwrap_err(),
+            StoreError::Corrupt { ref id, .. } if id == "cap-1"
+        ));
+        assert!(matches!(
+            store
+                .apply_feedback(&["cap-1"], 1.0, later_now())
+                .unwrap_err(),
+            StoreError::Corrupt { ref id, .. } if id == "cap-1"
+        ));
+        let unchanged: f64 = store
+            .conn
+            .query_row(
+                "SELECT weight FROM feedback_weights WHERE capsule_id = 'cap-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(unchanged, 1.5);
+    }
+
+    #[test]
+    fn scored_outcome_rolls_back_row_and_prior_weights_when_feedback_fails() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append(&capsule("atomic feedback first", "nott"), injected_now())
+            .unwrap();
+        store
+            .append(&capsule("atomic feedback second", "nott"), injected_now())
+            .unwrap();
+        let receipt = store
+            .record_recall_receipt(
+                &["atomic".to_string()],
+                &["cap-1", "cap-2"],
+                Some("nott"),
+                None,
+                None,
+                injected_now(),
+            )
+            .unwrap();
+        store
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER fail_second_feedback
+                 BEFORE INSERT ON feedback_weights
+                 WHEN NEW.capsule_id = 'cap-2'
+                 BEGIN
+                     SELECT RAISE(ABORT, 'forced feedback failure');
+                 END;",
+            )
+            .unwrap();
+
+        let err = store
+            .append_outcome(
+                "scored atomically",
+                "tester",
+                None,
+                None,
+                Some(&receipt),
+                Some(1.0),
+                later_now(),
+            )
+            .unwrap_err();
+        assert!(matches!(err, StoreError::Backend(_)));
+        assert!(store.list_outcomes().unwrap().is_empty());
+        assert_eq!(store.feedback_weight_of("cap-1").unwrap(), None);
+        assert_eq!(store.feedback_weight_of("cap-2").unwrap(), None);
+    }
+
+    #[test]
+    fn scored_outcome_updates_every_receipt_member_in_response_order() {
+        let mut store = Store::open_in_memory().unwrap();
+        for content in ["ordered first", "ordered second"] {
+            store
+                .append(&capsule(content, "nott"), injected_now())
+                .unwrap();
+        }
+        store
+            .apply_feedback(&["cap-1"], 0.0, injected_now())
+            .unwrap(); // cap-1 starts the scored outcome at 0.45
+        let receipt = store
+            .record_recall_receipt(
+                &["ordered".to_string()],
+                &["cap-2", "cap-1"],
+                None,
+                None,
+                None,
+                injected_now(),
+            )
+            .unwrap();
+
+        let applied = store
+            .append_outcome(
+                "ordered recall was useful",
+                "tester",
+                None,
+                None,
+                Some(&receipt),
+                Some(1.0),
+                later_now(),
+            )
+            .unwrap();
+        assert_eq!(
+            applied.weights_updated,
+            Some(vec![
+                ("cap-2".to_string(), 0.55),
+                ("cap-1".to_string(), 0.505),
+            ])
+        );
+        assert_eq!(store.list_outcomes().unwrap(), vec![applied.record]);
+    }
+
+    #[test]
+    fn scored_outcome_rejects_unknown_and_corrupt_receipts_without_effects() {
+        let mut store = Store::open_in_memory().unwrap();
+        let unknown = store
+            .append_outcome(
+                "unknown receipt",
+                "tester",
+                None,
+                None,
+                Some("rcpt-404"),
+                Some(0.5),
+                injected_now(),
+            )
+            .unwrap_err();
+        assert_eq!(unknown, StoreError::UnknownReceipt("rcpt-404".to_string()));
+        assert!(store.list_outcomes().unwrap().is_empty());
+
+        store
+            .conn
+            .execute(
+                "INSERT INTO recall_receipts
+                 (seq, id, terms, returned_ids, project_id, project_prefix, session_id, at)
+                 VALUES (1, 'rcpt-1', '[]', 'not-json', NULL, NULL, NULL, ?1)",
+                [rfc3339_text(injected_now()).unwrap()],
+            )
+            .unwrap();
+        let corrupt = store
+            .append_outcome(
+                "corrupt receipt",
+                "tester",
+                None,
+                None,
+                Some("rcpt-1"),
+                Some(0.5),
+                injected_now(),
+            )
+            .unwrap_err();
+        assert!(matches!(corrupt, StoreError::Corrupt { ref id, .. } if id == "rcpt-1"));
+        assert!(store.list_outcomes().unwrap().is_empty());
+
+        store
+            .conn
+            .execute(
+                "INSERT INTO recall_receipts
+                 (seq, id, terms, returned_ids, project_id, project_prefix, session_id, at)
+                 VALUES (2, 'rcpt-2', '[]', '[\"cap-404\"]', NULL, NULL, NULL, ?1)",
+                [rfc3339_text(injected_now()).unwrap()],
+            )
+            .unwrap();
+        let orphan = store
+            .append_outcome(
+                "orphan receipt member",
+                "tester",
+                None,
+                None,
+                Some("rcpt-2"),
+                Some(0.5),
+                injected_now(),
+            )
+            .unwrap_err();
+        assert!(matches!(orphan, StoreError::Corrupt { ref id, .. } if id == "rcpt-2"));
+        assert!(store.list_outcomes().unwrap().is_empty());
+        assert_eq!(store.feedback_weight_of("cap-404").unwrap(), None);
+
+        store
+            .append(&capsule("duplicate receipt member", "nott"), injected_now())
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO recall_receipts
+                 (seq, id, terms, returned_ids, project_id, project_prefix, session_id, at)
+                 VALUES (3, 'rcpt-3', '[]', '[\"cap-1\",\"cap-1\"]', NULL, NULL, NULL, ?1)",
+                [rfc3339_text(injected_now()).unwrap()],
+            )
+            .unwrap();
+        let duplicate = store
+            .append_outcome(
+                "duplicate receipt member",
+                "tester",
+                None,
+                None,
+                Some("rcpt-3"),
+                Some(1.0),
+                injected_now(),
+            )
+            .unwrap_err();
+        assert!(matches!(duplicate, StoreError::Corrupt { ref id, .. } if id == "rcpt-3"));
+        assert!(store.list_outcomes().unwrap().is_empty());
+        assert_eq!(store.feedback_weight_of("cap-1").unwrap(), None);
+    }
+
+    #[test]
+    fn empty_receipt_atomically_appends_scored_outcome_with_no_weight_updates() {
+        let mut store = Store::open_in_memory().unwrap();
+        let receipt = store
+            .record_recall_receipt(
+                &["count-only".to_string()],
+                &[],
+                None,
+                None,
+                None,
+                injected_now(),
+            )
+            .unwrap();
+        let applied = store
+            .append_outcome(
+                "count-only recall was useful",
+                "tester",
+                None,
+                None,
+                Some(&receipt),
+                Some(1.0),
+                later_now(),
+            )
+            .unwrap();
+        assert_eq!(applied.weights_updated, Some(Vec::new()));
+        assert_eq!(applied.record.receipt_id.as_deref(), Some("rcpt-1"));
+        assert_eq!(applied.record.score, Some(1.0));
+        assert_eq!(store.list_outcomes().unwrap(), vec![applied.record]);
     }
 
     /// u-r5: the store method surfaces a broken ledger HONESTLY (typed
@@ -8879,11 +13510,11 @@ PRAGMA user_version = 2;
         );
     }
 
-    /// A v10 file (no `tombstones.source_hash`) opens and upgrades to v11:
+    /// A v10 file (no `tombstones.source_hash`) opens and upgrades to current:
     /// the column arrives NULL-backfilled for the pre-existing marker, and a
     /// fresh forget records it going forward.
     #[test]
-    fn v10_file_migrates_to_v11_and_gains_tombstone_source_hash() {
+    fn v10_file_migrates_to_current_and_gains_tombstone_source_hash() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("memory.sqlite3");
         {
@@ -8917,7 +13548,7 @@ PRAGMA user_version = 2;
             version, SCHEMA_VERSION,
             "v10 re-stamped to the current version"
         );
-        assert_eq!(SCHEMA_VERSION, 11);
+        assert_eq!(SCHEMA_VERSION, 20);
 
         // The pre-v11 marker survives; source_hash backfilled NULL (cannot
         // propagate by content, which is acceptable).
@@ -8941,6 +13572,1816 @@ PRAGMA user_version = 2;
         assert_eq!(
             fresh.source_hash.as_deref(),
             Some(sha256_hex(b"still-here").as_str())
+        );
+    }
+
+    #[test]
+    fn event_time_append_is_atomic_with_capsule_and_fts() {
+        let mut store = Store::open_in_memory().unwrap();
+        let range = EventTimeRange::new(
+            datetime!(2026-01-02 03:04:05 UTC),
+            datetime!(2026-01-03 03:04:05 UTC),
+        )
+        .unwrap();
+        store
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER reject_event_time BEFORE INSERT ON event_time
+                 BEGIN SELECT RAISE(ABORT, 'injected event-time failure'); END;",
+            )
+            .unwrap();
+
+        let err = store
+            .append_with_event_time(
+                &capsule("atomic event time", "nott"),
+                &range,
+                injected_now(),
+            )
+            .unwrap_err();
+        assert!(matches!(err, StoreError::Backend(_)));
+        for table in ["capsules", "capsules_fts", "event_time"] {
+            let count: i64 = store
+                .conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 0, "{table} must roll back with the sidecar insert");
+        }
+
+        store
+            .conn
+            .execute_batch("DROP TRIGGER reject_event_time")
+            .unwrap();
+        let id = store
+            .append_with_event_time(
+                &capsule("atomic event time", "nott"),
+                &range,
+                injected_now(),
+            )
+            .unwrap();
+        assert_eq!(id.as_str(), "cap-1", "the failed append consumed no id");
+        assert_eq!(
+            store.event_time_of("cap-1").unwrap().unwrap().event_from(),
+            datetime!(2026-01-02 03:04:05 UTC)
+        );
+    }
+
+    #[test]
+    fn event_time_append_with_session_links_both_sidecars() {
+        let mut store = Store::open_in_memory().unwrap();
+        let range = EventTimeRange::new(injected_now(), later_now()).unwrap();
+        store.open_session("sess-event", injected_now()).unwrap();
+        let id = store
+            .append_with_session_and_event_time(
+                &capsule("session event capture", "nott"),
+                "sess-event",
+                &range,
+                later_now(),
+            )
+            .unwrap();
+        let stored = store.get(id.as_str()).unwrap().unwrap();
+        assert_eq!(stored.session_id.as_deref(), Some("sess-event"));
+        let event = store.event_time_of(id.as_str()).unwrap().unwrap();
+        assert_eq!(event.event_from(), range.event_from());
+        assert_eq!(event.event_to(), range.event_to());
+        assert_eq!(event.declared_at(), later_now());
+    }
+
+    #[test]
+    fn event_time_reader_revalidates_every_timestamp_and_range_direction() {
+        let mut store = Store::open_in_memory().unwrap();
+        let range = EventTimeRange::new(
+            datetime!(2026-01-02 03:04:05 UTC),
+            datetime!(2026-01-03 03:04:05 UTC),
+        )
+        .unwrap();
+        store
+            .append_with_event_time(&capsule("event decode", "nott"), &range, injected_now())
+            .unwrap();
+        let good_from = rfc3339_text(range.event_from()).unwrap();
+        let good_to = rfc3339_text(range.event_to()).unwrap();
+        let good_declared = rfc3339_text(injected_now()).unwrap();
+
+        for (column, reset) in [
+            ("event_from", good_from.as_str()),
+            ("event_to", good_to.as_str()),
+            ("declared_at", good_declared.as_str()),
+        ] {
+            store
+                .conn
+                .execute(
+                    &format!(
+                        "UPDATE event_time SET {column} = 'not-rfc3339' WHERE capsule_id = 'cap-1'"
+                    ),
+                    [],
+                )
+                .unwrap();
+            let err = store.event_time_of("cap-1").unwrap_err();
+            assert!(
+                matches!(&err, StoreError::Corrupt { id, reason }
+                    if id == "cap-1" && reason.contains(column)),
+                "{column} corruption must be named: {err:?}"
+            );
+            store
+                .conn
+                .execute(
+                    &format!("UPDATE event_time SET {column} = ?1 WHERE capsule_id = 'cap-1'"),
+                    [reset],
+                )
+                .unwrap();
+        }
+
+        store
+            .conn
+            .execute(
+                "UPDATE event_time SET event_from = ?1, event_to = ?2 WHERE capsule_id = 'cap-1'",
+                params![good_to, good_from],
+            )
+            .unwrap();
+        let err = store.event_time_of("cap-1").unwrap_err();
+        assert!(
+            matches!(&err, StoreError::Corrupt { id, reason }
+                if id == "cap-1" && reason.contains("event_to") && reason.contains("before")),
+            "backwards persisted ranges fail typed: {err:?}"
+        );
+    }
+
+    #[test]
+    fn v14_file_migrates_to_current_without_moving_capsules_or_lane_totals() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.sqlite3");
+        let (snapshot, lane_totals) = {
+            let mut store = Store::open(&path).unwrap();
+            store
+                .append(&capsule("v14 event migration", "nott"), injected_now())
+                .unwrap();
+            store
+                .record_lane_override(LaneOverride::TermOverFused, later_now())
+                .unwrap();
+            (
+                store.canonical_snapshot().unwrap(),
+                store.lane_override_totals().unwrap(),
+            )
+        };
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch("DROP TABLE event_time; PRAGMA user_version = 14;")
+                .unwrap();
+        }
+
+        let mut store = Store::open(&path).unwrap();
+        let version: i64 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        assert_eq!(SCHEMA_VERSION, 20);
+        assert_eq!(store.canonical_snapshot().unwrap(), snapshot);
+        assert_eq!(store.lane_override_totals().unwrap(), lane_totals);
+        assert_eq!(store.event_time_of("cap-1").unwrap(), None);
+        let event = EventTimeRange::new(injected_now(), later_now()).unwrap();
+        let id = store
+            .append_with_event_time(
+                &capsule("post-v14 event capture", "nott"),
+                &event,
+                later_now(),
+            )
+            .unwrap();
+        assert_eq!(id.as_str(), "cap-2");
+    }
+
+    /// planning-plane u1 MIGRATION v15→current: a faithful v15 file —
+    /// relations under the FIVE-kind CHECK (no `grounded_in`), `origin`
+    /// column present, `user_version = 15` — migrates IN PLACE on open.
+    /// The origin-tagged edge survives the CHECK rebuild byte-true, the
+    /// relations CHECK gains `grounded_in`, and the stamp advances to the
+    /// current version. Mirrors the v4→current relations-CHECK-widen test
+    /// (no-drift discipline).
+    #[test]
+    fn v15_five_kind_relations_widen_and_keep_origin() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.sqlite3");
+        {
+            let mut store = Store::open(&path).unwrap();
+            store
+                .append(
+                    &capsule("planning plane claim alpha", "nott"),
+                    injected_now(),
+                )
+                .unwrap(); // cap-1
+            store
+                .append(
+                    &capsule("planning plane claim beta", "nott"),
+                    injected_now(),
+                )
+                .unwrap(); // cap-2
+            store
+                .append(
+                    &capsule("planning plane claim gamma", "nott"),
+                    injected_now(),
+                )
+                .unwrap(); // cap-3
+            // A legacy edge from the five-kind era — must survive the rebuild.
+            store
+                .upsert_relation(RelationKind::Blocks, "cap-1", "cap-2", injected_now())
+                .unwrap();
+            // An origin='import' edge — must survive the rebuild byte-true.
+            store
+                .upsert_relation_origin(
+                    RelationKind::Supersedes,
+                    "cap-3",
+                    "cap-2",
+                    injected_now(),
+                    RelationOrigin::Import,
+                )
+                .unwrap();
+        }
+        // Downgrade to a FAITHFUL v15 shape: five-kind relations CHECK (no
+        // grounded_in), origin column present, stamp 15.
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE relations_v15 (
+                     kind    TEXT NOT NULL CHECK (kind IN ('supersedes', 'derived_from', 'witnesses', 'blocks', 'falsifies')),
+                     from_id TEXT NOT NULL,
+                     to_id   TEXT NOT NULL,
+                     at      TEXT NOT NULL,
+                     origin  TEXT NOT NULL DEFAULT 'manual' CHECK (origin IN ('manual', 'import')),
+                     PRIMARY KEY (kind, from_id, to_id)
+                 );
+                 INSERT INTO relations_v15 (kind, from_id, to_id, at, origin) \
+                     SELECT kind, from_id, to_id, at, origin FROM relations;
+                 DROP TABLE relations;
+                 ALTER TABLE relations_v15 RENAME TO relations;
+                 PRAGMA user_version = 15;",
+            )
+            .unwrap();
+            // Faithful: the v15 five-kind CHECK rejects a raw 'grounded_in' edge.
+            let raw = conn.execute(
+                "INSERT INTO relations (kind, from_id, to_id, at, origin) \
+                 VALUES ('grounded_in', 'cap-1', 'cap-2', '2026-07-24T00:00:00Z', 'manual')",
+                [],
+            );
+            assert!(
+                raw.is_err(),
+                "the v15 five-kind CHECK must reject a 'grounded_in' edge"
+            );
+        }
+
+        // Opening IS the migration.
+        let mut store = Store::open(&path).unwrap();
+        let version: i64 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            version, SCHEMA_VERSION,
+            "v15 re-stamped to the current version"
+        );
+        assert_eq!(SCHEMA_VERSION, 20);
+
+        // The legacy blocks edge survived the CHECK rebuild.
+        assert_eq!(
+            store.blockers_of("cap-2").unwrap(),
+            vec!["cap-1".to_string()]
+        );
+
+        // The import-origin edge survived byte-true: still 'import'.
+        let edges = store.list_relations("cap-3").unwrap();
+        assert!(
+            edges.iter().any(|r| r.kind == RelationKind::Supersedes
+                && r.from_id == "cap-3"
+                && r.to_id == "cap-2"
+                && r.origin == RelationOrigin::Import),
+            "the import-origin edge must survive the CHECK rebuild byte-true"
+        );
+
+        // The CHECK moved: a grounded_in edge now writes.
+        assert!(
+            store
+                .upsert_relation(RelationKind::GroundedIn, "cap-1", "cap-3", injected_now())
+                .unwrap()
+        );
+
+        // No-drift on the CHECK: the migrated relations DDL carries
+        // 'grounded_in' (non-vacuity: a stale five-kind DDL fails this).
+        let relations_ddl: String = rusqlite::Connection::open(&path)
+            .unwrap()
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'relations'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            relations_ddl.contains("'grounded_in'"),
+            "migrated relations CHECK must include 'grounded_in': {relations_ddl}"
+        );
+    }
+
+    /// planning-plane u1 MIGRATION (pre-origin five-kind fixture): a
+    /// faithful pre-v10 shape — relations under the FIVE-kind CHECK, NO
+    /// `origin` column at all (the column arrived at v10), stamped 9 —
+    /// migrates IN PLACE on open through the reconciled post-#131 flow.
+    /// The `origin` ALTER guard (`table_has_column(&tx, "relations",
+    /// "origin")` FALSE branch — the column is absent) fires FIRST,
+    /// backfilling `origin='manual'` on every pre-existing edge (the
+    /// historical truth for a store born before the column existed). ONLY
+    /// THEN does the shared-DDL rebuild fire, gated on
+    /// [`relations_missing_proposes_check`] (a five-kind CHECK is missing
+    /// `'proposes'`) — [`relations_missing_part_of_check`] and
+    /// [`relations_lacks_grounded_in`] agree, all three tokens absent — and
+    /// rebuilding through [`relations_create_sql`]'s one current template —
+    /// which already admits `'proposes'`, `'part_of'`, AND `'grounded_in'` —
+    /// so the CHECK gains all three as a side effect of that same rebuild.
+    /// Because the origin ALTER always runs before it, the rebuild's copy is
+    /// UNCONDITIONALLY five-column (`kind,
+    /// from_id, to_id, at, origin`) — there is no separate four-column
+    /// copy arm. Exercises the `table_has_column` guard's FALSE branch —
+    /// the sibling [`v15_five_kind_relations_widen_and_keep_origin`]
+    /// exercises TRUE (origin already present, so only the rebuild fires).
+    #[test]
+    fn pre_origin_five_kind_relations_gain_origin_then_widen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.sqlite3");
+        {
+            let mut store = Store::open(&path).unwrap();
+            store
+                .append(&capsule("pre-origin claim alpha", "nott"), injected_now())
+                .unwrap(); // cap-1
+            store
+                .append(&capsule("pre-origin claim beta", "nott"), injected_now())
+                .unwrap(); // cap-2
+            store
+                .upsert_relation(RelationKind::Blocks, "cap-1", "cap-2", injected_now())
+                .unwrap();
+        }
+        // Downgrade to a FAITHFUL pre-v10 shape: five-kind CHECK, NO origin
+        // column (four columns only), stamp 9.
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE relations_pre_origin (
+                     kind    TEXT NOT NULL CHECK (kind IN ('supersedes', 'derived_from', 'witnesses', 'blocks', 'falsifies')),
+                     from_id TEXT NOT NULL,
+                     to_id   TEXT NOT NULL,
+                     at      TEXT NOT NULL,
+                     PRIMARY KEY (kind, from_id, to_id)
+                 );
+                 INSERT INTO relations_pre_origin (kind, from_id, to_id, at) \
+                     SELECT kind, from_id, to_id, at FROM relations;
+                 DROP TABLE relations;
+                 ALTER TABLE relations_pre_origin RENAME TO relations;
+                 PRAGMA user_version = 9;",
+            )
+            .unwrap();
+            // Faithful: no origin column exists on this shape.
+            let has_origin: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM pragma_table_info('relations') \
+                     WHERE name = 'origin')",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(!has_origin, "fixture must be faithfully pre-origin");
+        }
+
+        // Opening IS the migration — v9 is an enumerated migratable version.
+        let mut store = Store::open(&path).unwrap();
+        let version: i64 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            version, SCHEMA_VERSION,
+            "pre-origin file re-stamped to current"
+        );
+
+        // The legacy blocks edge survived the origin-then-widen rebuild.
+        assert_eq!(
+            store.blockers_of("cap-2").unwrap(),
+            vec!["cap-1".to_string()]
+        );
+        // Backfilled origin is 'manual' — the historical truth pre-v10.
+        let edges = store.list_relations("cap-1").unwrap();
+        assert!(
+            edges
+                .iter()
+                .any(|r| r.kind == RelationKind::Blocks && r.origin == RelationOrigin::Manual),
+            "a pre-origin edge backfills origin='manual'"
+        );
+
+        // The CHECK moved: a grounded_in edge now writes.
+        assert!(
+            store
+                .upsert_relation(RelationKind::GroundedIn, "cap-1", "cap-2", injected_now())
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn v15_file_migrates_to_v17_without_moving_capsules_or_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.sqlite3");
+        let snapshot = {
+            let mut store = Store::open(&path).unwrap();
+            store
+                .append(
+                    &capsule("v15 git witness migration", "nott"),
+                    injected_now(),
+                )
+                .unwrap();
+            store.canonical_snapshot().unwrap()
+        };
+        // Downgrade to a FAITHFUL v15 shape: drop the v17 sidecars, stamp 15.
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "DROP TABLE corroborations; DROP TABLE source_cursors; \
+                 PRAGMA user_version = 15;",
+            )
+            .unwrap();
+        }
+
+        // Opening IS the migration — v15 is now an enumerated migratable version.
+        let mut store = Store::open(&path).unwrap();
+        let version: i64 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        assert_eq!(SCHEMA_VERSION, 20);
+        // The additive sidecars never move the capsule comparand bytes.
+        assert_eq!(store.canonical_snapshot().unwrap(), snapshot);
+        // The new sidecars are empty and usable after migration.
+        assert!(store.latest_corroborations("cap-1").unwrap().is_none());
+        assert_eq!(store.get_source_cursor("git:/repo").unwrap(), None);
+        assert!(
+            store
+                .append_corroboration(
+                    "cap-1",
+                    "git",
+                    "anchor_path",
+                    "src/x.rs",
+                    "corroborated",
+                    Some("abc123"),
+                    later_now(),
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            store
+                .latest_corroborations("cap-1")
+                .unwrap()
+                .unwrap()
+                .anchor_path
+                .as_deref(),
+            Some("corroborated")
+        );
+    }
+
+    #[test]
+    fn a_v16_file_migrates_up_rather_than_failing_closed() {
+        // A v16 file is the parallel pin slice's stamp; this tree does not
+        // create pin_events, but the migration keys on DDL shape / IF NOT
+        // EXISTS, never the integer, so a v16 file converges to v17 here.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.sqlite3");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch("PRAGMA user_version = 16;").unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        let version: i64 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn current_v18_file_heals_empty_source_backfill_without_moving_capsules() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.sqlite3");
+        let snapshot = {
+            let mut store = Store::open(&path).unwrap();
+            store
+                .append(&capsule("v18 backfill heal", "nott"), injected_now())
+                .unwrap();
+            store.canonical_snapshot().unwrap()
+        };
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch("DROP TABLE source_backfills; PRAGMA user_version = 18;")
+                .unwrap();
+        }
+
+        let store = Store::open(&path).unwrap();
+        let version: i64 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        assert_eq!(store.canonical_snapshot().unwrap(), snapshot);
+        assert!(store.get_source_backfill("git:/repo").unwrap().is_none());
+    }
+
+    #[test]
+    fn append_corroboration_is_change_gated_and_dedupes() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append(&capsule("anchored", "nott"), injected_now())
+            .unwrap();
+        // First observation writes; re-observing the SAME verdict writes
+        // nothing (idempotent re-scan); a changed verdict writes again.
+        assert!(
+            store
+                .append_corroboration(
+                    "cap-1",
+                    "git",
+                    "anchor_path",
+                    "src/x.rs",
+                    "corroborated",
+                    Some("h1"),
+                    injected_now()
+                )
+                .unwrap()
+        );
+        assert!(
+            !store
+                .append_corroboration(
+                    "cap-1",
+                    "git",
+                    "anchor_path",
+                    "src/x.rs",
+                    "corroborated",
+                    Some("h1"),
+                    later_now()
+                )
+                .unwrap()
+        );
+        assert!(
+            store
+                .append_corroboration(
+                    "cap-1",
+                    "git",
+                    "anchor_path",
+                    "src/x.rs",
+                    "missing",
+                    Some("h2"),
+                    later_now()
+                )
+                .unwrap()
+        );
+        let count: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM corroborations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2, "unchanged re-scan added no row");
+        // An illegal verdict is refused by the CHECK, never silently written.
+        assert!(
+            store
+                .append_corroboration(
+                    "cap-1",
+                    "git",
+                    "anchor_path",
+                    "src/x.rs",
+                    "unknown",
+                    None,
+                    later_now()
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn latest_corroborations_folds_per_kind_and_counts_mentions() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append(&capsule("anchored", "nott"), injected_now())
+            .unwrap();
+        store
+            .append_corroboration(
+                "cap-1",
+                "git",
+                "anchor_path",
+                "src/x.rs",
+                "corroborated",
+                Some("head9"),
+                injected_now(),
+            )
+            .unwrap();
+        store
+            .append_corroboration(
+                "cap-1",
+                "git",
+                "anchor_content",
+                "src/x.rs",
+                "drifted",
+                Some("head9"),
+                injected_now(),
+            )
+            .unwrap();
+        store
+            .append_corroboration(
+                "cap-1",
+                "git",
+                "mention",
+                "commitA",
+                "corroborated",
+                Some("head9"),
+                injected_now(),
+            )
+            .unwrap();
+        store
+            .append_corroboration(
+                "cap-1",
+                "git",
+                "mention",
+                "commitB",
+                "corroborated",
+                Some("head9"),
+                injected_now(),
+            )
+            .unwrap();
+        let summary = store.latest_corroborations("cap-1").unwrap().unwrap();
+        assert_eq!(summary.source, "git");
+        assert_eq!(summary.git_ref.as_deref(), Some("head9"));
+        assert_eq!(summary.anchor_path.as_deref(), Some("corroborated"));
+        assert_eq!(summary.anchor_content.as_deref(), Some("drifted"));
+        assert_eq!(summary.anchor_sha, None);
+        assert_eq!(summary.mentions, 2);
+        assert!(store.latest_corroborations("cap-2").unwrap().is_none());
+    }
+
+    #[test]
+    fn corroboration_counts_reflect_latest_verdict_only() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.append(&capsule("a", "nott"), injected_now()).unwrap();
+        store.append(&capsule("b", "nott"), injected_now()).unwrap();
+        // cap-1's anchor went missing then came back — counts must reflect
+        // the LATEST (corroborated), not both.
+        store
+            .append_corroboration(
+                "cap-1",
+                "git",
+                "anchor_path",
+                "a.rs",
+                "missing",
+                None,
+                injected_now(),
+            )
+            .unwrap();
+        store
+            .append_corroboration(
+                "cap-1",
+                "git",
+                "anchor_path",
+                "a.rs",
+                "corroborated",
+                None,
+                later_now(),
+            )
+            .unwrap();
+        store
+            .append_corroboration(
+                "cap-2",
+                "git",
+                "anchor_content",
+                "b.rs",
+                "drifted",
+                None,
+                injected_now(),
+            )
+            .unwrap();
+        store
+            .append_corroboration(
+                "cap-2",
+                "git",
+                "mention",
+                "commitZ",
+                "corroborated",
+                None,
+                injected_now(),
+            )
+            .unwrap();
+        let counts = store.corroboration_counts().unwrap();
+        let git = counts.get("git").copied().unwrap();
+        assert_eq!(git.corroborated, 1);
+        assert_eq!(git.drifted, 1);
+        assert_eq!(
+            git.missing, 0,
+            "the superseded missing verdict does not count"
+        );
+        assert_eq!(git.mentions, 1);
+    }
+
+    #[test]
+    fn source_cursor_replaces_in_place() {
+        let mut store = Store::open_in_memory().unwrap();
+        assert_eq!(store.get_source_cursor("git:/repo").unwrap(), None);
+        store
+            .set_source_cursor("git:/repo", "sha-one", injected_now())
+            .unwrap();
+        assert_eq!(
+            store.get_source_cursor("git:/repo").unwrap().as_deref(),
+            Some("sha-one")
+        );
+        store
+            .set_source_cursor("git:/repo", "sha-two", later_now())
+            .unwrap();
+        assert_eq!(
+            store.get_source_cursor("git:/repo").unwrap().as_deref(),
+            Some("sha-two")
+        );
+        let rows = store.list_source_cursors().unwrap();
+        assert_eq!(rows.len(), 1, "cursor is replaced, never accumulated");
+        assert!(store.set_source_cursor("", "x", injected_now()).is_err());
+        assert!(
+            store
+                .set_source_cursor("git:/repo", "", injected_now())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn source_backfill_checkpoint_is_cas_guarded_and_completion_is_atomic() {
+        let mut store = Store::open_in_memory().unwrap();
+        let key = "git:/repo";
+        store
+            .set_source_cursor(key, "base", injected_now())
+            .unwrap();
+        store
+            .checkpoint_source_backfill(key, Some("base"), "target", 0, 2, injected_now())
+            .unwrap();
+        let state = store.get_source_backfill(key).unwrap().unwrap();
+        assert_eq!(state.base_cursor.as_deref(), Some("base"));
+        assert_eq!(state.target_head, "target");
+        assert_eq!(state.next_offset, 2);
+
+        let stale = store
+            .checkpoint_source_backfill(key, Some("base"), "target", 1, 3, later_now())
+            .unwrap_err();
+        assert!(matches!(stale, StoreError::StaleSourceBackfill(_)));
+        store
+            .checkpoint_source_backfill(key, Some("base"), "target", 2, 3, later_now())
+            .unwrap();
+        store
+            .complete_source_backfill(key, Some("base"), "target", 3, later_now())
+            .unwrap();
+        assert!(store.get_source_backfill(key).unwrap().is_none());
+        assert_eq!(
+            store.get_source_cursor(key).unwrap().as_deref(),
+            Some("target")
+        );
+    }
+
+    #[test]
+    fn stale_source_traversal_cannot_regress_a_winning_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.sqlite3");
+        let key = "git:/repo";
+        {
+            let mut seed = Store::open(&path).unwrap();
+            seed.set_source_cursor(key, "base", injected_now()).unwrap();
+        }
+        let mut stale = Store::open(&path).unwrap();
+        let mut winner = Store::open(&path).unwrap();
+        winner
+            .complete_source_backfill(key, Some("base"), "newer-target", 0, later_now())
+            .unwrap();
+
+        for error in [
+            stale
+                .checkpoint_source_backfill(key, Some("base"), "older-target", 0, 1, later_now())
+                .unwrap_err(),
+            stale
+                .complete_source_backfill(key, Some("base"), "older-target", 0, later_now())
+                .unwrap_err(),
+            stale
+                .clear_source_traversal(key, Some("base"), None)
+                .unwrap_err(),
+        ] {
+            assert!(matches!(error, StoreError::StaleSourceBackfill(_)));
+        }
+
+        let observed = Store::open(&path).unwrap();
+        assert_eq!(
+            observed.get_source_cursor(key).unwrap().as_deref(),
+            Some("newer-target")
+        );
+        assert!(observed.get_source_backfill(key).unwrap().is_none());
+    }
+
+    #[test]
+    fn event_time_sidecar_does_not_transfer_on_merge() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_path = dir.path().join("local.sqlite3");
+        let incoming_path = dir.path().join("incoming.sqlite3");
+        let local_range = EventTimeRange::new(injected_now(), later_now()).unwrap();
+        let incoming_range = EventTimeRange::new(
+            datetime!(2025-01-01 00:00:00 UTC),
+            datetime!(2025-12-31 23:59:59 UTC),
+        )
+        .unwrap();
+        {
+            let mut local = Store::open(&local_path).unwrap();
+            local
+                .append_with_event_time(
+                    &capsule("local dated", "nott"),
+                    &local_range,
+                    injected_now(),
+                )
+                .unwrap();
+            local
+                .append_with_event_time(
+                    &capsule("shared dated", "nott"),
+                    &local_range,
+                    injected_now(),
+                )
+                .unwrap();
+        }
+        {
+            let mut incoming = Store::open(&incoming_path).unwrap();
+            incoming
+                .append_with_event_time(
+                    &capsule("incoming dated", "nott"),
+                    &incoming_range,
+                    injected_now(),
+                )
+                .unwrap();
+            incoming
+                .append_with_event_time(
+                    &capsule("shared dated", "nott"),
+                    &incoming_range,
+                    injected_now(),
+                )
+                .unwrap();
+        }
+
+        let mut local = Store::open(&local_path).unwrap();
+        let before = local.canonical_snapshot().unwrap();
+        local.merge_from(&incoming_path, b"local-key").unwrap();
+        assert_eq!(
+            local.event_time_of("cap-1").unwrap().unwrap().event_from(),
+            local_range.event_from(),
+            "local declaration survives"
+        );
+        assert_eq!(
+            local.event_time_of("cap-2").unwrap(),
+            Some(EventTimeRecord {
+                range: local_range,
+                declared_at: injected_now(),
+            }),
+            "a content collapse keeps the receiving store's local declaration"
+        );
+        assert_eq!(
+            local.event_time_of("cap-3").unwrap(),
+            None,
+            "a newly-added incoming capsule becomes undated on the receiving store"
+        );
+        assert!(local.canonical_snapshot().unwrap().starts_with(&before));
+    }
+
+    // ---- b2 staged review (S4) ----
+
+    /// The v18 relations rebuild PRESERVES the `origin` column byte-for-byte —
+    /// the falsifies template it is modeled on copies only four columns, so a
+    /// naive copy would silently reset every import edge to `manual` and erase
+    /// import provenance. Also proves the migration widens the CHECK to admit
+    /// `proposes`, re-creates the review sidecar, and never moves a capsule.
+    #[test]
+    fn v18_relations_rebuild_preserves_import_origin_and_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.sqlite3");
+        let snapshot = {
+            let mut store = Store::open(&path).unwrap();
+            store
+                .append(&capsule("origin edge source", "nott"), injected_now())
+                .unwrap();
+            store
+                .append(&capsule("origin edge target", "nott"), injected_now())
+                .unwrap();
+            // A machine-written import edge — the ONLY kind the rebuild must
+            // not silently rewrite to `manual`.
+            store
+                .upsert_relation_origin(
+                    RelationKind::Supersedes,
+                    "cap-1",
+                    "cap-2",
+                    injected_now(),
+                    RelationOrigin::Import,
+                )
+                .unwrap();
+            store.canonical_snapshot().unwrap()
+        };
+        // Downgrade to a FAITHFUL pre-v18 shape: a five-kind relations CHECK
+        // (no `proposes`) carrying the import edge, no review sidecar, stamp 17.
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE relations_old (
+                     kind TEXT NOT NULL CHECK (kind IN ('supersedes','derived_from','witnesses','blocks','falsifies')),
+                     from_id TEXT NOT NULL, to_id TEXT NOT NULL, at TEXT NOT NULL,
+                     origin TEXT NOT NULL DEFAULT 'manual' CHECK (origin IN ('manual','import')),
+                     PRIMARY KEY (kind, from_id, to_id));
+                 INSERT INTO relations_old SELECT kind, from_id, to_id, at, origin FROM relations;
+                 DROP TABLE relations;
+                 ALTER TABLE relations_old RENAME TO relations;
+                 DROP TABLE review_events;
+                 PRAGMA user_version = 17;",
+            )
+            .unwrap();
+        }
+        // Opening IS the migration (v17 -> v18): the relations_v6 rebuild runs.
+        let mut store = Store::open(&path).unwrap();
+        let version: i64 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        // The import edge survived byte-for-byte — origin is STILL `import`.
+        let edges = store.list_relations("cap-2").unwrap();
+        let import_edge = edges
+            .iter()
+            .find(|e| e.kind == RelationKind::Supersedes && e.to_id == "cap-2")
+            .expect("the import supersedes edge survived the rebuild");
+        assert_eq!(
+            import_edge.origin,
+            RelationOrigin::Import,
+            "the rebuild MUST copy origin — a dropped origin erases import provenance"
+        );
+        // Capsules never moved; the review sidecar is back; the CHECK now
+        // admits `proposes`.
+        assert_eq!(store.canonical_snapshot().unwrap(), snapshot);
+        assert!(store.review_state_of("cap-1").unwrap().is_none());
+        assert!(
+            store
+                .upsert_relation(RelationKind::Proposes, "cap-1", "cap-2", injected_now())
+                .is_ok(),
+            "the widened CHECK admits a proposes edge"
+        );
+    }
+
+    /// The review fence is DERIVED from the LATEST verdict, never a stored
+    /// flag: proposed/rejected are fenced, a later ratified reverses it.
+    #[test]
+    fn review_fence_derives_from_the_latest_verdict() {
+        let mut store = Store::open_in_memory().unwrap();
+        let id = store
+            .append(&capsule("a reviewable claim", "nott"), injected_now())
+            .unwrap();
+        let id = id.as_str().to_string();
+        // No review history -> not fenced, no state.
+        assert!(!store.review_fenced(&id).unwrap());
+        assert!(store.review_state_of(&id).unwrap().is_none());
+        // proposed -> fenced.
+        store
+            .append_review_event(
+                &id,
+                ReviewVerdict::Proposed,
+                "staged ingest",
+                "author",
+                injected_now(),
+            )
+            .unwrap();
+        assert!(store.review_fenced(&id).unwrap());
+        assert_eq!(
+            store.review_verdict(&id).unwrap().as_deref(),
+            Some("proposed")
+        );
+        // rejected -> still fenced (NEVER a tombstone).
+        store
+            .append_review_event(
+                &id,
+                ReviewVerdict::Rejected,
+                "not now",
+                "owner",
+                later_now(),
+            )
+            .unwrap();
+        assert!(store.review_fenced(&id).unwrap());
+        assert_eq!(
+            store.review_verdict(&id).unwrap().as_deref(),
+            Some("rejected")
+        );
+        // ratified -> reverses the fence; full history is retained.
+        store
+            .append_review_event(
+                &id,
+                ReviewVerdict::Ratified,
+                "owner approved",
+                "owner",
+                later_now(),
+            )
+            .unwrap();
+        assert!(!store.review_fenced(&id).unwrap());
+        let state = store.review_state_of(&id).unwrap().unwrap();
+        assert_eq!(state.latest(), ReviewVerdict::Ratified);
+        assert_eq!(
+            state.history().len(),
+            3,
+            "the verdict history is append-only"
+        );
+        assert_eq!(store.count_review_fenced().unwrap(), 0);
+    }
+
+    /// `stale_proposals` counts only fenced proposals older than the window;
+    /// a fresh proposal and a ratified one never count.
+    #[test]
+    fn stale_proposals_counts_only_aged_fenced_proposals() {
+        let mut store = Store::open_in_memory().unwrap();
+        let fresh = store
+            .append(&capsule("fresh proposal", "nott"), injected_now())
+            .unwrap();
+        let old = store
+            .append(&capsule("old proposal", "nott"), injected_now())
+            .unwrap();
+        let base = datetime!(2026-07-01 00:00:00 UTC);
+        store
+            .append_review_event(fresh.as_str(), ReviewVerdict::Proposed, "s", "a", base)
+            .unwrap();
+        store
+            .append_review_event(old.as_str(), ReviewVerdict::Proposed, "s", "a", base)
+            .unwrap();
+        // "now" 20 days after base, window 14 days: only the (equally old, but
+        // both are 20d) proposals count — both are stale here.
+        let now = base + time::Duration::days(20);
+        assert_eq!(store.count_review_fenced().unwrap(), 2);
+        assert_eq!(store.stale_proposals(now, 14).unwrap(), 2);
+        // A wider window (30 days) makes neither stale.
+        assert_eq!(store.stale_proposals(now, 30).unwrap(), 0);
+        // Ratifying one drops it from BOTH counts.
+        store
+            .append_review_event(fresh.as_str(), ReviewVerdict::Ratified, "ok", "o", now)
+            .unwrap();
+        assert_eq!(store.count_review_fenced().unwrap(), 1);
+        assert_eq!(store.stale_proposals(now, 14).unwrap(), 1);
+    }
+
+    /// Red-test 11 (fence durability): a proposal merged into a FRESH store
+    /// stays fenced there — the review history rides the newly-minted capsule.
+    #[test]
+    fn merge_carries_a_proposal_fence_into_a_fresh_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_path = dir.path().join("local.sqlite3");
+        let incoming_path = dir.path().join("incoming.sqlite3");
+        {
+            let mut incoming = Store::open(&incoming_path).unwrap();
+            let id = incoming
+                .append(
+                    &capsule("a fenced proposal for merge", "nott"),
+                    injected_now(),
+                )
+                .unwrap();
+            incoming
+                .append_review_event(
+                    id.as_str(),
+                    ReviewVerdict::Proposed,
+                    "staged",
+                    "author",
+                    injected_now(),
+                )
+                .unwrap();
+            incoming
+                .append_review_event(
+                    id.as_str(),
+                    ReviewVerdict::Rejected,
+                    "foreign rejection",
+                    "foreign closer",
+                    later_now(),
+                )
+                .unwrap();
+        }
+        let mut local = Store::open(&local_path).unwrap();
+        let applied = local.merge_from(&incoming_path, b"k").unwrap();
+        assert_eq!(
+            applied.added_ids.len(),
+            1,
+            "the proposal minted a fresh capsule"
+        );
+        let minted = &applied.added_ids[0];
+        assert!(
+            local.review_fenced(minted).unwrap(),
+            "the merged proposal stays fenced (fence durability)"
+        );
+        assert_eq!(
+            local.review_verdict(minted).unwrap().as_deref(),
+            Some("proposed")
+        );
+    }
+
+    /// A standalone destination must never treat a foreign close verdict as
+    /// local authority. Any reviewed foreign capsule is one local proposal,
+    /// regardless of whether the source's latest state was ratified or
+    /// rejected.
+    #[test]
+    fn merge_normalizes_foreign_close_verdicts_to_one_local_proposal() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_path = dir.path().join("local.sqlite3");
+        let incoming_path = dir.path().join("incoming.sqlite3");
+        {
+            let mut incoming = Store::open(&incoming_path).unwrap();
+            for (content, close) in [
+                ("foreign ratified review", ReviewVerdict::Ratified),
+                ("foreign rejected review", ReviewVerdict::Rejected),
+            ] {
+                let id = incoming
+                    .append(&capsule(content, "nott"), injected_now())
+                    .unwrap();
+                incoming
+                    .append_review_event(
+                        id.as_str(),
+                        ReviewVerdict::Proposed,
+                        "foreign proposal",
+                        "foreign author",
+                        injected_now(),
+                    )
+                    .unwrap();
+                incoming
+                    .append_review_event(
+                        id.as_str(),
+                        close,
+                        "foreign close",
+                        "foreign closer",
+                        later_now(),
+                    )
+                    .unwrap();
+            }
+        }
+
+        let mut local = Store::open(&local_path).unwrap();
+        let applied = local.merge_from(&incoming_path, b"k").unwrap();
+        assert_eq!(applied.added_ids.len(), 2);
+        for id in applied.added_ids {
+            let state = local.review_state_of(&id).unwrap().unwrap();
+            assert_eq!(state.latest(), ReviewVerdict::Proposed);
+            assert_eq!(
+                state.history().len(),
+                1,
+                "foreign review history is not imported as local authority"
+            );
+            assert!(local.review_fenced(&id).unwrap());
+        }
+    }
+
+    /// Red-test 3b (demotion attack, merge path): an incoming proposal whose
+    /// content collides with LOCAL plain truth must NOT fence the local
+    /// capsule — truth won locally stays truth.
+    #[test]
+    fn merge_never_fences_local_truth_with_a_colliding_proposal() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_path = dir.path().join("local.sqlite3");
+        let incoming_path = dir.path().join("incoming.sqlite3");
+        {
+            let mut local = Store::open(&local_path).unwrap();
+            local
+                .append(
+                    &capsule("shared content that is local truth", "nott"),
+                    injected_now(),
+                )
+                .unwrap();
+        }
+        {
+            let mut incoming = Store::open(&incoming_path).unwrap();
+            let id = incoming
+                .append(
+                    &capsule("shared content that is local truth", "nott"),
+                    injected_now(),
+                )
+                .unwrap();
+            incoming
+                .append_review_event(
+                    id.as_str(),
+                    ReviewVerdict::Proposed,
+                    "staged",
+                    "author",
+                    injected_now(),
+                )
+                .unwrap();
+            incoming
+                .append_review_event(
+                    id.as_str(),
+                    ReviewVerdict::Rejected,
+                    "foreign rejection",
+                    "foreign closer",
+                    later_now(),
+                )
+                .unwrap();
+        }
+        let mut local = Store::open(&local_path).unwrap();
+        let applied = local.merge_from(&incoming_path, b"k").unwrap();
+        assert_eq!(
+            applied.added_ids.len(),
+            0,
+            "identical content collapses, nothing minted"
+        );
+        assert!(
+            !local.review_fenced("cap-1").unwrap(),
+            "an incoming proposal must NEVER demote local truth"
+        );
+        assert!(local.review_state_of("cap-1").unwrap().is_none());
+    }
+
+    #[test]
+    fn merge_never_promotes_a_colliding_local_proposal() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_path = dir.path().join("local.sqlite3");
+        let incoming_path = dir.path().join("incoming.sqlite3");
+        {
+            let mut local = Store::open(&local_path).unwrap();
+            let id = local
+                .append(
+                    &capsule("shared content under local review", "nott"),
+                    injected_now(),
+                )
+                .unwrap();
+            local
+                .append_review_event(
+                    id.as_str(),
+                    ReviewVerdict::Proposed,
+                    "local proposal",
+                    "local author",
+                    injected_now(),
+                )
+                .unwrap();
+        }
+        {
+            let mut incoming = Store::open(&incoming_path).unwrap();
+            let id = incoming
+                .append(
+                    &capsule("shared content under local review", "nott"),
+                    injected_now(),
+                )
+                .unwrap();
+            incoming
+                .append_review_event(
+                    id.as_str(),
+                    ReviewVerdict::Proposed,
+                    "foreign proposal",
+                    "foreign author",
+                    injected_now(),
+                )
+                .unwrap();
+            incoming
+                .append_review_event(
+                    id.as_str(),
+                    ReviewVerdict::Ratified,
+                    "foreign ratification",
+                    "foreign closer",
+                    later_now(),
+                )
+                .unwrap();
+        }
+
+        let mut local = Store::open(&local_path).unwrap();
+        let applied = local.merge_from(&incoming_path, b"k").unwrap();
+        assert!(applied.added_ids.is_empty());
+        let state = local.review_state_of("cap-1").unwrap().unwrap();
+        assert_eq!(state.latest(), ReviewVerdict::Proposed);
+        assert_eq!(state.history().len(), 1);
+        assert_eq!(state.history()[0].actor, "local author");
+    }
+
+    /// effort-lifecycle s1 MIGRATION (v15→v19 reconciled): a faithful v15
+    /// file — the FIVE-kind relations CHECK (falsifies present, proposes and
+    /// part_of absent), carrying an `origin='import'` edge — migrates IN PLACE
+    /// on open. Every (kind, from_id, to_id, at, origin) row survives
+    /// BYTE-EXACT, capsule seqs are untouched, the reconciled CHECK gains BOTH
+    /// 'proposes' and 'part_of' in the single folded rebuild, and a fresh
+    /// part_of edge then writes. Mirrors the falsifies-widening test.
+    #[test]
+    fn v15_file_with_five_kind_relations_migrates_to_current_with_part_of() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.sqlite3");
+        let (before_edges, before_seqs) = {
+            let mut store = Store::open(&path).unwrap();
+            store
+                .append(&capsule("effort alpha", "nott"), injected_now())
+                .unwrap(); // cap-1
+            store
+                .append(&capsule("effort beta", "nott"), injected_now())
+                .unwrap(); // cap-2
+            store
+                .append(&capsule("effort gamma", "nott"), injected_now())
+                .unwrap(); // cap-3
+            // A manual blocks edge AND a machine-written (import) supersede
+            // edge — `origin` MUST survive the rebuild byte-exact.
+            store
+                .upsert_relation(RelationKind::Blocks, "cap-1", "cap-2", injected_now())
+                .unwrap();
+            store
+                .upsert_relation_origin(
+                    RelationKind::Supersedes,
+                    "cap-3",
+                    "cap-2",
+                    injected_now(),
+                    RelationOrigin::Import,
+                )
+                .unwrap();
+            let seqs: Vec<i64> = ["cap-1", "cap-2", "cap-3"]
+                .iter()
+                .map(|id| store.get(id).unwrap().unwrap().seq)
+                .collect();
+            (store.all_relations().unwrap(), seqs)
+        };
+
+        // Downgrade to a FAITHFUL v15 shape: rebuild `relations` under the
+        // FIVE-kind CHECK (no part_of), PRESERVING `origin`, and stamp v15.
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE relations_v15 (
+                     kind    TEXT NOT NULL CHECK (kind IN ('supersedes', 'derived_from', 'witnesses', 'blocks', 'falsifies')),
+                     from_id TEXT NOT NULL,
+                     to_id   TEXT NOT NULL,
+                     at      TEXT NOT NULL,
+                     origin  TEXT NOT NULL DEFAULT 'manual' CHECK (origin IN ('manual', 'import')),
+                     PRIMARY KEY (kind, from_id, to_id)
+                 );
+                 INSERT INTO relations_v15 SELECT kind, from_id, to_id, at, origin FROM relations;
+                 DROP TABLE relations;
+                 ALTER TABLE relations_v15 RENAME TO relations;
+                 PRAGMA user_version = 15;",
+            )
+            .unwrap();
+            // Faithful: the v15 five-kind CHECK rejects a raw 'part_of' edge.
+            let raw = conn.execute(
+                "INSERT INTO relations (kind, from_id, to_id, at, origin) \
+                 VALUES ('part_of', 'cap-1', 'cap-3', '2026-07-18T00:00:00Z', 'manual')",
+                [],
+            );
+            assert!(
+                raw.is_err(),
+                "the v15 five-kind CHECK must reject a 'part_of' edge"
+            );
+        }
+
+        // Opening IS the migration — v15 is an enumerated migratable version.
+        let mut store = Store::open(&path).unwrap();
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            let version: i64 = conn
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, SCHEMA_VERSION);
+        }
+        // Every edge survived BYTE-EXACT, origin included (Import stays Import).
+        assert_eq!(
+            store.all_relations().unwrap(),
+            before_edges,
+            "every (kind, from, to, at, origin) row must survive the rebuild"
+        );
+        // Capsule seqs untouched.
+        let after_seqs: Vec<i64> = ["cap-1", "cap-2", "cap-3"]
+            .iter()
+            .map(|id| store.get(id).unwrap().unwrap().seq)
+            .collect();
+        assert_eq!(after_seqs, before_seqs, "capsule seqs must be preserved");
+        // The CHECK moved: the migrated relations DDL carries 'part_of'.
+        let relations_ddl: String = rusqlite::Connection::open(&path)
+            .unwrap()
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'relations'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            relations_ddl.contains("'part_of'"),
+            "migrated relations CHECK must include 'part_of': {relations_ddl}"
+        );
+        // A fresh part_of edge now writes (store layer has no classification
+        // guard — that fence lives at the server boundary).
+        assert!(
+            store
+                .upsert_relation(RelationKind::PartOf, "cap-1", "cap-3", injected_now())
+                .unwrap()
+        );
+    }
+
+    /// effort-lifecycle s1 / planning-plane s1 NO-DRIFT: a v15 file migrated
+    /// to the current v20 has the EXACT relations schema — CHECK text AND
+    /// `pragma_table_info` — of a freshly created v20 store. The shared
+    /// [`relations_create_sql`] makes the two shapes unforgeably identical
+    /// (the falsifies-widening no-drift law, extended to the reconciled
+    /// proposes+part_of+grounded_in set).
+    #[test]
+    fn migrated_v15_and_fresh_relations_schemas_do_not_drift() {
+        let relations_ddl = |path: &std::path::Path| -> String {
+            rusqlite::Connection::open(path)
+                .unwrap()
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'relations'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        let table_info =
+            |path: &std::path::Path| -> Vec<(i64, String, String, i64, Option<String>, i64)> {
+                let conn = rusqlite::Connection::open(path).unwrap();
+                let mut stmt = conn.prepare("PRAGMA table_info(relations)").unwrap();
+                let rows = stmt
+                    .query_map([], |r| {
+                        Ok((
+                            r.get(0)?,
+                            r.get(1)?,
+                            r.get(2)?,
+                            r.get(3)?,
+                            r.get(4)?,
+                            r.get(5)?,
+                        ))
+                    })
+                    .unwrap();
+                rows.map(Result::unwrap).collect()
+            };
+
+        // Fresh v16 store.
+        let fresh_dir = tempfile::tempdir().unwrap();
+        let fresh_path = fresh_dir.path().join("fresh.sqlite3");
+        Store::open(&fresh_path).unwrap();
+
+        // Migrated: create v16, downgrade to a faithful v15, reopen (migrate).
+        let mig_dir = tempfile::tempdir().unwrap();
+        let mig_path = mig_dir.path().join("migrated.sqlite3");
+        Store::open(&mig_path).unwrap();
+        {
+            let conn = rusqlite::Connection::open(&mig_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE relations_v15 (
+                     kind    TEXT NOT NULL CHECK (kind IN ('supersedes', 'derived_from', 'witnesses', 'blocks', 'falsifies')),
+                     from_id TEXT NOT NULL,
+                     to_id   TEXT NOT NULL,
+                     at      TEXT NOT NULL,
+                     origin  TEXT NOT NULL DEFAULT 'manual' CHECK (origin IN ('manual', 'import')),
+                     PRIMARY KEY (kind, from_id, to_id)
+                 );
+                 INSERT INTO relations_v15 SELECT kind, from_id, to_id, at, origin FROM relations;
+                 DROP TABLE relations;
+                 ALTER TABLE relations_v15 RENAME TO relations;
+                 PRAGMA user_version = 15;",
+            )
+            .unwrap();
+        }
+        Store::open(&mig_path).unwrap();
+
+        // The CREATE header differs cosmetically (fresh: `IF NOT EXISTS`;
+        // migrated: the rename target) — the SHARED DDL body from the first
+        // `(` onward (every column + the kind CHECK + the origin CHECK + the
+        // PK) is what must be byte-identical.
+        let body = |ddl: &str| ddl[ddl.find('(').unwrap()..].to_string();
+        let fresh_ddl = relations_ddl(&fresh_path);
+        let mig_ddl = relations_ddl(&mig_path);
+        assert_eq!(
+            body(&fresh_ddl),
+            body(&mig_ddl),
+            "migrated and fresh relations body (columns + CHECK text) must not drift"
+        );
+        assert!(
+            body(&fresh_ddl).contains("'part_of'")
+                && body(&fresh_ddl).contains("'proposes'")
+                && body(&fresh_ddl).contains("'grounded_in'"),
+            "the reconciled eight-kind CHECK is the shared shape"
+        );
+        assert_eq!(
+            table_info(&fresh_path),
+            table_info(&mig_path),
+            "migrated and fresh pragma_table_info must not drift"
+        );
+    }
+
+    /// Review-mandated single-token migration RED (#143 follow-up): a
+    /// faithful v18 shape — relations CHECK admits `proposes` but NEITHER
+    /// `part_of` NOR `grounded_in`, `origin` column present, stamp 18 —
+    /// migrates IN PLACE on open. Only [`relations_missing_part_of_check`]
+    /// and [`relations_lacks_grounded_in`] fire ([`relations_missing_proposes_check`]
+    /// is already false); the single folded rebuild still converges the
+    /// store to the full eight-kind set, every pre-existing edge (including
+    /// the legacy `proposes` edge) survives BYTE-EXACT, and both formerly
+    /// missing kinds write afterward.
+    #[test]
+    fn proposes_only_relations_check_converges_to_the_eight_kind_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.sqlite3");
+        let before = {
+            let mut store = Store::open(&path).unwrap();
+            store
+                .append(&capsule("proposes-only alpha", "nott"), injected_now())
+                .unwrap(); // cap-1
+            store
+                .append(&capsule("proposes-only beta", "nott"), injected_now())
+                .unwrap(); // cap-2
+            store
+                .append(&capsule("proposes-only gamma", "nott"), injected_now())
+                .unwrap(); // cap-3
+            store
+                .upsert_relation(RelationKind::Blocks, "cap-1", "cap-2", injected_now())
+                .unwrap();
+            store
+                .upsert_relation(RelationKind::Proposes, "cap-3", "cap-2", injected_now())
+                .unwrap();
+            store.all_relations().unwrap()
+        };
+        // Downgrade to a FAITHFUL v18 shape: six-kind CHECK (proposes present,
+        // part_of and grounded_in absent), origin column kept, stamp 18.
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE relations_v18 (
+                     kind    TEXT NOT NULL CHECK (kind IN ('supersedes', 'derived_from', 'witnesses', 'blocks', 'falsifies', 'proposes')),
+                     from_id TEXT NOT NULL,
+                     to_id   TEXT NOT NULL,
+                     at      TEXT NOT NULL,
+                     origin  TEXT NOT NULL DEFAULT 'manual' CHECK (origin IN ('manual', 'import')),
+                     PRIMARY KEY (kind, from_id, to_id)
+                 );
+                 INSERT INTO relations_v18 (kind, from_id, to_id, at, origin) \
+                     SELECT kind, from_id, to_id, at, origin FROM relations;
+                 DROP TABLE relations;
+                 ALTER TABLE relations_v18 RENAME TO relations;
+                 PRAGMA user_version = 18;",
+            )
+            .unwrap();
+            // Faithful: this CHECK rejects both still-missing kinds.
+            for bad_kind in ["part_of", "grounded_in"] {
+                let raw = conn.execute(
+                    &format!(
+                        "INSERT INTO relations (kind, from_id, to_id, at, origin) \
+                         VALUES ('{bad_kind}', 'cap-1', 'cap-3', '2026-07-24T00:00:00Z', 'manual')"
+                    ),
+                    [],
+                );
+                assert!(
+                    raw.is_err(),
+                    "the proposes-only v18 CHECK must reject a {bad_kind:?} edge"
+                );
+            }
+        }
+
+        // Opening IS the migration.
+        let mut store = Store::open(&path).unwrap();
+        let version: i64 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION, "proposes-only file re-stamped");
+        assert_eq!(SCHEMA_VERSION, 20);
+
+        // Every edge (including the legacy proposes edge) survives byte-exact.
+        assert_eq!(
+            store.all_relations().unwrap(),
+            before,
+            "every (kind, from, to, at, origin) row must survive the rebuild"
+        );
+
+        // The CHECK moved: both formerly missing kinds now write.
+        assert!(
+            store
+                .upsert_relation(RelationKind::PartOf, "cap-1", "cap-3", injected_now())
+                .unwrap()
+        );
+        assert!(
+            store
+                .upsert_relation(RelationKind::GroundedIn, "cap-2", "cap-3", injected_now())
+                .unwrap()
+        );
+        let relations_ddl: String = rusqlite::Connection::open(&path)
+            .unwrap()
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'relations'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            relations_ddl.contains("'proposes'")
+                && relations_ddl.contains("'part_of'")
+                && relations_ddl.contains("'grounded_in'"),
+            "migrated relations CHECK must admit the full eight-kind set: {relations_ddl}"
+        );
+    }
+
+    /// Review-mandated single-token migration RED (#143 follow-up): the
+    /// OUT-OF-ORDER sibling of the test above — a store whose CHECK admits
+    /// `part_of` but NEITHER `proposes` NOR `grounded_in` (e.g. an
+    /// effort-lifecycle-s1-only binary that never saw #131's `proposes`),
+    /// `origin` column present, stamp 19. Only
+    /// [`relations_missing_proposes_check`] and [`relations_lacks_grounded_in`]
+    /// fire; the same folded rebuild converges it to the full eight-kind set,
+    /// every pre-existing edge (including the legacy `part_of` edge) survives
+    /// BYTE-EXACT, and both formerly missing kinds write afterward.
+    #[test]
+    fn part_of_only_relations_check_converges_to_the_eight_kind_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.sqlite3");
+        let before = {
+            let mut store = Store::open(&path).unwrap();
+            store
+                .append(&capsule("part_of-only alpha", "nott"), injected_now())
+                .unwrap(); // cap-1
+            store
+                .append(&capsule("part_of-only beta", "nott"), injected_now())
+                .unwrap(); // cap-2
+            store
+                .append(&capsule("part_of-only gamma", "nott"), injected_now())
+                .unwrap(); // cap-3
+            store
+                .upsert_relation(RelationKind::Blocks, "cap-1", "cap-2", injected_now())
+                .unwrap();
+            // part_of has no classification write-guard at the store layer —
+            // that fence lives at the server boundary.
+            store
+                .upsert_relation(RelationKind::PartOf, "cap-3", "cap-2", injected_now())
+                .unwrap();
+            store.all_relations().unwrap()
+        };
+        // Downgrade to the out-of-order shape: six-kind CHECK (part_of
+        // present, proposes and grounded_in absent), origin column kept,
+        // stamp 19.
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE relations_v19_oo (
+                     kind    TEXT NOT NULL CHECK (kind IN ('supersedes', 'derived_from', 'witnesses', 'blocks', 'falsifies', 'part_of')),
+                     from_id TEXT NOT NULL,
+                     to_id   TEXT NOT NULL,
+                     at      TEXT NOT NULL,
+                     origin  TEXT NOT NULL DEFAULT 'manual' CHECK (origin IN ('manual', 'import')),
+                     PRIMARY KEY (kind, from_id, to_id)
+                 );
+                 INSERT INTO relations_v19_oo (kind, from_id, to_id, at, origin) \
+                     SELECT kind, from_id, to_id, at, origin FROM relations;
+                 DROP TABLE relations;
+                 ALTER TABLE relations_v19_oo RENAME TO relations;
+                 PRAGMA user_version = 19;",
+            )
+            .unwrap();
+            // Faithful: this CHECK rejects both still-missing kinds.
+            for bad_kind in ["proposes", "grounded_in"] {
+                let raw = conn.execute(
+                    &format!(
+                        "INSERT INTO relations (kind, from_id, to_id, at, origin) \
+                         VALUES ('{bad_kind}', 'cap-1', 'cap-3', '2026-07-24T00:00:00Z', 'manual')"
+                    ),
+                    [],
+                );
+                assert!(
+                    raw.is_err(),
+                    "the part_of-only v19 CHECK must reject a {bad_kind:?} edge"
+                );
+            }
+        }
+
+        // Opening IS the migration.
+        let mut store = Store::open(&path).unwrap();
+        let version: i64 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION, "part_of-only file re-stamped");
+        assert_eq!(SCHEMA_VERSION, 20);
+
+        // Every edge (including the legacy part_of edge) survives byte-exact.
+        assert_eq!(
+            store.all_relations().unwrap(),
+            before,
+            "every (kind, from, to, at, origin) row must survive the rebuild"
+        );
+
+        // The CHECK moved: both formerly missing kinds now write.
+        assert!(
+            store
+                .upsert_relation(RelationKind::Proposes, "cap-1", "cap-3", injected_now())
+                .unwrap()
+        );
+        assert!(
+            store
+                .upsert_relation(RelationKind::GroundedIn, "cap-2", "cap-3", injected_now())
+                .unwrap()
+        );
+        let relations_ddl: String = rusqlite::Connection::open(&path)
+            .unwrap()
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'relations'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            relations_ddl.contains("'proposes'")
+                && relations_ddl.contains("'part_of'")
+                && relations_ddl.contains("'grounded_in'"),
+            "migrated relations CHECK must admit the full eight-kind set: {relations_ddl}"
+        );
+    }
+
+    /// Review-mandated single-token migration RED (#143 follow-up): a
+    /// faithful v19 shape — relations CHECK admits BOTH `proposes` and
+    /// `part_of` but NOT `grounded_in` (the real post-#143 shape this
+    /// integration's own `SCHEMA_VERSION` bump was gated on), `origin`
+    /// column present, stamp 19. Only [`relations_lacks_grounded_in`] fires
+    /// (the other two probes are already false); the SAME folded rebuild
+    /// still runs (a store missing exactly one of the three tokens is not a
+    /// special case), every pre-existing edge (including the legacy
+    /// `proposes` and `part_of` edges) survives BYTE-EXACT, and the
+    /// formerly missing kind writes afterward.
+    #[test]
+    fn proposes_and_part_of_present_converges_on_grounded_in_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.sqlite3");
+        let before = {
+            let mut store = Store::open(&path).unwrap();
+            store
+                .append(&capsule("both-present alpha", "nott"), injected_now())
+                .unwrap(); // cap-1
+            store
+                .append(&capsule("both-present beta", "nott"), injected_now())
+                .unwrap(); // cap-2
+            store
+                .append(&capsule("both-present gamma", "nott"), injected_now())
+                .unwrap(); // cap-3
+            store
+                .upsert_relation(RelationKind::Blocks, "cap-1", "cap-2", injected_now())
+                .unwrap();
+            store
+                .upsert_relation(RelationKind::Proposes, "cap-3", "cap-2", injected_now())
+                .unwrap();
+            store
+                .upsert_relation(RelationKind::PartOf, "cap-1", "cap-3", injected_now())
+                .unwrap();
+            store.all_relations().unwrap()
+        };
+        // Downgrade to a FAITHFUL v19 shape: seven-kind CHECK (proposes AND
+        // part_of present, grounded_in absent), origin column kept, stamp 19.
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE relations_v19 (
+                     kind    TEXT NOT NULL CHECK (kind IN ('supersedes', 'derived_from', 'witnesses', 'blocks', 'falsifies', 'proposes', 'part_of')),
+                     from_id TEXT NOT NULL,
+                     to_id   TEXT NOT NULL,
+                     at      TEXT NOT NULL,
+                     origin  TEXT NOT NULL DEFAULT 'manual' CHECK (origin IN ('manual', 'import')),
+                     PRIMARY KEY (kind, from_id, to_id)
+                 );
+                 INSERT INTO relations_v19 (kind, from_id, to_id, at, origin) \
+                     SELECT kind, from_id, to_id, at, origin FROM relations;
+                 DROP TABLE relations;
+                 ALTER TABLE relations_v19 RENAME TO relations;
+                 PRAGMA user_version = 19;",
+            )
+            .unwrap();
+            // Faithful: this CHECK rejects the one still-missing kind.
+            let raw = conn.execute(
+                "INSERT INTO relations (kind, from_id, to_id, at, origin) \
+                 VALUES ('grounded_in', 'cap-1', 'cap-3', '2026-07-24T00:00:00Z', 'manual')",
+                [],
+            );
+            assert!(
+                raw.is_err(),
+                "the both-present v19 CHECK must reject a 'grounded_in' edge"
+            );
+        }
+
+        // Opening IS the migration.
+        let mut store = Store::open(&path).unwrap();
+        let version: i64 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION, "both-present file re-stamped");
+        assert_eq!(SCHEMA_VERSION, 20);
+
+        // Every edge (including the legacy proposes and part_of edges)
+        // survives byte-exact.
+        assert_eq!(
+            store.all_relations().unwrap(),
+            before,
+            "every (kind, from, to, at, origin) row must survive the rebuild"
+        );
+
+        // The CHECK moved: the one formerly missing kind now writes.
+        assert!(
+            store
+                .upsert_relation(RelationKind::GroundedIn, "cap-2", "cap-3", injected_now())
+                .unwrap()
+        );
+        let relations_ddl: String = rusqlite::Connection::open(&path)
+            .unwrap()
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'relations'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            relations_ddl.contains("'proposes'")
+                && relations_ddl.contains("'part_of'")
+                && relations_ddl.contains("'grounded_in'"),
+            "migrated relations CHECK must admit the full eight-kind set: {relations_ddl}"
         );
     }
 }

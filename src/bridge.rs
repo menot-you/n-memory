@@ -95,8 +95,15 @@
 //! design, so the fence cannot silently erode here — it is wired, and
 //! witnessed, at the integration seam.
 
+use serde::Deserialize;
 use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::fs::File;
+use std::io::Read as _;
+use std::os::fd::OwnedFd;
+use std::path::{Component, Path, PathBuf};
+
+use crate::capsule::sha256_hex;
+use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
 
 /// Closed set of file-based memory sources this bridge may read.
 ///
@@ -119,6 +126,15 @@ pub enum BridgeSource {
     /// (non-recursive, symlinks skipped). A relative path resolves
     /// against `base_dir`; an absolute path stands alone.
     MemoryDir(PathBuf),
+    /// A `notion-pull` export directory: a `manifest.json` naming exported
+    /// pages, each page's markdown at `<dir>/<entry.file>`. Every entry is
+    /// RE-HASHED at read and checked against its manifest `content_sha256`
+    /// (the d27 verifier AT CONSUMPTION) — a mismatch rejects THAT entry
+    /// while untampered entries still read. One candidate per PAGE (a page is
+    /// the unit of proposal/lineage — never a heading split), anchored at the
+    /// page url. Read via [`read_notion_export`] for per-entry reporting; the
+    /// [`read_source`] arm is the fail-closed all-or-nothing view.
+    NotionExportDir(PathBuf),
 }
 
 impl BridgeSource {
@@ -131,6 +147,7 @@ impl BridgeSource {
             BridgeSource::ProjectClaudeMd => "project-claude-md",
             BridgeSource::ProjectAgentsMd => "project-agents-md",
             BridgeSource::MemoryDir(_) => "memory-dir",
+            BridgeSource::NotionExportDir(_) => "notion-export-dir",
         }
     }
 }
@@ -179,6 +196,32 @@ pub enum BridgeError {
         /// Stringified cause (`std::io::Error` is not `Clone`/`Eq`).
         message: String,
     },
+    /// A Notion export `manifest.json` is malformed or carries an
+    /// unsupported version — the whole read fails closed (nothing partial is
+    /// trusted out of a manifest that cannot be parsed).
+    #[error("notion manifest at '{path}' is malformed: {message}")]
+    ManifestInvalid {
+        /// The manifest path that failed to parse.
+        path: PathBuf,
+        /// Stringified cause (serde message or a version rejection).
+        message: String,
+    },
+    /// The d27 verifier AT CONSUMPTION: a Notion page's markdown bytes
+    /// re-hash to a value the manifest did not declare — that ONE entry is
+    /// rejected (untampered entries in the same manifest still read).
+    #[error(
+        "notion page '{page_id}' failed the content_sha256 verifier: \
+         file '{file}' does not match manifest declaration '{expected}'"
+    )]
+    ContentHashMismatch {
+        /// The manifest `page_id` of the rejected entry.
+        page_id: String,
+        /// The manifest-relative content path that was re-hashed.
+        file: String,
+        /// The producer-declared digest; the locally computed digest is never
+        /// retained because exposing it would create a local-file hash oracle.
+        expected: String,
+    },
 }
 
 /// Read one closed source rooted at `base_dir` and split it into
@@ -220,6 +263,25 @@ pub fn read_source(
             read_single(base_dir.join("AGENTS.md"), label, anchor_root)
         }
         BridgeSource::MemoryDir(dir) => read_memory_dir(&base_dir.join(dir), label, anchor_root),
+        BridgeSource::NotionExportDir(dir) => {
+            // `read_source`'s Result contract is all-or-nothing, so this is
+            // the fail-closed view: the FIRST tampered/unreadable entry sinks
+            // the whole read. The import handler drives Notion through
+            // [`read_notion_export`] directly for PER-ENTRY reporting (a
+            // tampered page rejected while the rest import). `anchor_root` is
+            // unused here — a page anchor is a url, never a `path:line`, so it
+            // reads `anchor_live: unknown` regardless of the root.
+            let mut out = Vec::new();
+            for entry in read_notion_export(&base_dir.join(dir))? {
+                let candidate = entry?;
+                out.push(BridgeCandidate {
+                    content: candidate.content,
+                    anchor: candidate.url,
+                    source_label: label.to_string(),
+                });
+            }
+            Ok(out)
+        }
     }
 }
 
@@ -310,6 +372,27 @@ fn read_memory_dir(
 /// final component), while symlinked parent directories are transparently
 /// followed (dotfiles pattern; donor r3 lesson).
 fn read_regular_file(path: &Path) -> Result<Option<String>, BridgeError> {
+    match read_regular_file_bytes(path)? {
+        // The one UTF-8 decode boundary: invalid bytes are a typed Io error
+        // (never lossy), the same "fail-closed, never a panic" answer the
+        // old `read_to_string` gave.
+        Some(bytes) => match String::from_utf8(bytes) {
+            Ok(content) => Ok(Some(content)),
+            Err(e) => Err(BridgeError::Io {
+                path: path.to_path_buf(),
+                message: e.to_string(),
+            }),
+        },
+        None => Ok(None),
+    }
+}
+
+/// Probe-and-read one leaf path as RAW BYTES — the shared symlink-refusing,
+/// regular-file-only read under [`read_regular_file`] (UTF-8 text) and the
+/// Notion content-file re-hash (which must hash the EXACT bytes, before any
+/// UTF-8 decode). `Ok(None)` = absent; a leaf symlink is rejected without
+/// being followed; a non-regular leaf is a typed Io error.
+fn read_regular_file_bytes(path: &Path) -> Result<Option<Vec<u8>>, BridgeError> {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -329,8 +412,8 @@ fn read_regular_file(path: &Path) -> Result<Option<String>, BridgeError> {
             message: "not a regular file".to_string(),
         });
     }
-    match std::fs::read_to_string(path) {
-        Ok(content) => Ok(Some(content)),
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
         // Vanished between probe and read (TOCTOU window, kept narrow):
         // same "absent" answer the probe would have given.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -339,6 +422,268 @@ fn read_regular_file(path: &Path) -> Result<Option<String>, BridgeError> {
             message: e.to_string(),
         }),
     }
+}
+
+/// The only Notion export `manifest.json` version this reader understands.
+/// A newer manifest fails closed ([`BridgeError::ManifestInvalid`]) rather
+/// than being read on optimistic assumptions.
+const NOTION_MANIFEST_VERSION: u32 = 1;
+
+/// The `manifest.json` a `notion-pull` export directory carries. Only the
+/// fields this consumer reads are typed; unknown fields (e.g. `generated_at`)
+/// are ignored so a richer producer manifest stays forward-compatible.
+#[derive(Debug, Clone, Deserialize)]
+struct NotionManifest {
+    /// Manifest format version — only [`NOTION_MANIFEST_VERSION`] is read.
+    version: u32,
+    /// One row per exported page, in the order the import proposes them.
+    entries: Vec<NotionManifestEntry>,
+}
+
+/// One page row of a Notion export manifest.
+#[derive(Debug, Clone, Deserialize)]
+struct NotionManifestEntry {
+    /// The Notion page id — the stable per-page identity carried into
+    /// provenance (`notion:<page_id>`) and the import-block source_key.
+    page_id: String,
+    /// The page url — the capsule anchor (a non-path anchor ⇒ the
+    /// `anchor_live` probe reads `unknown`, honestly).
+    url: String,
+    /// Hex sha256 the producer computed over the EXACT markdown bytes — the
+    /// value this reader re-derives and checks (the d27 consumption verifier).
+    content_sha256: String,
+    /// The page markdown, RELATIVE to the export dir (e.g. `pages/<id>.md`).
+    file: String,
+}
+
+/// One Notion page read from an export directory: the exact markdown as a
+/// UTF-8 string plus the page identity (`page_id`) and its `url` (the capsule
+/// anchor). Produced in manifest order.
+///
+/// Pure data — like [`BridgeCandidate`], nothing here has touched a store or
+/// a taint scanner; the integration contract governs what it must become
+/// before it is ever a capsule (born externally-imported + tainted, and —
+/// for this EXTERNAL source — STAGED as a proposal).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotionCandidate {
+    /// The page's exact markdown bytes, decoded UTF-8.
+    pub content: String,
+    /// The Notion page id (`<page_id>` of `notion:<page_id>`).
+    pub page_id: String,
+    /// The page url — carried onto the capsule as its anchor.
+    pub url: String,
+}
+
+/// Read a `notion-pull` export directory: parse `<dir>/manifest.json`, then
+/// for EACH entry (in manifest order) re-hash `<dir>/<entry.file>` and check
+/// it against `entry.content_sha256`. An untampered entry yields
+/// `Ok(NotionCandidate)`; a tampered or unreadable entry yields a typed
+/// `Err` naming the fault — so ONE bad page never sinks the rest (the caller
+/// reports it per entry). A manifest-level fault (absent / malformed /
+/// unsupported version) fails the whole read closed.
+///
+/// Purity mirrors the rest of this module: no clock, env, randomness, or
+/// network — the export dir path is injected at the boundary. This is the
+/// d27 verifier AT CONSUMPTION: corroboration travels with the bytes, not
+/// with trust in the channel that produced them.
+pub fn read_notion_export(
+    dir: &Path,
+) -> Result<Vec<Result<NotionCandidate, BridgeError>>, BridgeError> {
+    let manifest_path = dir.join("manifest.json");
+    // Pin the export root once. Every manifest path is opened relative to
+    // this descriptor, component by component, so a pathname swap or an
+    // intermediate symlink cannot redirect the subsequent read.
+    let root = open_export_root(dir, &manifest_path)?;
+    let raw = match read_export_file(&root, Path::new("manifest.json"), &manifest_path)? {
+        Some(bytes) => String::from_utf8(bytes).map_err(|e| BridgeError::ManifestInvalid {
+            path: manifest_path.clone(),
+            message: format!("manifest is not valid UTF-8: {e}"),
+        })?,
+        None => {
+            return Err(BridgeError::SourceMissing {
+                source_label: "notion-export-dir",
+                tried: vec![manifest_path],
+            });
+        }
+    };
+    let manifest: NotionManifest =
+        serde_json::from_str(&raw).map_err(|e| BridgeError::ManifestInvalid {
+            path: manifest_path.clone(),
+            message: e.to_string(),
+        })?;
+    if manifest.version != NOTION_MANIFEST_VERSION {
+        return Err(BridgeError::ManifestInvalid {
+            path: manifest_path,
+            message: format!(
+                "unsupported manifest version {} (this reader understands {NOTION_MANIFEST_VERSION})",
+                manifest.version
+            ),
+        });
+    }
+    Ok(manifest
+        .entries
+        .into_iter()
+        .map(|entry| read_notion_entry(&root, dir, entry))
+        .collect())
+}
+
+/// Read and verify ONE Notion manifest entry. The `file` comes from the
+/// manifest (data, never trusted): it must be a plain relative path made only
+/// of normal components, so a manifest can never redirect the read outside
+/// the export dir (the module's closed-read discipline). The content bytes
+/// are re-hashed BEFORE any UTF-8 decode — the manifest hash is over exact
+/// bytes — and only then decoded for the capsule content.
+fn read_notion_entry(
+    root: &OwnedFd,
+    dir: &Path,
+    entry: NotionManifestEntry,
+) -> Result<NotionCandidate, BridgeError> {
+    let rel = Path::new(&entry.file);
+    let inside_dir =
+        !entry.file.is_empty() && rel.components().all(|c| matches!(c, Component::Normal(_)));
+    if !inside_dir {
+        return Err(BridgeError::ManifestInvalid {
+            path: dir.join(&entry.file),
+            message: format!(
+                "entry file '{}' is not a plain relative path inside the export dir",
+                entry.file
+            ),
+        });
+    }
+    let content_path = dir.join(rel);
+    let bytes = match read_export_file(root, rel, &content_path)? {
+        Some(bytes) => bytes,
+        None => {
+            return Err(BridgeError::Io {
+                path: content_path,
+                message: "notion export content file is missing".to_string(),
+            });
+        }
+    };
+    // The d27 verifier: hash the EXACT bytes and compare, before decoding.
+    let actual = sha256_hex(&bytes);
+    if actual != entry.content_sha256 {
+        return Err(BridgeError::ContentHashMismatch {
+            page_id: entry.page_id,
+            file: entry.file,
+            expected: entry.content_sha256,
+        });
+    }
+    let content = String::from_utf8(bytes).map_err(|e| BridgeError::Io {
+        path: content_path,
+        message: format!("notion export content is not valid UTF-8: {e}"),
+    })?;
+    Ok(NotionCandidate {
+        content,
+        page_id: entry.page_id,
+        url: entry.url,
+    })
+}
+
+/// Open and pin the export directory itself. The leaf may not be a symlink;
+/// every entry walk remains relative to this descriptor.
+fn open_export_root(dir: &Path, manifest_path: &Path) -> Result<OwnedFd, BridgeError> {
+    match open(
+        dir,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(fd) => Ok(fd),
+        Err(error) if error == rustix::io::Errno::NOENT => Err(BridgeError::SourceMissing {
+            source_label: "notion-export-dir",
+            tried: vec![manifest_path.to_path_buf()],
+        }),
+        Err(error) if error == rustix::io::Errno::LOOP => {
+            Err(BridgeError::SymlinkRejected(dir.to_path_buf()))
+        }
+        Err(error) if error == rustix::io::Errno::NOTDIR => {
+            Err(BridgeError::NotADirectory(dir.to_path_buf()))
+        }
+        Err(error) => Err(BridgeError::Io {
+            path: dir.to_path_buf(),
+            message: error.to_string(),
+        }),
+    }
+}
+
+/// Read one plain relative file below an already-open export root. Every
+/// intermediate component is opened as `DIRECTORY|NOFOLLOW`; the final
+/// component is opened `NOFOLLOW`, proven regular with `fstat`, then read
+/// from that same descriptor. No check-then-reopen window exists.
+fn read_export_file(
+    root: &OwnedFd,
+    relative: &Path,
+    display_path: &Path,
+) -> Result<Option<Vec<u8>>, BridgeError> {
+    let mut components = Vec::new();
+    for component in relative.components() {
+        match component {
+            Component::Normal(name) => components.push(name),
+            _ => {
+                return Err(BridgeError::Io {
+                    path: display_path.to_path_buf(),
+                    message: "export file path is not plain relative".to_string(),
+                });
+            }
+        }
+    }
+    if components.is_empty() {
+        return Err(BridgeError::Io {
+            path: display_path.to_path_buf(),
+            message: "empty export file path".to_string(),
+        });
+    }
+
+    let mut current: Option<OwnedFd> = None;
+    for (index, component) in components.iter().enumerate() {
+        let final_component = index + 1 == components.len();
+        let flags = if final_component {
+            OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC
+        } else {
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC
+        };
+        let opened = match current.as_ref() {
+            Some(directory) => openat(directory, *component, flags, Mode::empty()),
+            None => openat(root, *component, flags, Mode::empty()),
+        };
+        match opened {
+            Ok(fd) => current = Some(fd),
+            Err(error) if error == rustix::io::Errno::NOENT => return Ok(None),
+            Err(error) if error == rustix::io::Errno::LOOP => {
+                return Err(BridgeError::SymlinkRejected(display_path.to_path_buf()));
+            }
+            Err(error) => {
+                return Err(BridgeError::Io {
+                    path: display_path.to_path_buf(),
+                    message: format!("descriptor-relative open rejected the path: {error}"),
+                });
+            }
+        }
+    }
+
+    let descriptor = current.ok_or_else(|| BridgeError::Io {
+        path: display_path.to_path_buf(),
+        message: "export file descriptor was not opened".to_string(),
+    })?;
+    let stat = fstat(&descriptor).map_err(|error| BridgeError::Io {
+        path: display_path.to_path_buf(),
+        message: format!("cannot inspect opened export file: {error}"),
+    })?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
+        return Err(BridgeError::Io {
+            path: display_path.to_path_buf(),
+            message: "not a regular file".to_string(),
+        });
+    }
+
+    let mut bytes = Vec::new();
+    File::from(descriptor)
+        .read_to_end(&mut bytes)
+        .map_err(|error| BridgeError::Io {
+            path: display_path.to_path_buf(),
+            message: error.to_string(),
+        })?;
+    Ok(Some(bytes))
 }
 
 /// Split one file's content and wrap each piece as a [`BridgeCandidate`]
@@ -785,5 +1130,292 @@ mod tests {
         let doc = "\n\n# H\nbody\n";
         let got = split_document(doc);
         assert_eq!(got, vec![(3, "# H\nbody".to_string())]);
+    }
+
+    // ---- S5b: notion export reader (the d27 verifier at consumption) ----
+
+    /// Build a synthetic notion-pull export under `dir`: a `manifest.json`
+    /// plus one `pages/<page_id>.md` per page, each entry's `content_sha256`
+    /// the REAL hash of the bytes written (so untampered pages verify). The
+    /// manifest carries the producer's extra fields (`title`,
+    /// `last_edited_time`, `generated_at`) to prove the reader ignores them.
+    /// (d15: synthetic only — never a real store or real Notion.)
+    fn write_export(dir: &Path, pages: &[(&str, &str, &str)]) {
+        std::fs::create_dir_all(dir.join("pages")).unwrap();
+        let entries: Vec<_> = pages
+            .iter()
+            .map(|(page_id, url, markdown)| {
+                let file = format!("pages/{page_id}.md");
+                std::fs::write(dir.join(&file), markdown.as_bytes()).unwrap();
+                serde_json::json!({
+                    "page_id": page_id,
+                    "title": format!("Title {page_id}"),
+                    "url": url,
+                    "last_edited_time": "2026-07-23T00:00:00Z",
+                    "content_sha256": sha256_hex(markdown.as_bytes()),
+                    "file": file,
+                })
+            })
+            .collect();
+        let manifest = serde_json::json!({
+            "version": 1,
+            "generated_at": "2026-07-23T00:00:00Z",
+            "entries": entries,
+        });
+        std::fs::write(
+            dir.join("manifest.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn notion_export_reads_untampered_pages_in_manifest_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("export");
+        write_export(
+            &dir,
+            &[
+                ("page-a", "https://notion.so/page-a", "# A\nalpha body\n"),
+                ("page-b", "https://notion.so/page-b", "# B\nbeta body\n"),
+            ],
+        );
+        let got = read_notion_export(&dir).unwrap();
+        assert_eq!(got.len(), 2, "one candidate per page, manifest order");
+        let a = got[0].as_ref().unwrap();
+        assert_eq!(a.page_id, "page-a");
+        assert_eq!(a.url, "https://notion.so/page-a");
+        assert_eq!(a.content, "# A\nalpha body\n", "exact bytes, whole page");
+        assert_eq!(got[1].as_ref().unwrap().page_id, "page-b");
+    }
+
+    #[test]
+    fn notion_export_tampered_entry_rejected_naming_mismatch_others_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("export");
+        write_export(
+            &dir,
+            &[
+                ("page-a", "https://notion.so/page-a", "alpha stays honest\n"),
+                ("page-b", "https://notion.so/page-b", "beta original\n"),
+            ],
+        );
+        // Flip the bytes of page-b WITHOUT re-stamping the manifest hash — the
+        // consumption verifier must reject exactly that entry.
+        let expected_hash = sha256_hex(b"beta original\n");
+        let tampered = "beta TAMPERED\n";
+        let tampered_hash = sha256_hex(tampered.as_bytes());
+        std::fs::write(dir.join("pages/page-b.md"), tampered).unwrap();
+        let got = read_notion_export(&dir).unwrap();
+        assert_eq!(got.len(), 2);
+        assert!(got[0].is_ok(), "untampered page-a still reads");
+        let err = got[1].as_ref().unwrap_err();
+        match err {
+            BridgeError::ContentHashMismatch { page_id, .. } => assert_eq!(page_id, "page-b"),
+            other => panic!("expected ContentHashMismatch, got {other:?}"),
+        }
+        let msg = err.to_string();
+        assert!(msg.contains("content_sha256 verifier"), "{msg}");
+        assert!(msg.contains("page-b"), "names the page: {msg}");
+        assert!(
+            msg.contains(&expected_hash),
+            "the manifest-declared hash remains useful diagnostic context: {msg}"
+        );
+        assert!(
+            !msg.contains(&tampered_hash),
+            "the actual file hash is a local-file oracle and must stay private: {msg}"
+        );
+        let debug = format!("{err:?}");
+        assert!(
+            debug.contains(&expected_hash),
+            "the typed error retains the manifest-declared hash: {debug}"
+        );
+        assert!(
+            !debug.contains(&tampered_hash),
+            "the typed error must not retain the actual local-file hash: {debug}"
+        );
+    }
+
+    #[test]
+    fn notion_export_missing_manifest_is_source_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("export");
+        std::fs::create_dir_all(&dir).unwrap();
+        let err = read_notion_export(&dir).unwrap_err();
+        assert!(matches!(err, BridgeError::SourceMissing { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn notion_export_malformed_manifest_is_typed_manifest_invalid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("export");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("manifest.json"), b"{ not json ]").unwrap();
+        let err = read_notion_export(&dir).unwrap_err();
+        assert!(
+            matches!(err, BridgeError::ManifestInvalid { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn notion_export_unsupported_version_fails_closed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("export");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("manifest.json"),
+            serde_json::to_vec(&serde_json::json!({"version": 2, "entries": []})).unwrap(),
+        )
+        .unwrap();
+        let err = read_notion_export(&dir).unwrap_err();
+        assert!(
+            matches!(&err, BridgeError::ManifestInvalid { message, .. } if message.contains("version")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn notion_export_rejects_a_content_path_escaping_the_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("export");
+        std::fs::create_dir_all(&dir).unwrap();
+        // A traversal `file` must never redirect the read outside the dir —
+        // the closed-read discipline, checked per entry.
+        std::fs::write(
+            dir.join("manifest.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1,
+                "entries": [{
+                    "page_id": "evil",
+                    "url": "https://notion.so/evil",
+                    "content_sha256": "00",
+                    "file": "../escape.md"
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let got = read_notion_export(&dir).unwrap();
+        assert_eq!(got.len(), 1);
+        assert!(
+            matches!(
+                got[0].as_ref().unwrap_err(),
+                BridgeError::ManifestInvalid { .. }
+            ),
+            "a traversal file path is rejected, never read"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notion_export_rejects_an_intermediate_symlink_without_reading_its_target() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("export");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(dir.join("pages")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+
+        let secret = b"outside secret\n";
+        std::fs::write(outside.join("credentials.md"), secret).unwrap();
+        symlink(&outside, dir.join("pages/sub")).unwrap();
+        std::fs::write(
+            dir.join("manifest.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1,
+                "entries": [{
+                    "page_id": "escape",
+                    "url": "https://notion.so/escape",
+                    "content_sha256": sha256_hex(secret),
+                    "file": "pages/sub/credentials.md"
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let got = read_notion_export(&dir).unwrap();
+        assert_eq!(got.len(), 1);
+        assert!(
+            got[0].is_err(),
+            "an intermediate symlink escaped the export root and read outside bytes"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notion_export_root_descriptor_is_not_retargeted_by_path_replacement() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("export");
+        let moved = tmp.path().join("pinned-export");
+        let manifest_path = dir.join("manifest.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&manifest_path, b"original").unwrap();
+
+        let root = open_export_root(&dir, &manifest_path).unwrap();
+        std::fs::rename(&dir, &moved).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("manifest.json"), b"attacker").unwrap();
+
+        let bytes = read_export_file(&root, Path::new("manifest.json"), &manifest_path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            bytes, b"original",
+            "the opened root descriptor, not the replaced pathname, owns the read"
+        );
+    }
+
+    #[test]
+    fn read_source_notion_is_all_or_nothing_and_anchors_at_the_url() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("export");
+        write_export(&dir, &[("page-a", "https://notion.so/page-a", "alpha\n")]);
+        // The uniform read maps each page to a BridgeCandidate anchored at the
+        // url with the kind label.
+        let got = read_source(
+            &BridgeSource::NotionExportDir(PathBuf::from("export")),
+            tmp.path(),
+            tmp.path(),
+        )
+        .unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].anchor, "https://notion.so/page-a");
+        assert_eq!(got[0].source_label, "notion-export-dir");
+        // A tampered entry sinks the WHOLE read here (Result all-or-nothing).
+        std::fs::write(dir.join("pages/page-a.md"), "alpha TAMPERED\n").unwrap();
+        let err = read_source(
+            &BridgeSource::NotionExportDir(PathBuf::from("export")),
+            tmp.path(),
+            tmp.path(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, BridgeError::ContentHashMismatch { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn bridge_import_path_constructs_no_network_client() {
+        // Zero-network layering (binding law 1): the bridge reader is fs +
+        // hashing only — no transport type is reachable from it. Needles are
+        // concatenated so this test's own text never trips the scan.
+        let source = include_str!("bridge.rs");
+        let needles = [
+            format!("{}{}", "Tcp", "Stream"),
+            format!("{}{}", "Udp", "Socket"),
+            format!("{}{}", "req", "west"),
+            format!("{}{}", "hy", "per::"),
+            format!("{}{}", "u", "req::"),
+        ];
+        for needle in &needles {
+            assert!(
+                !source.contains(needle.as_str()),
+                "bridge must construct no network client (found {needle})"
+            );
+        }
     }
 }

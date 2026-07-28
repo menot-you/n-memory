@@ -1,0 +1,45 @@
+{
+  "name": "nmemory",
+  "version": "0.2.0",
+  "description": "Hermetic local memory for coding agents over MCP: capture with mandatory provenance, recall that is grounded or abstains. One binary, one SQLite file, zero network sockets on serve and recall.",
+  "license": "AGPL-3.0-only",
+  "homepage": "https://no.tt",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/menot-you/n-memory.git",
+    "directory": "npm"
+  },
+  "bugs": {
+    "url": "https://github.com/menot-you/n-memory/issues"
+  },
+  "keywords": [
+    "mcp",
+    "memory",
+    "agent",
+    "sqlite",
+    "llm"
+  ],
+  "type": "module",
+  "bin": {
+    "nmemory": "bin/nmemory.mjs"
+  },
+  "files": [
+    "bin/nmemory.mjs",
+    "install.mjs"
+  ],
+  "scripts": {
+    "postinstall": "node install.mjs"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "os": [
+    "linux",
+    "darwin",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ]
+}

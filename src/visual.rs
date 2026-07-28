@@ -8,7 +8,7 @@
 //! comment + header sit above the hashed span, exactly as export's title
 //! and digest line sit above its body).
 //!
-//! Three read-only projections, selected by the closed [`VisualView`] enum:
+//! Four read-only projections, selected by the closed [`VisualView`] enum:
 //!
 //! - **`dag`** — the blocks-dag as `graph TD`, ready / blocked / done nodes
 //!   each styled distinctly. It obeys the SAME law as `memory_digest`'s dag
@@ -29,6 +29,9 @@
 //!   (active / archived / quarantined) as a `flowchart`, each node annotated
 //!   with the SHARED headline ([`crate::retrieve::headline_of`] — the one
 //!   headline law across every surface).
+//! - **`sessions`** — the exact store-local label union as a `flowchart`,
+//!   showing capsule-row saves, grounded receipt-row recalls, and whether the
+//!   label has an open bracket, a closed bracket, or no local bracket.
 //!
 //! ## Syntax safety
 //!
@@ -37,12 +40,14 @@
 //! that could terminate or confuse a quoted label (`"`, brackets, braces,
 //! parens, angle brackets, pipes, backticks) and folds control characters to
 //! spaces, so no stored first line can break the diagram — the sanitizer's
-//! postconditions are pinned by test below. [`node_id`] independently
-//! sanitizes the identifier position.
+//! postconditions are pinned by test below. Session labels first receive an
+//! injective visible escape for backslashes and controls, so distinct exact
+//! labels can never collapse onto one human label before [`mermaid_label`].
+//! [`node_id`] independently sanitizes the identifier position.
 //!
 //! This module is PURE: every renderer is a deterministic function of its
-//! inputs (edges, tombstones, tier rows). The [`crate::server`] handler does
-//! the store I/O and hands the data down. The `dag`/`relations` renderers are
+//! inputs (edges, tombstones, tier rows, session rows). The [`crate::server`]
+//! handler does the store I/O and hands the data down. The `dag`/`relations` renderers are
 //! STORE-GLOBAL by construction — they take no fence, so nothing can restrict
 //! them to a subtree and hide a cross-fence blocks-cycle behind a healthy
 //! graph; only `tiers` is scoped, and the handler fences it before this layer.
@@ -54,7 +59,7 @@ use serde::{Deserialize, Serialize};
 use crate::capsule::sha256_hex;
 use crate::relation::{Dag, RelationKind, RelationRecord};
 use crate::retrieve::{AdvisoryLabel, DataFraming};
-use crate::store::Tier;
+use crate::store::{SessionLabelState, Tier};
 
 /// The closed projection vocabulary on the wire. An out-of-set value is a
 /// schema-level rejection (no catch-all arm), exactly like every other
@@ -68,20 +73,23 @@ pub enum VisualView {
     Relations,
     /// Capsule ids grouped by effective lifecycle tier (`flowchart`).
     Tiers,
+    /// Store-local session label activity (`flowchart`).
+    Sessions,
 }
 
 /// `memory_visual` params: the projection, and an optional tiers-only fence.
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct VisualParams {
-    /// Which projection to render — closed set `dag` | `relations` | `tiers`.
+    /// Which projection to render — closed set `dag` | `relations` | `tiers`
+    /// | `sessions`.
     pub view: VisualView,
     /// Optional subtree fence honored ONLY by `view=tiers` (the capsule-set
     /// view), exactly like `memory_digest`'s capsule sections (exact id or
     /// id + `/...`; an empty or `/`-terminated prefix is rejected with a
-    /// teaching error). `dag` and `relations` are STORE-GLOBAL like
-    /// `memory_digest` and take no fence: a prefix passed with either is
-    /// rejected by the handler, never silently ignored.
+    /// teaching error). `dag`, `relations`, and `sessions` are STORE-GLOBAL
+    /// like `memory_digest` and take no fence: a prefix passed with any of
+    /// them is rejected by the handler, never silently ignored.
     #[serde(default)]
     pub project_prefix: Option<String>,
 }
@@ -110,6 +118,20 @@ pub struct TierRow {
     pub tier: Tier,
     /// The headline — the SHARED first-line truncation, not a private copy.
     pub headline: String,
+}
+
+/// One ordered row for the `sessions` projection. The store supplies exact
+/// labels and physical row counts; this pure layer only renders them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionRow {
+    /// Character-exact store-local label.
+    pub session_id: String,
+    /// Capsule rows carrying the label, including tombstone skeletons.
+    pub saves: usize,
+    /// Grounded recall receipt rows carrying the label.
+    pub recalls: usize,
+    /// Local bracket state, or label-only when no bracket exists here.
+    pub state: SessionLabelState,
 }
 
 /// Render the `dag` projection. `edges` is the whole converted relation set —
@@ -332,7 +354,71 @@ pub fn render_tiers(rows: &[TierRow]) -> String {
     frame("tiers", "flowchart TB", &counts, &body)
 }
 
+/// Render exact store-local session label activity as declaration-ordered
+/// nodes. Node ids are ordinals rather than sanitized labels: labels such as
+/// `sess-a` and `sess_a` therefore cannot collide structurally. There are no
+/// arrows — input order itself is the projection order fixed by the store.
+#[must_use]
+pub fn render_sessions(rows: &[SessionRow]) -> String {
+    let mut open = 0usize;
+    let mut closed = 0usize;
+    let mut label_only = 0usize;
+    let mut body = Vec::with_capacity(rows.len().max(1));
+    for (index, row) in rows.iter().enumerate() {
+        let state = match row.state {
+            SessionLabelState::Open => {
+                open += 1;
+                "open"
+            }
+            SessionLabelState::Closed => {
+                closed += 1;
+                "closed"
+            }
+            SessionLabelState::LabelOnly => {
+                label_only += 1;
+                "label only"
+            }
+        };
+        let exact_label = visible_session_label(&row.session_id);
+        let label = mermaid_label(&format!(
+            "{exact_label} · {} saves · {} recalls · {state}",
+            row.saves, row.recalls
+        ));
+        body.push(format!("    session_{}[\"{label}\"]", index + 1));
+    }
+    if body.is_empty() {
+        body.push(placeholder("no session labels"));
+    }
+    let counts = format!(
+        "sessions={} open={open} closed={closed} label_only={label_only}",
+        rows.len()
+    );
+    frame("sessions", "flowchart TD", &counts, &body)
+}
+
 // --- shared, deterministic helpers -----------------------------------------
+
+/// Injective visible representation for an exact session label before the
+/// shared Mermaid encoder. A literal backslash doubles first; every control
+/// character plus the Unicode line/paragraph separators becomes `\u{HEX}`
+/// with uppercase minimal hex. Thus NUL, a space, and the literal text
+/// `\u{0}` remain three distinct labels while no control reaches Mermaid.
+fn visible_session_label(label: &str) -> String {
+    let mut visible = String::with_capacity(label.len());
+    for c in label.chars() {
+        match c {
+            '\\' => visible.push_str("\\\\"),
+            '\u{2028}' | '\u{2029}' => {
+                visible.push_str(&format!("\\u{{{:X}}}", u32::from(c)));
+            }
+            c if c.is_control() => {
+                visible.push_str(&format!("\\u{{{:X}}}", u32::from(c)));
+            }
+            c => visible.push(c),
+        }
+    }
+    visible
+}
 
 /// Assemble the final diagram: the header, a provenance comment carrying the
 /// counts and a `body sha256`, then the body. The sha covers EXACTLY the body
@@ -390,6 +476,9 @@ const fn kind_rank(kind: RelationKind) -> usize {
         RelationKind::Witnesses => 2,
         RelationKind::Blocks => 3,
         RelationKind::Falsifies => 4,
+        RelationKind::Proposes => 5,
+        RelationKind::PartOf => 6,
+        RelationKind::GroundedIn => 7,
     }
 }
 
@@ -472,6 +561,20 @@ mod tests {
             id: id.to_string(),
             tier,
             headline: headline.to_string(),
+        }
+    }
+
+    fn session_row(
+        session_id: &str,
+        saves: usize,
+        recalls: usize,
+        state: SessionLabelState,
+    ) -> SessionRow {
+        SessionRow {
+            session_id: session_id.to_string(),
+            saves,
+            recalls,
+            state,
         }
     }
 
@@ -712,6 +815,110 @@ mod tests {
         );
         assert!(out.contains("flowchart TB\n"), "tiers header:\n{out}");
         assert_eq!(out, render_tiers(&rows), "deterministic");
+    }
+
+    #[test]
+    fn sessions_render_is_an_exact_deterministic_golden() {
+        let rows = vec![
+            session_row("sess-1", 3, 2, SessionLabelState::Closed),
+            session_row("sess-2", 0, 0, SessionLabelState::Open),
+        ];
+        let expected = concat!(
+            "flowchart TD\n",
+            "%% nMEMORY visual · view=sessions · sessions=2 open=1 closed=1 label_only=0 · ",
+            "body sha256:4810376efe3d734604868a08fb93d08aa0ff99da5ebd4da29468caf4521d55ae\n",
+            "    session_1[\"sess-1 · 3 saves · 2 recalls · closed\"]\n",
+            "    session_2[\"sess-2 · 0 saves · 0 recalls · open\"]\n",
+        );
+        assert_eq!(render_sessions(&rows), expected);
+        assert_eq!(render_sessions(&rows), render_sessions(&rows));
+    }
+
+    #[test]
+    fn sessions_use_ordinal_node_ids_and_sanitize_exact_labels() {
+        let hostile = "evil \" ] } | ` #\nnext\u{0007}\u{2028}";
+        let rows = vec![
+            session_row("sess-a", 1, 0, SessionLabelState::Open),
+            session_row("sess_a", 0, 1, SessionLabelState::Closed),
+            session_row(hostile, 2, 3, SessionLabelState::LabelOnly),
+        ];
+        let out = render_sessions(&rows);
+        assert!(out.contains("    session_1[\"sess-a · 1 saves · 0 recalls · open\"]"));
+        assert!(out.contains("    session_2[\"sess_a · 0 saves · 1 recalls · closed\"]"));
+        assert_eq!(
+            out.lines()
+                .filter(|line| line.trim_start().starts_with("session_"))
+                .count(),
+            3,
+            "labels that sanitize alike never become node identifiers:\n{out}"
+        );
+        assert!(
+            !out.contains("\n    sess_a["),
+            "raw label became an id:\n{out}"
+        );
+        for label in quoted_labels(&out) {
+            assert_label_safe(&label);
+        }
+        assert!(out.contains("label only"));
+        assert!(out.contains("#quot;") && out.contains("#93;") && out.contains("#35;"));
+        assert!(
+            out.contains("\\u#123;A#125;"),
+            "newline stays a visible codepoint after Mermaid entity encoding:\n{out}"
+        );
+        assert!(
+            out.contains("\\u#123;7#125;"),
+            "control stays a visible codepoint after Mermaid entity encoding:\n{out}"
+        );
+        assert!(
+            out.contains("\\u#123;2028#125;"),
+            "unicode line separator stays a visible codepoint after Mermaid entity encoding:\n{out}"
+        );
+    }
+
+    #[test]
+    fn sessions_keep_control_bearing_labels_visibly_distinct() {
+        let rows = vec![
+            session_row("alpha\0beta", 1, 0, SessionLabelState::LabelOnly),
+            session_row("alpha beta", 1, 0, SessionLabelState::LabelOnly),
+            session_row("alpha\\u{0}beta", 1, 0, SessionLabelState::LabelOnly),
+        ];
+        let out = render_sessions(&rows);
+        let labels = quoted_labels(&out);
+        assert_eq!(labels.len(), 3, "one quoted label per session node:\n{out}");
+        assert_ne!(labels[0], labels[1], "NUL must not collapse onto a space");
+        assert_ne!(
+            labels[0], labels[2],
+            "escaped control must not collide with a literal escape sequence"
+        );
+        assert!(
+            labels[0].starts_with(r"alpha\u#123;0#125;beta"),
+            "control uses uppercase minimal hex: {:?}",
+            labels[0]
+        );
+        assert!(
+            labels[2].starts_with(r"alpha\\u#123;0#125;beta"),
+            "literal backslash is escaped before codepoint rendering: {:?}",
+            labels[2]
+        );
+        for label in labels {
+            assert_label_safe(&label);
+        }
+    }
+
+    #[test]
+    fn empty_sessions_render_has_placeholder_and_zero_session_nodes() {
+        let expected = concat!(
+            "flowchart TD\n",
+            "%% nMEMORY visual · view=sessions · sessions=0 open=0 closed=0 label_only=0 · ",
+            "body sha256:d799829ec2b7a7ab37cb1d0824b602f7a777f83dc2450a7b8c84f8c119db58b5\n",
+            "    empty[\"no session labels\"]\n",
+        );
+        let out = render_sessions(&[]);
+        assert_eq!(out, expected);
+        assert!(
+            !out.contains("session_1"),
+            "no synthetic session node:\n{out}"
+        );
     }
 
     #[test]

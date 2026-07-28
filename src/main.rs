@@ -14,8 +14,10 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use nmemory::ingest::IngestDefaults;
-use nmemory::server::{BoundaryConfig, DigestParams, MemoryServer, RetrieveParams};
+use nmemory::ingest::{DEFAULT_PROJECT_ID, IngestDefaults};
+use nmemory::server::{
+    BoundaryConfig, DigestParams, MemoryServer, RelateParams, RelationKindParam, RetrieveParams,
+};
 use nmemory::store::Store;
 use nmemory::sync;
 use rmcp::ServiceExt;
@@ -27,7 +29,10 @@ const USAGE: &str = "usage: nmemory [--db <path>] [--project <id>] [--version]\n
                      nmemory sync --remote <[user@]host:/path> [--db <path>] [--push]\n   or: \
                      nmemory recall --terms <term[,term...]> [--limit <n>] [--budget <n>] \
                      [--project-prefix <p>] [--db <path>]\n   or: nmemory digest \
-                     [--project-prefix <p>] [--db <path>]";
+                     [--headlines <n>] [--project-prefix <p>] [--db <path>]\n   or: \
+                     nmemory backup --to <path> [--db <path>]\n   or: nmemory git-scan --repo \
+                     <path> [--project <prefix>] [--db <path>] [--max-commits <n>]\n   or: \
+                     nmemory relate --kind <kind> --from <cap-id> --to <cap-id> [--db <path>]";
 
 /// Usage for the `sync` subcommand, printed with `sync --help` and on its
 /// argument errors.
@@ -40,11 +45,26 @@ const RECALL_USAGE: &str = "usage: nmemory recall --terms <term[,term...]> [--te
 
 /// Usage for the `digest` subcommand, printed with `digest --help` and on
 /// its argument errors.
-const DIGEST_USAGE: &str = "usage: nmemory digest [--project-prefix <p>] [--db <path>]";
+const DIGEST_USAGE: &str =
+    "usage: nmemory digest [--headlines <n>] [--project-prefix <p>] [--db <path>]";
 
-/// Default `scope.project_id` fence when neither `--project` nor
-/// `NMEMORY_PROJECT` names one.
-const DEFAULT_PROJECT: &str = "default";
+/// Usage for the `backup` subcommand, printed with `backup --help` and on
+/// its argument errors.
+const BACKUP_USAGE: &str = "usage: nmemory backup --to <path> [--db <path>]";
+
+/// Usage for the `git-scan` subcommand, printed with `git-scan --help` and on
+/// its argument errors.
+const GIT_SCAN_USAGE: &str = "usage: nmemory git-scan --repo <path> [--project <prefix>] \
+                              [--db <path>] [--max-commits <n>]";
+
+/// Usage for the `relate` subcommand, printed with `relate --help` and on
+/// its argument errors. The kind list is the closed wire vocabulary
+/// [`RelationKindParam`] deserializes (`#[serde(rename_all = "snake_case")]`)
+/// — kept in sync by the parser deserializing straight into that type
+/// rather than re-declaring the set here (see [`parse_relation_kind`]).
+const RELATE_USAGE: &str = "usage: nmemory relate --kind \
+                            <supersedes|derived_from|witnesses|blocks|falsifies|proposes|\
+                            part_of|grounded_in> --from <cap-id> --to <cap-id> [--db <path>]";
 
 /// Typed boot failures — printed to stderr, exit code 1, never a panic.
 #[derive(Debug, thiserror::Error)]
@@ -61,6 +81,21 @@ enum BootError {
     /// Malformed `digest` subcommand line (fail closed on anything unknown).
     #[error("{0}\n{DIGEST_USAGE}")]
     DigestUsage(String),
+    /// Malformed `backup` subcommand line (fail closed on anything unknown).
+    #[error("{0}\n{BACKUP_USAGE}")]
+    BackupUsage(String),
+    /// The online backup snapshot could not be written to the destination —
+    /// phase-specific mapping of a [`nmemory::store::StoreError`], kept
+    /// distinct from the OPEN failure so the message names what failed.
+    #[error("backup failed: {0}")]
+    Backup(nmemory::store::StoreError),
+    /// Malformed `git-scan` subcommand line (fail closed on anything unknown).
+    #[error("{0}\n{GIT_SCAN_USAGE}")]
+    GitScanUsage(String),
+    /// Malformed `relate` subcommand line (fail closed on anything unknown,
+    /// including a `--kind` outside the closed 8-kind wire vocabulary).
+    #[error("{0}\n{RELATE_USAGE}")]
+    RelateUsage(String),
     /// A one-shot verb's tool handler answered with an error — surfaced
     /// verbatim on stderr, exit 1; the hook callers stay fail-open.
     #[error("{verb}: {message}")]
@@ -201,7 +236,38 @@ struct RecallArgs {
 /// Parsed `nmemory digest` command line.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct DigestArgs {
+    headlines: Option<usize>,
     project_prefix: Option<String>,
+    db: Option<PathBuf>,
+    help: bool,
+}
+
+/// Parsed `nmemory backup` command line.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct BackupArgs {
+    to: Option<PathBuf>,
+    db: Option<PathBuf>,
+    help: bool,
+}
+
+/// Parsed `nmemory git-scan` command line.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct GitScanArgs {
+    repo: Option<PathBuf>,
+    project: Option<String>,
+    db: Option<PathBuf>,
+    max_commits: Option<usize>,
+    help: bool,
+}
+
+/// Parsed `nmemory relate` command line. `kind` stays a raw string here —
+/// [`parse_relation_kind`] validates it against the closed wire vocabulary
+/// at dispatch time, the SAME deserialization `memory_relate` runs over MCP.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct RelateArgs {
+    kind: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
     db: Option<PathBuf>,
     help: bool,
 }
@@ -312,7 +378,10 @@ fn parse_recall_args(argv: &[String]) -> Result<RecallArgs, BootError> {
 }
 
 /// Parse `nmemory digest` args (the `digest` token already consumed).
-/// Unknown arguments fail closed.
+/// `--headlines` is the SAME global list cap N the `memory_digest` tool takes
+/// (omitted → the server default), so a shell caller can raise a truncating
+/// section instead of re-reading it project by project. Unknown arguments fail
+/// closed.
 fn parse_digest_args(argv: &[String]) -> Result<DigestArgs, BootError> {
     let usage: fn(String) -> BootError = BootError::DigestUsage;
     let mut args = DigestArgs::default();
@@ -320,12 +389,25 @@ fn parse_digest_args(argv: &[String]) -> Result<DigestArgs, BootError> {
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--help" | "-h" => args.help = true,
+            "--headlines" => {
+                args.headlines = Some(verb_usize(
+                    "--headlines",
+                    &verb_value("--headlines", it.next(), usage)?,
+                    usage,
+                )?);
+            }
             "--project-prefix" => {
                 args.project_prefix = Some(verb_value("--project-prefix", it.next(), usage)?);
             }
             "--db" => args.db = Some(PathBuf::from(verb_value("--db", it.next(), usage)?)),
             other => {
-                if let Some(v) = other.strip_prefix("--project-prefix=") {
+                if let Some(v) = other.strip_prefix("--headlines=") {
+                    args.headlines = Some(verb_usize(
+                        "--headlines",
+                        &verb_value("--headlines", Some(&v.to_string()), usage)?,
+                        usage,
+                    )?);
+                } else if let Some(v) = other.strip_prefix("--project-prefix=") {
                     args.project_prefix =
                         Some(verb_value("--project-prefix", Some(&v.to_string()), usage)?);
                 } else if let Some(v) = other.strip_prefix("--db=") {
@@ -341,6 +423,149 @@ fn parse_digest_args(argv: &[String]) -> Result<DigestArgs, BootError> {
         }
     }
     Ok(args)
+}
+
+/// Parse `nmemory backup` args (the `backup` token already consumed).
+/// `--to` is the mandatory destination; unknown arguments fail closed.
+fn parse_backup_args(argv: &[String]) -> Result<BackupArgs, BootError> {
+    let usage: fn(String) -> BootError = BootError::BackupUsage;
+    let mut args = BackupArgs::default();
+    let mut it = argv.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--help" | "-h" => args.help = true,
+            "--to" => args.to = Some(PathBuf::from(verb_value("--to", it.next(), usage)?)),
+            "--db" => args.db = Some(PathBuf::from(verb_value("--db", it.next(), usage)?)),
+            other => {
+                if let Some(v) = other.strip_prefix("--to=") {
+                    args.to = Some(PathBuf::from(verb_value(
+                        "--to",
+                        Some(&v.to_string()),
+                        usage,
+                    )?));
+                } else if let Some(v) = other.strip_prefix("--db=") {
+                    args.db = Some(PathBuf::from(verb_value(
+                        "--db",
+                        Some(&v.to_string()),
+                        usage,
+                    )?));
+                } else {
+                    return Err(usage(format!("unknown argument {other:?}")));
+                }
+            }
+        }
+    }
+    Ok(args)
+}
+
+/// Parse `nmemory git-scan` args (the `git-scan` token already consumed).
+/// Unknown arguments fail closed; `--max-commits` must be a positive
+/// integer.
+fn parse_git_scan_args(argv: &[String]) -> Result<GitScanArgs, BootError> {
+    let usage: fn(String) -> BootError = BootError::GitScanUsage;
+    let mut args = GitScanArgs::default();
+    let mut it = argv.iter();
+    let parse_max = |raw: String| -> Result<usize, BootError> {
+        let parsed = raw.parse::<usize>().map_err(|_| {
+            usage(format!(
+                "--max-commits must be a positive integer, got {raw:?}"
+            ))
+        })?;
+        if parsed == 0 {
+            return Err(usage(
+                "--max-commits must be a positive integer, got 0".to_string(),
+            ));
+        }
+        Ok(parsed)
+    };
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--help" | "-h" => args.help = true,
+            "--repo" => args.repo = Some(PathBuf::from(verb_value("--repo", it.next(), usage)?)),
+            "--project" => args.project = Some(verb_value("--project", it.next(), usage)?),
+            "--db" => args.db = Some(PathBuf::from(verb_value("--db", it.next(), usage)?)),
+            "--max-commits" => {
+                args.max_commits = Some(parse_max(verb_value("--max-commits", it.next(), usage)?)?);
+            }
+            other => {
+                if let Some(v) = other.strip_prefix("--repo=") {
+                    args.repo = Some(PathBuf::from(verb_value(
+                        "--repo",
+                        Some(&v.to_string()),
+                        usage,
+                    )?));
+                } else if let Some(v) = other.strip_prefix("--project=") {
+                    args.project = Some(verb_value("--project", Some(&v.to_string()), usage)?);
+                } else if let Some(v) = other.strip_prefix("--db=") {
+                    args.db = Some(PathBuf::from(verb_value(
+                        "--db",
+                        Some(&v.to_string()),
+                        usage,
+                    )?));
+                } else if let Some(v) = other.strip_prefix("--max-commits=") {
+                    args.max_commits = Some(parse_max(verb_value(
+                        "--max-commits",
+                        Some(&v.to_string()),
+                        usage,
+                    )?)?);
+                } else {
+                    return Err(usage(format!("unknown argument {other:?}")));
+                }
+            }
+        }
+    }
+    Ok(args)
+}
+
+/// Parse `nmemory relate` args (the `relate` token already consumed).
+/// `--kind`/`--from`/`--to` are mandatory (checked in [`run_relate_command`]
+/// once `--help` is ruled out); unknown arguments fail closed.
+fn parse_relate_args(argv: &[String]) -> Result<RelateArgs, BootError> {
+    let usage: fn(String) -> BootError = BootError::RelateUsage;
+    let mut args = RelateArgs::default();
+    let mut it = argv.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--help" | "-h" => args.help = true,
+            "--kind" => args.kind = Some(verb_value("--kind", it.next(), usage)?),
+            "--from" => args.from = Some(verb_value("--from", it.next(), usage)?),
+            "--to" => args.to = Some(verb_value("--to", it.next(), usage)?),
+            "--db" => args.db = Some(PathBuf::from(verb_value("--db", it.next(), usage)?)),
+            other => {
+                if let Some(v) = other.strip_prefix("--kind=") {
+                    args.kind = Some(verb_value("--kind", Some(&v.to_string()), usage)?);
+                } else if let Some(v) = other.strip_prefix("--from=") {
+                    args.from = Some(verb_value("--from", Some(&v.to_string()), usage)?);
+                } else if let Some(v) = other.strip_prefix("--to=") {
+                    args.to = Some(verb_value("--to", Some(&v.to_string()), usage)?);
+                } else if let Some(v) = other.strip_prefix("--db=") {
+                    args.db = Some(PathBuf::from(verb_value(
+                        "--db",
+                        Some(&v.to_string()),
+                        usage,
+                    )?));
+                } else {
+                    return Err(usage(format!("unknown argument {other:?}")));
+                }
+            }
+        }
+    }
+    Ok(args)
+}
+
+/// Validate `--kind` against the closed relation-kind wire vocabulary by
+/// deserializing it exactly as `memory_relate` does over MCP
+/// (`RelationKindParam` is `#[serde(rename_all = "snake_case")]`) — the ONE
+/// source of truth for the set, so this CLI verb can never drift from the
+/// tool schema. An unrecognized value is the teaching rejection naming the
+/// closed set.
+fn parse_relation_kind(raw: &str) -> Result<RelationKindParam, BootError> {
+    serde_json::from_value(serde_json::Value::String(raw.to_string())).map_err(|_| {
+        BootError::RelateUsage(format!(
+            "--kind {raw:?} is not one of the closed relation kinds: supersedes, derived_from, \
+             witnesses, blocks, falsifies, proposes, part_of, grounded_in"
+        ))
+    })
 }
 
 /// Resolve the database path by fixed precedence: `--db` > `NMEMORY_DB` >
@@ -499,7 +724,7 @@ fn open_boundary(
     }
     let project = project
         .or_else(|| env_nonempty("NMEMORY_PROJECT"))
-        .unwrap_or_else(|| DEFAULT_PROJECT.to_string());
+        .unwrap_or_else(|| DEFAULT_PROJECT_ID.to_string());
     let store = Store::open(&db_path)?;
     let hmac_key_file = {
         let mut os = db_path.as_os_str().to_os_string();
@@ -577,12 +802,10 @@ async fn run_recall_command(argv: &[String]) -> Result<(), BootError> {
     let boundary = open_boundary(args.db, None, "cli")?;
     let params = RetrieveParams {
         terms: args.terms,
-        project_id: None,
         project_prefix: args.project_prefix,
         limit: args.limit,
         token_budget: args.budget,
-        query_embedding: None,
-        vector_k: None,
+        ..RetrieveParams::default()
     };
     let result = boundary
         .server
@@ -603,7 +826,7 @@ async fn run_digest_command(argv: &[String]) -> Result<(), BootError> {
     }
     let boundary = open_boundary(args.db, None, "cli")?;
     let params = DigestParams {
-        headlines: None,
+        headlines: args.headlines,
         project_prefix: args.project_prefix,
     };
     let result = boundary
@@ -612,6 +835,140 @@ async fn run_digest_command(argv: &[String]) -> Result<(), BootError> {
         .await
         .map_err(verb_error("memory_digest"))?;
     print_result_text("memory_digest", &result)
+}
+
+/// Handle `nmemory backup --to <path>`: a transactionally consistent,
+/// WAL-safe online snapshot of the live store to `--to`, via
+/// [`Store::snapshot_to`]. Opens the store directly — a backup reads no
+/// capsule and serves no tool, so it needs no MCP boundary. Built for the
+/// schema-bump rollout runbook: back up with the CURRENT binary BEFORE
+/// running the next binary's migrating open (the snapshot captures the
+/// pre-migration state that binary still reads natively). `--to`'s parent
+/// directory is created when missing.
+fn run_backup_command(argv: &[String]) -> Result<(), BootError> {
+    let args = parse_backup_args(argv)?;
+    if args.help {
+        println!("{BACKUP_USAGE}");
+        return Ok(());
+    }
+    let Some(to) = args.to else {
+        return Err(BootError::BackupUsage(
+            "--to requires a destination path".to_string(),
+        ));
+    };
+    let db_path = resolve_db_path(
+        args.db,
+        env_nonempty("NMEMORY_DB"),
+        env_nonempty("XDG_STATE_HOME"),
+        env_nonempty("HOME"),
+    )?;
+    if let Some(dir) = to.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir).map_err(|source| BootError::CreateDir {
+            dir: dir.to_path_buf(),
+            source,
+        })?;
+    }
+    let store = Store::open(&db_path)?;
+    store.snapshot_to(&to).map_err(BootError::Backup)?;
+    println!("nmemory backup · {} -> {}", db_path.display(), to.display());
+    Ok(())
+}
+
+/// Handle `nmemory git-scan ...`: the S2 GIT WITNESS lane. Opens the store
+/// DIRECTLY — NOT the MCP serve path: git is reached only from this verb,
+/// never from a tool handler ([`nmemory::git`] is never named by the server)
+/// — and runs one witness scan of `--repo` fenced to `--project`, recording
+/// anchor/mention corroborations at the injected instant. Fail-closed on a
+/// non-repository (a typed error, exit 1, store untouched); the session hook
+/// calls it fail-open by its own `|| true`.
+fn run_git_scan_command(argv: &[String]) -> Result<(), BootError> {
+    let args = parse_git_scan_args(argv)?;
+    if args.help {
+        println!("{GIT_SCAN_USAGE}");
+        return Ok(());
+    }
+    let Some(repo) = args.repo else {
+        return Err(BootError::GitScanUsage(
+            "--repo <path> is required".to_string(),
+        ));
+    };
+    let db_path = resolve_db_path(
+        args.db,
+        env_nonempty("NMEMORY_DB"),
+        env_nonempty("XDG_STATE_HOME"),
+        env_nonempty("HOME"),
+    )?;
+    if let Some(dir) = db_path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir).map_err(|source| BootError::CreateDir {
+            dir: dir.to_path_buf(),
+            source,
+        })?;
+    }
+    let mut store = Store::open(&db_path)?;
+    let git = nmemory::git::SubprocessGit::default();
+    let max = args
+        .max_commits
+        .unwrap_or(nmemory::git::DEFAULT_MAX_COMMITS);
+    // Boundary-injected instant — the store reads no clock, and the s5 law
+    // keeps main.rs clock-free: the sanctioned wall-clock read lives at the
+    // server boundary ([`nmemory::server::boundary_now`]).
+    let now = nmemory::server::boundary_now();
+    let summary = nmemory::git::scan(&mut store, &git, &repo, args.project.as_deref(), max, now)
+        .map_err(|e| BootError::Verb {
+            verb: "git-scan",
+            message: e.to_string(),
+        })?;
+    println!(
+        "git-scan {source} · head {head} · history_target {target} · corroborated {c} · \
+         drifted {d} · missing {m} · mentions {men} · skipped {s} · commits {commits} · \
+         truncated {truncated} · cursor_advanced {advanced} · next_offset {next:?}",
+        source = summary.source_key,
+        head = summary.head,
+        target = summary.history_target,
+        c = summary.corroborated,
+        d = summary.drifted,
+        m = summary.missing,
+        men = summary.mentions,
+        s = summary.skipped,
+        commits = summary.commits_scanned,
+        truncated = summary.truncated,
+        advanced = summary.cursor_advanced,
+        next = summary.next_offset,
+    );
+    Ok(())
+}
+
+/// Handle `nmemory relate --kind <kind> --from <cap-id> --to <cap-id>`:
+/// ONE one-shot `memory_relate` through the exact handler the MCP tool
+/// runs — the SAME closed 8-kind wire vocabulary ([`parse_relation_kind`]
+/// deserializes into the exact [`RelationKindParam`] the tool schema uses),
+/// the same `part_of` container gate and self-relation rejection, and the
+/// same idempotent `already_recorded` semantics — with the one-line JSON
+/// outcome on stdout. Unblocks a shell caller (e.g. plugin effort-lifecycle
+/// wiring) recording ONE edge without paying an MCP handshake.
+async fn run_relate_command(argv: &[String]) -> Result<(), BootError> {
+    let args = parse_relate_args(argv)?;
+    if args.help {
+        println!("{RELATE_USAGE}");
+        return Ok(());
+    }
+    let raw_kind = args
+        .kind
+        .ok_or_else(|| BootError::RelateUsage("--kind is required".to_string()))?;
+    let from = args
+        .from
+        .ok_or_else(|| BootError::RelateUsage("--from is required".to_string()))?;
+    let to = args
+        .to
+        .ok_or_else(|| BootError::RelateUsage("--to is required".to_string()))?;
+    let kind = parse_relation_kind(&raw_kind)?;
+    let boundary = open_boundary(args.db, None, "cli")?;
+    let result = boundary
+        .server
+        .relate(Parameters(RelateParams { kind, from, to }))
+        .await
+        .map_err(verb_error("memory_relate"))?;
+    print_result_text("memory_relate", &result)
 }
 
 async fn run() -> Result<(), BootError> {
@@ -625,6 +982,9 @@ async fn run() -> Result<(), BootError> {
         Some("sync") => return run_sync_command(&argv[1..]),
         Some("recall") => return run_recall_command(&argv[1..]).await,
         Some("digest") => return run_digest_command(&argv[1..]).await,
+        Some("backup") => return run_backup_command(&argv[1..]),
+        Some("git-scan") => return run_git_scan_command(&argv[1..]),
+        Some("relate") => return run_relate_command(&argv[1..]).await,
         _ => {}
     }
     let cli = parse_args(&argv)?;
@@ -778,6 +1138,51 @@ mod tests {
     }
 
     #[test]
+    fn parse_git_scan_requires_a_positive_commit_budget() {
+        let parsed = parse_git_scan_args(&argv(&[
+            "--repo",
+            "/repo",
+            "--project",
+            "nott",
+            "--max-commits=7",
+        ]))
+        .unwrap();
+        assert_eq!(parsed.repo.as_deref(), Some(std::path::Path::new("/repo")));
+        assert_eq!(parsed.project.as_deref(), Some("nott"));
+        assert_eq!(parsed.max_commits, Some(7));
+
+        for zero in [
+            argv(&["--repo", "/repo", "--max-commits", "0"]),
+            argv(&["--repo=/repo", "--max-commits=0"]),
+        ] {
+            assert!(matches!(
+                parse_git_scan_args(&zero),
+                Err(BootError::GitScanUsage(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn zero_git_scan_budget_creates_no_store_or_parent_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("must-not-exist").join("memory.sqlite3");
+        let repo = dir.path().display().to_string();
+        let db_flag = db.display().to_string();
+        let error = run_git_scan_command(&argv(&[
+            "--repo",
+            &repo,
+            "--db",
+            &db_flag,
+            "--max-commits",
+            "0",
+        ]))
+        .unwrap_err();
+        assert!(matches!(error, BootError::GitScanUsage(_)));
+        assert!(!db.exists());
+        assert!(!db.parent().unwrap().exists());
+    }
+
+    #[test]
     fn parse_recall_args_flag_forms() {
         assert_eq!(
             parse_recall_args(&argv(&[])).unwrap(),
@@ -870,16 +1275,25 @@ mod tests {
         );
 
         let parsed = parse_digest_args(&argv(&[
+            "--headlines",
+            "25",
             "--project-prefix",
             "happyday",
             "--db",
             "/l.sqlite3",
         ]))
         .unwrap();
+        assert_eq!(parsed.headlines, Some(25));
         assert_eq!(parsed.project_prefix.as_deref(), Some("happyday"));
         assert_eq!(
             parsed.db.as_deref(),
             Some(std::path::Path::new("/l.sqlite3"))
+        );
+        assert_eq!(
+            parse_digest_args(&argv(&["--headlines=25"]))
+                .unwrap()
+                .headlines,
+            Some(25)
         );
         assert!(
             parse_digest_args(&argv(&["--db=/m.sqlite3"]))
@@ -908,6 +1322,25 @@ mod tests {
             parse_digest_args(&argv(&["--bogus"])),
             Err(BootError::DigestUsage(_))
         ));
+        // A numeric flag fails closed on a missing value and TEACHES on a
+        // non-numeric one, in both flag forms.
+        assert!(matches!(
+            parse_digest_args(&argv(&["--headlines"])),
+            Err(BootError::DigestUsage(_))
+        ));
+        for form in [
+            ["--headlines", "ten"].as_slice(),
+            ["--headlines=ten"].as_slice(),
+        ] {
+            let Err(BootError::DigestUsage(message)) = parse_digest_args(&argv(form)) else {
+                panic!("a non-numeric --headlines must fail closed: {form:?}");
+            };
+            assert!(
+                message.contains("--headlines requires a non-negative integer")
+                    && message.contains("\"ten\""),
+                "the error must name the flag, the rule and the rejected value: {message}"
+            );
+        }
     }
 
     #[tokio::test]

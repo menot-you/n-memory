@@ -317,6 +317,9 @@ const fn relation_kind_rank(kind: RelationKind) -> usize {
         RelationKind::Witnesses => 2,
         RelationKind::Blocks => 3,
         RelationKind::Falsifies => 4,
+        RelationKind::Proposes => 5,
+        RelationKind::PartOf => 6,
+        RelationKind::GroundedIn => 7,
     }
 }
 
