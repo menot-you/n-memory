@@ -1,7 +1,7 @@
 # nMEMORY — feature map + engine architecture (LLM-first)
 
 ```
-status:    engine + feature map for the shipped crate (v0.2.0)
+status:    engine + feature map for the shipped crate (v0.3.0)
 axiom:     nMEMORY is FOR LLMs. The primary consumer (~90%) is an agent inside a
            session, not a human. Every design choice optimizes for that caller:
            token economy, structured shapes, caller-side intelligence, injection
@@ -23,7 +23,7 @@ DEFERRED). Most of what it filed under NEXT and DEFERRED has since shipped. The
   projection) · `memory_bootstrap` (cold-start pack)
 - **organize** — `memory_classify` · `memory_extract` · `memory_relate`
   (supersedes / derived_from / witnesses / blocks / falsifies / proposes /
-  part_of / grounded_in — the closed eight) · `memory_alias` ·
+  part_of / grounded_in / about — the closed nine) · `memory_alias` ·
   `memory_consolidate`
 - **lifecycle** — `memory_forget` (tombstone / redact / purge) · `memory_outcome` ·
   `memory_preference` · `memory_pin` (S1: decay-exempt + archive-veto + surfacing;
@@ -43,10 +43,11 @@ DEFERRED). Most of what it filed under NEXT and DEFERRED has since shipped. The
   `memory_digest` handlers — identical envelope bytes and side effects, no MCP
   handshake — the transport the NOTT plugin's session-start and per-prompt
   recall hooks ride (0.15s wall per prompt).
-- **app views** — two MCP App resources (`text/html;profile=mcp-app`):
+- **app views** — three MCP App resources (`text/html;profile=mcp-app`):
+  `ui://nmemory/console` (the home surface over `memory_digest`) ·
   `ui://nmemory/document` (readable document over `memory_export`) ·
-  `ui://nmemory/visual` (Mermaid over `memory_visual`) — §6. Resources, not tools:
-  the 22-tool surface above is unchanged by them.
+  `ui://nmemory/visual` (the drawn projection over `memory_visual`) — §6.
+  Resources, not tools: the 22-tool surface above is unchanged by them.
 
 The stdio router is the standalone connector. It exposes READ and PROPOSE, never
 CLOSE: nothing reachable over this connector can declare a piece of work finished.
@@ -95,7 +96,7 @@ with that label, never an unknown session.
 | SQLite store | single-file, append-ordered seq ids, no clock/random inside, canonical snapshot | deterministic replay; hermetic |
 | ingest | provenance-mandatory, source_hash idempotent, **smart defaults** (scope from caller context, authority_class=agent-inferred, timestamps injected), **batch array**; optional `event_at` point XOR inclusive `event_from`+`event_to` range | fact time is a local sidecar on fresh capture; a dedup collapse keeps the first declaration |
 | dedup-hint (dialogue consolidation) | ingest response returns "similar existing: cap-N (score)" — the CALLER decides supersede/skip/keep | uses caller intelligence instead of auto-merge heuristics |
-| retrieve | **FTS5+bm25** lexical match over multi-term caller-expanded queries + alias-taught OR-group expansion; optional exact store-local capsule `session_id` label fence; optional inclusive `time_window` fact-time fence before ranking; optional `effort_id` membership fence (results fenced to one persisted epic's members, resolved via the SAME validated scope memory_relate's `part_of` container gate feeds); deterministic sort key (term coverage, bm25, decayed weight = confidence × 2^(-age_days/90), valid_from, usage late key, id); **token-budgeted layered results** (headline → full capsule on demand); grounded-or-ABSTAIN | the engine is honest, the caller is smart; session/project/fact-time/effort fences AND-compose and fact time never feeds decay |
+| retrieve | **FTS5+bm25** lexical match over multi-term caller-expanded queries + alias-taught OR-group expansion; optional exact store-local capsule `session_id` label fence; optional inclusive `time_window` fact-time fence before ranking; optional `effort_id` membership fence (results fenced to one persisted epic's members, resolved via the SAME validated scope memory_relate's `part_of` container gate feeds); optional `topic_id` membership fence (results fenced to one topic node's `about` members ∪ the topic itself, ACROSS projects — a topic has no lifecycle, so it needs no persisted kind and no member minimum); deterministic sort key (term coverage, bm25, decayed weight = confidence × 2^(-age_days/90), valid_from, usage late key, id); **token-budgeted layered results** (headline → full capsule on demand); grounded-or-ABSTAIN | the engine is honest, the caller is smart; session/project/fact-time/effort/topic fences AND-compose — the two id-set fences by intersection — and fact time never feeds decay |
 | evidence envelope | every result wrapped as DATA: `ADVISORY_NOT_AUTHORITY` + taint flag + provenance + freshness + matched-terms explain | injection armor + trust calibration in one shape |
 | digest | one-call compact store projection (~counts, scopes, newest, most-recalled, N headlines) plus optional advisory telemetry from the existing miss and lane-override ledgers; every capped list ships its EXACT pre-cap `*_total` and every `by_project` row ships `live` beside `count` | the MEMORY.md-analogue; the session-start hot path; a projection declares its own completeness, so a truncated list is never read as a whole one and a census (live + superseded) is never read as an inventory; miss terms are bounded single-line previews and disappear under project fences because the ledger has no project attribution |
 | get / list | by id; by scope/kind/recency; `get` alone reads the fact-time declaration | the fact-time sidecar stays off list/digest/export/retrieve envelopes |
@@ -325,13 +326,41 @@ are byte-identical.
 
 ## 6. MCP App resources (progressive enhancement)
 
-The server advertises two MCP App resources over `resources/list` /
-`resources/read`, MIME `text/html;profile=mcp-app`: `ui://nmemory/document`, a
-readable master-detail document over `memory_export`'s generated markdown
-(outline, sections, and the exact source), and `ui://nmemory/visual`, which
-renders `memory_visual`'s deterministic Mermaid projections. Each is one
-self-contained HTML string in `src/mcp_app.rs` — no external scripts, styles, or
-URLs, no storage or device permissions; the host owns sandboxing, and the view
-only speaks JSON-RPC over `postMessage` and renders escaped text. They are
-progressive enhancement, not surface: hosts without MCP Apps support keep
-receiving the tools' plain text payloads, and no tool contract changes.
+The server advertises three MCP App resources over `resources/list` /
+`resources/read`, MIME `text/html;profile=mcp-app`:
+
+- `ui://nmemory/console` — the HOME surface, bound to `memory_digest`. Five
+  tabs over one store: the handoff threads and store shape, the blocks dag as
+  ready / blocked / done work, the mission spine's epic roots, the drawn
+  projection, and the stored memories with recall. It opens with the ready-set
+  and exactly ONE next action, and it fails closed exactly where the digest
+  does — a blocks-cycle or a `grounded_in` cycle shows the concrete cycle and
+  the repair, never a fabricated ready/blocked or root answer.
+- `ui://nmemory/document` — a readable master-detail document over
+  `memory_export`'s generated markdown (outline, sections, exact source).
+- `ui://nmemory/visual` — `memory_visual`'s deterministic Mermaid projections
+  DRAWN: the emitted grammar is parsed, nodes are laid out by contract depth,
+  edges become inline SVG arrows carrying the server's own class colours, and
+  the exact Mermaid stays in a source panel. No Mermaid renderer is embedded.
+
+Each resource is one self-contained HTML string in `src/mcp_app.rs` — no
+external scripts, styles, or URLs, no storage or device permissions; the host
+owns sandboxing, and the view only speaks JSON-RPC over `postMessage` and
+renders escaped text. The design tokens, the `ui/*` handshake, the capsule
+detail renderer, and the diagram renderer exist exactly once, as
+`macro_rules!` blocks the three resources splice through `concat!`.
+
+The console can WRITE, and only the recoverable, append-only verbs:
+`memory_ingest`, `memory_classify`, `memory_relate`, `memory_pin`, plus
+`memory_retrieve` / `memory_list` / `memory_visual` for reading. Every write
+goes through a review step that shows the exact MCP tool call — name and
+arguments — before it is sent, and the answer or the server's own rejection is
+displayed verbatim. `memory_forget`, `memory_merge`, and `memory_consolidate`
+are unreachable from every resource (asserted per resource in the module's
+tests): a destructive verb keeps its blast radius in the conversation. Closing
+a work item is two acts, never one button — capture the evidence, then record
+the `witnesses` edge — because `witnesses` is what takes a node out of
+ready/blocked, so the app cannot certify its own close.
+
+They are progressive enhancement, not surface: hosts without MCP Apps support
+keep receiving the tools' plain text payloads, and no tool contract changes.

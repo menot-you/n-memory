@@ -145,7 +145,7 @@ fn capsules_create_sql(head: &str) -> String {
 fn relations_create_sql(head: &str) -> String {
     format!(
         "{head} (
-    kind    TEXT NOT NULL CHECK (kind IN ('supersedes', 'derived_from', 'witnesses', 'blocks', 'falsifies', 'proposes', 'part_of', 'grounded_in')),
+    kind    TEXT NOT NULL CHECK (kind IN ('supersedes', 'derived_from', 'witnesses', 'blocks', 'falsifies', 'proposes', 'part_of', 'grounded_in', 'about')),
     from_id TEXT NOT NULL,
     to_id   TEXT NOT NULL,
     at      TEXT NOT NULL,
@@ -963,17 +963,25 @@ fn validate_embedding(vector: &[f32]) -> Result<(), StoreError> {
 /// EIGHT-kind set in ONE pass; the shadow table moves to `relations_v7` (the
 /// next free name after the v19 fold's `relations_v6`), probed on the stored
 /// CHECK text via [`relations_lacks_grounded_in`], `origin` preserved
-/// byte-for-byte. Version 1–19 files migrate
+/// byte-for-byte. Version 21 (topic-anchor s1) widened the `relations.kind`
+/// CHECK a fourth time to add `about` (the topic anchor; also NEVER a dag
+/// input) — the SAME shared-DDL rebuild extended to a FOUR-token disjunction,
+/// so a store missing ANY of `proposes` / `part_of` / `grounded_in` / `about`
+/// converges to the NINE-kind set in ONE pass; the shadow table moves to
+/// `relations_v8`, probed on the stored CHECK text via
+/// [`relations_lacks_about`], `origin` preserved byte-for-byte. Version 1–20
+/// files migrate
 /// in place via [`migrate_to_current`];
 /// versions this build does not know fail closed
 /// ([`StoreError::UnsupportedSchemaVersion`]). Every migration step keys on
 /// the observed DDL shape (`relations_has_old_check` /
 /// `relations_missing_proposes_check` / `relations_missing_part_of_check` /
-/// `relations_lacks_grounded_in` / `classifications_has_old_check`) or
+/// `relations_lacks_grounded_in` / `relations_lacks_about` /
+/// `classifications_has_old_check`) or
 /// `IF NOT EXISTS`, never on the
 /// version integer, so the stamp renumbers mechanically when lanes land
 /// out of authoring order.
-const SCHEMA_VERSION: i64 = 20;
+const SCHEMA_VERSION: i64 = 21;
 
 /// Milliseconds a connection waits for a held write lock before giving up
 /// with `SQLITE_BUSY`. Concurrent sessions on one store — the owner runs
@@ -1017,7 +1025,7 @@ pub enum StoreError {
     /// The file's `PRAGMA user_version` names a schema this build does not
     /// know — fail closed instead of guessing at columns.
     #[error(
-        "store: unsupported schema version {0} (this build migrates v1..=18 in place and reads v{SCHEMA_VERSION} natively)"
+        "store: unsupported schema version {0} (this build migrates v1..=20 in place and reads v{SCHEMA_VERSION} natively)"
     )]
     UnsupportedSchemaVersion(i64),
     /// A relation/classification endpoint named a capsule id that is not
@@ -1427,7 +1435,7 @@ pub struct EmbeddingRow {
     pub model_tag: String,
 }
 
-/// The eight declared relation kinds (donor B closed enum — mcps/memory-
+/// The nine declared relation kinds (donor B closed enum — mcps/memory-
 /// contract `relation.rs`). Wire names are the snake_case forms; adding a
 /// kind is a deliberate, reviewed change to the public ontology. Each edge
 /// reads `from --kind--> to`:
@@ -1442,6 +1450,7 @@ pub struct EmbeddingRow {
 /// | `proposes` | the proposing capsule | the target it proposes to replace |
 /// | `part_of` | the member capsule | the container epic/task |
 /// | `grounded_in` | the child work | its parent epic |
+/// | `about` | any capsule the topic covers | the topic capsule |
 ///
 /// `falsifies` (u6h) is unique: its `from_id` may name an OUTCOME record
 /// (`out-<n>`, [`Store::append_outcome`]) as well as a capsule, and its
@@ -1449,7 +1458,10 @@ pub struct EmbeddingRow {
 /// state change — [`Store::is_falsified`]). `proposes` (b2 staged review) is
 /// navigational only — no dag or recall effect. `part_of` (effort-lifecycle
 /// s1) is pure membership — `from` is a member of container `to`; like
-/// `falsifies` and `proposes` it is NOT a dag input.
+/// `falsifies` and `proposes` it is NOT a dag input. `about` (topic-anchor
+/// s1) is the topic anchor — also NOT a dag input and never a recall
+/// EXCLUSION; it is read only by `memory_retrieve`'s `topic_id` scope fence
+/// ([`Store::topic_members`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RelationKind {
     /// `from` replaces `to` (the replace-over-append discipline).
@@ -1477,6 +1489,11 @@ pub enum RelationKind {
     /// epic) — the planning-plane anchor surfaced by `memory_digest`'s
     /// mission section. NOT a dag input.
     GroundedIn,
+    /// `from` is ABOUT topic node `to` — the topic anchor read by
+    /// `memory_retrieve`'s `topic_id` scope fence. NOT a dag input, and never
+    /// a recall exclusion. Convention (never enforced): `to` is a `doc`
+    /// capsule; a topic has no lifecycle, unlike a `part_of` container.
+    About,
 }
 
 impl RelationKind {
@@ -1495,7 +1512,7 @@ impl RelationKind {
     }
 
     /// All declared kinds, in contract order.
-    pub const ALL: [RelationKind; 8] = [
+    pub const ALL: [RelationKind; 9] = [
         RelationKind::Supersedes,
         RelationKind::DerivedFrom,
         RelationKind::Witnesses,
@@ -1504,6 +1521,7 @@ impl RelationKind {
         RelationKind::Proposes,
         RelationKind::PartOf,
         RelationKind::GroundedIn,
+        RelationKind::About,
     ];
 
     /// The wire name, e.g. `"derived_from"` — exactly the SQL CHECK set.
@@ -1518,6 +1536,7 @@ impl RelationKind {
             RelationKind::Proposes => "proposes",
             RelationKind::PartOf => "part_of",
             RelationKind::GroundedIn => "grounded_in",
+            RelationKind::About => "about",
         }
     }
 
@@ -2081,7 +2100,7 @@ impl Store {
         // after a bump).
         match version {
             0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18
-            | 19 | SCHEMA_VERSION => migrate_to_current(&mut conn)?,
+            | 19 | 20 | SCHEMA_VERSION => migrate_to_current(&mut conn)?,
             other => return Err(StoreError::UnsupportedSchemaVersion(other)),
         }
         // Derived-table heal: the mirror must cover the canonical table
@@ -2761,9 +2780,11 @@ impl Store {
     /// effort neither trips SQLite's variable limit nor forces a full scan —
     /// the `capsules_fts MATCH` driver still narrows first, then the unique
     /// `id` index probes membership. `None` is exactly [`Store::search_fts_scoped`]
-    /// (byte-identical dormancy); an empty slice is a degenerate fence the
-    /// caller must reject BEFORE reaching this seam (the engine never passes
-    /// one).
+    /// (byte-identical dormancy). Since topic-anchor s1 this is the ONE
+    /// membership seam for every id-set fence: the engine AND-composes the
+    /// effort scope with the `topic_id` scope into a single set before calling
+    /// here, so an EMPTY slice is reachable and honest — two disjoint id-set
+    /// fences intersect to nothing, which matches nothing and abstains.
     pub fn search_fts_effort(
         &self,
         terms: &[String],
@@ -4024,6 +4045,33 @@ impl Store {
             .map_err(backend)?;
         let rows = stmt
             .query_map([epic], |row| row.get::<_, String>(0))
+            .map_err(backend)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(backend)?);
+        }
+        Ok(out)
+    }
+
+    /// The topic's members: the `from` side of every `about` edge pointing AT
+    /// `topic` (1-hop INTO the topic node, non-transitive — a narrower topic
+    /// is scoped by its own topic id). GRAPH TRUTH: every member is returned,
+    /// including dead ones (superseded / falsified / archived / tombstoned) —
+    /// the fence is SCOPE, downstream eligibility is untouched, and the count
+    /// is exactly the echoed `member_total`. Distinct `from_id`, ascending,
+    /// for a deterministic id-set. Structurally the twin of
+    /// [`Store::effort_members`], one kind token apart: an effort is a
+    /// container with a lifecycle, a topic is a label without one.
+    pub fn topic_members(&self, topic: &str) -> Result<Vec<String>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT DISTINCT from_id FROM relations \
+                 WHERE kind = 'about' AND to_id = ?1 ORDER BY from_id",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([topic], |row| row.get::<_, String>(0))
             .map_err(backend)?;
         let mut out = Vec::new();
         for row in rows {
@@ -6197,7 +6245,8 @@ impl Store {
     /// [`Store::embeddings_for_recall`] with the S3 effort-lifecycle
     /// membership fence AND-composed onto the project/session fences — the
     /// vector lane's twin of [`Store::search_fts_effort`]. `effort_ids`
-    /// (the effort's members ∪ {epic}) is a single JSON-array bind matched
+    /// (the effort's members ∪ {epic}, AND-composed with any `topic_id` set —
+    /// see [`Store::search_fts_effort`]) is a single JSON-array bind matched
     /// with `json_each` (never a per-id variable, never a post-filter), so a
     /// 1000-member effort stays a single parameter and the unique `id` index
     /// probes membership. `None` is byte-identical to
@@ -6699,19 +6748,22 @@ fn migrate_to_current(conn: &mut Connection) -> Result<(), StoreError> {
     // `IF NOT EXISTS`, order-independent, no canonical capsule byte moves.
     tx.execute_batch(PIN_EVENTS_DDL).map_err(backend)?;
     // v18 (b2 staged review) + v19 (effort-lifecycle s1) + v20
-    // (planning-plane s1): widen the `relations.kind` CHECK to admit
-    // `proposes`, `part_of`, AND `grounded_in`. SQLite cannot ALTER a CHECK,
+    // (planning-plane s1) + v21 (topic-anchor s1): widen the `relations.kind`
+    // CHECK to admit `proposes`, `part_of`, `grounded_in`, AND `about`.
+    // SQLite cannot ALTER a CHECK,
     // so this is a shared-DDL table rebuild through [`relations_create_sql`]
-    // (now the EIGHT-kind set) — shape-probed on the stored CHECK text, the
+    // (now the NINE-kind set) — shape-probed on the stored CHECK text, the
     // SAME no-drift discipline as the `falsifies` rebuild. ONE rebuild
-    // reconciles ALL THREE lineages: it fires when ANY token is absent
+    // reconciles ALL FOUR lineages: it fires when ANY token is absent
     // ([`relations_missing_proposes_check`] OR
-    // [`relations_missing_part_of_check`] OR [`relations_lacks_grounded_in`]),
-    // so the #131 `proposes` store (lacking `part_of`/`grounded_in`), an
-    // out-of-order `part_of` store (lacking `proposes`/`grounded_in` — e.g. a
-    // live store migrated by an S1-lineage binary before this integration),
-    // and a `grounded_in`-only store each converge to the eight-kind set in a
-    // SINGLE pass; a store already carrying ALL THREE tokens is skipped by
+    // [`relations_missing_part_of_check`] OR [`relations_lacks_grounded_in`]
+    // OR [`relations_lacks_about`]),
+    // so the #131 `proposes` store (lacking `part_of`/`grounded_in`/`about`),
+    // an out-of-order `part_of` store (lacking `proposes`/`grounded_in` — e.g.
+    // a live store migrated by an S1-lineage binary before this integration),
+    // a `grounded_in`-only store, and every v20 store (lacking `about` alone)
+    // each converge to the nine-kind set in a
+    // SINGLE pass; a store already carrying ALL FOUR tokens is skipped by
     // every probe (no double rebuild, idempotent under crash-rerun). Runs
     // AFTER the `origin` guarantee above so the copy PRESERVES `origin`
     // byte-for-byte — the v5 falsifies template predates `origin` and copies
@@ -6720,20 +6772,21 @@ fn migrate_to_current(conn: &mut Connection) -> Result<(), StoreError> {
     // set, so the copy is total; the DROP takes the `from`/`to` indexes with
     // the old table (SIDECAR_SCHEMA already ran above), so they are
     // re-created inline. Order-independent: probes the DDL, not the version.
-    // The shadow table is `relations_v7` — the next free name after the v19
-    // fold's `relations_v6` (already taken by the two-token fold this
+    // The shadow table is `relations_v8` — the next free name after the v20
+    // fold's `relations_v7` (already taken by the three-token fold this
     // extends).
     if relations_missing_proposes_check(&tx)?
         || relations_missing_part_of_check(&tx)?
         || relations_lacks_grounded_in(&tx)?
+        || relations_lacks_about(&tx)?
     {
-        tx.execute_batch(&relations_create_sql("CREATE TABLE relations_v7"))
+        tx.execute_batch(&relations_create_sql("CREATE TABLE relations_v8"))
             .map_err(backend)?;
         tx.execute_batch(
-            "INSERT INTO relations_v7 (kind, from_id, to_id, at, origin) \
+            "INSERT INTO relations_v8 (kind, from_id, to_id, at, origin) \
                  SELECT kind, from_id, to_id, at, origin FROM relations;
              DROP TABLE relations;
-             ALTER TABLE relations_v7 RENAME TO relations;
+             ALTER TABLE relations_v8 RENAME TO relations;
              CREATE INDEX IF NOT EXISTS idx_relations_from ON relations (from_id);
              CREATE INDEX IF NOT EXISTS idx_relations_to ON relations (to_id);",
         )
@@ -6826,12 +6879,14 @@ fn relations_missing_proposes_check(conn: &rusqlite::Transaction<'_>) -> Result<
 /// [`relations_has_old_check`]: `'part_of'` is in the CHECK iff the table
 /// carries the effort-lifecycle-s1 widening (edge kind VALUES never appear in
 /// the DDL, so the token is unambiguous). This probe,
-/// [`relations_missing_proposes_check`], and [`relations_lacks_grounded_in`]
-/// jointly gate ONE shared rebuild to the eight-kind set, so a store carrying
-/// only some of the three tokens (the #131 `proposes` lineage lacking
-/// `part_of`/`grounded_in`, an out-of-order `part_of` store lacking
-/// `proposes`/`grounded_in`, or a `grounded_in`-only store) converges in a
-/// single pass; a table already carrying ALL THREE tokens is skipped by
+/// [`relations_missing_proposes_check`], [`relations_lacks_grounded_in`], and
+/// [`relations_lacks_about`]
+/// jointly gate ONE shared rebuild to the nine-kind set, so a store carrying
+/// only some of the four tokens (the #131 `proposes` lineage lacking
+/// `part_of`/`grounded_in`/`about`, an out-of-order `part_of` store lacking
+/// `proposes`/`grounded_in`, a `grounded_in`-only store, or a v20 store
+/// lacking `about` alone) converges in a
+/// single pass; a table already carrying ALL FOUR tokens is skipped by
 /// every probe — no double rebuild, idempotent under crash-rerun.
 fn relations_missing_part_of_check(conn: &rusqlite::Transaction<'_>) -> Result<bool, StoreError> {
     let sql: Option<String> = conn
@@ -6852,9 +6907,9 @@ fn relations_missing_part_of_check(conn: &rusqlite::Transaction<'_>) -> Result<b
 /// CHECK text is the shape; the QUOTED token `'grounded_in'` is in the CHECK
 /// iff the table is v20 (edge kind/id VALUES never appear in the DDL, so the
 /// token is unambiguous), exactly the [`relations_missing_proposes_check`]
-/// newest-token discipline one rung wider. Jointly gates the three-token
-/// fold above with [`relations_missing_proposes_check`] and
-/// [`relations_missing_part_of_check`].
+/// newest-token discipline one rung wider. Jointly gates the four-token
+/// fold above with [`relations_missing_proposes_check`],
+/// [`relations_missing_part_of_check`], and [`relations_lacks_about`].
 fn relations_lacks_grounded_in(conn: &rusqlite::Transaction<'_>) -> Result<bool, StoreError> {
     let sql: Option<String> = conn
         .query_row(
@@ -6866,6 +6921,28 @@ fn relations_lacks_grounded_in(conn: &rusqlite::Transaction<'_>) -> Result<bool,
         .map_err(backend)?
         .flatten();
     Ok(sql.is_some_and(|ddl| !ddl.contains("'grounded_in'")))
+}
+
+/// Whether a `relations` table exists with a pre-v21 CHECK that does NOT yet
+/// admit `about` (false when the table is absent or already carries it). The
+/// probe reads the stored CREATE sql from `sqlite_master` — the CHECK text is
+/// the shape; the QUOTED token `'about'` is in the CHECK iff the table is v21
+/// (edge kind/id VALUES never appear in the DDL, so the token is
+/// unambiguous), exactly the [`relations_lacks_grounded_in`] newest-token
+/// discipline one rung wider. Jointly gates the four-token fold above with
+/// [`relations_missing_proposes_check`], [`relations_missing_part_of_check`],
+/// and [`relations_lacks_grounded_in`].
+fn relations_lacks_about(conn: &rusqlite::Transaction<'_>) -> Result<bool, StoreError> {
+    let sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'relations'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?
+        .flatten();
+    Ok(sql.is_some_and(|ddl| !ddl.contains("'about'")))
 }
 
 /// Raw column tuple read back from `capsules`, decoded OUTSIDE the rusqlite
@@ -8077,17 +8154,17 @@ mod tests {
         let path = dir.path().join("memory.sqlite3");
         Store::open(&path).unwrap();
 
-        // Schema v21 is one past this build's current v20 stamp: an unknown
+        // Schema v22 is one past this build's current v21 stamp: an unknown
         // version is refused, never guessed at. v16 (pin), v17 (git), v18
-        // (staged review), v19 (part_of), and v20 (planning-plane
-        // grounded_in) all migrate in place, so the first genuinely unknown
-        // version is 21.
+        // (staged review), v19 (part_of), v20 (planning-plane grounded_in),
+        // and v21 (topic-anchor about) all migrate in place, so the first
+        // genuinely unknown version is 22.
         let conn = rusqlite::Connection::open(&path).unwrap();
-        conn.execute_batch("PRAGMA user_version = 21").unwrap();
+        conn.execute_batch("PRAGMA user_version = 22").unwrap();
         drop(conn);
 
         let err = Store::open(&path).unwrap_err();
-        assert_eq!(err, StoreError::UnsupportedSchemaVersion(21));
+        assert_eq!(err, StoreError::UnsupportedSchemaVersion(22));
     }
 
     #[test]
@@ -11546,7 +11623,7 @@ PRAGMA user_version = 2;
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
         assert_eq!(
-            SCHEMA_VERSION, 20,
+            SCHEMA_VERSION, 21,
             "u6a vector took slot 5, u6h/u6i substrates took slot 6, \
              u-r11 kind-vocabulary took slot 7, u-r2 anchor-drift + \
              epistemics took slot 8, u-r5 miss-ledger took slot 9, \
@@ -11561,7 +11638,8 @@ PRAGMA user_version = 2;
              b2 staged review and bounded git-history checkpoints share \
              slot 18, \
              effort-lifecycle s1 part_of relation kind took slot 19, \
-             planning-plane s1 grounded_in relation kind took slot 20"
+             planning-plane s1 grounded_in relation kind took slot 20, \
+             topic-anchor s1 about relation kind took slot 21"
         );
         let has_table: bool = store
             .conn
@@ -13583,7 +13661,7 @@ PRAGMA user_version = 2;
             version, SCHEMA_VERSION,
             "v10 re-stamped to the current version"
         );
-        assert_eq!(SCHEMA_VERSION, 20);
+        assert_eq!(SCHEMA_VERSION, 21);
 
         // The pre-v11 marker survives; source_hash backfilled NULL (cannot
         // propagate by content, which is acceptable).
@@ -13771,7 +13849,7 @@ PRAGMA user_version = 2;
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
-        assert_eq!(SCHEMA_VERSION, 20);
+        assert_eq!(SCHEMA_VERSION, 21);
         assert_eq!(store.canonical_snapshot().unwrap(), snapshot);
         assert_eq!(store.lane_override_totals().unwrap(), lane_totals);
         assert_eq!(store.event_time_of("cap-1").unwrap(), None);
@@ -13874,7 +13952,7 @@ PRAGMA user_version = 2;
             version, SCHEMA_VERSION,
             "v15 re-stamped to the current version"
         );
-        assert_eq!(SCHEMA_VERSION, 20);
+        assert_eq!(SCHEMA_VERSION, 21);
 
         // The legacy blocks edge survived the CHECK rebuild.
         assert_eq!(
@@ -14047,7 +14125,7 @@ PRAGMA user_version = 2;
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
-        assert_eq!(SCHEMA_VERSION, 20);
+        assert_eq!(SCHEMA_VERSION, 21);
         // The additive sidecars never move the capsule comparand bytes.
         assert_eq!(store.canonical_snapshot().unwrap(), snapshot);
         // The new sidecars are empty and usable after migration.
@@ -14997,12 +15075,13 @@ PRAGMA user_version = 2;
         );
     }
 
-    /// effort-lifecycle s1 / planning-plane s1 NO-DRIFT: a v15 file migrated
-    /// to the current v20 has the EXACT relations schema — CHECK text AND
-    /// `pragma_table_info` — of a freshly created v20 store. The shared
+    /// effort-lifecycle s1 / planning-plane s1 / topic-anchor s1 NO-DRIFT: a
+    /// v15 file migrated
+    /// to the current v21 has the EXACT relations schema — CHECK text AND
+    /// `pragma_table_info` — of a freshly created v21 store. The shared
     /// [`relations_create_sql`] makes the two shapes unforgeably identical
     /// (the falsifies-widening no-drift law, extended to the reconciled
-    /// proposes+part_of+grounded_in set).
+    /// proposes+part_of+grounded_in+about set).
     #[test]
     fn migrated_v15_and_fresh_relations_schemas_do_not_drift() {
         let relations_ddl = |path: &std::path::Path| -> String {
@@ -15078,8 +15157,9 @@ PRAGMA user_version = 2;
         assert!(
             body(&fresh_ddl).contains("'part_of'")
                 && body(&fresh_ddl).contains("'proposes'")
-                && body(&fresh_ddl).contains("'grounded_in'"),
-            "the reconciled eight-kind CHECK is the shared shape"
+                && body(&fresh_ddl).contains("'grounded_in'")
+                && body(&fresh_ddl).contains("'about'"),
+            "the reconciled nine-kind CHECK is the shared shape"
         );
         assert_eq!(
             table_info(&fresh_path),
@@ -15094,7 +15174,7 @@ PRAGMA user_version = 2;
     /// migrates IN PLACE on open. Only [`relations_missing_part_of_check`]
     /// and [`relations_lacks_grounded_in`] fire ([`relations_missing_proposes_check`]
     /// is already false); the single folded rebuild still converges the
-    /// store to the full eight-kind set, every pre-existing edge (including
+    /// store to the full nine-kind set, every pre-existing edge (including
     /// the legacy `proposes` edge) survives BYTE-EXACT, and both formerly
     /// missing kinds write afterward.
     #[test]
@@ -15163,7 +15243,7 @@ PRAGMA user_version = 2;
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION, "proposes-only file re-stamped");
-        assert_eq!(SCHEMA_VERSION, 20);
+        assert_eq!(SCHEMA_VERSION, 21);
 
         // Every edge (including the legacy proposes edge) survives byte-exact.
         assert_eq!(
@@ -15194,8 +15274,9 @@ PRAGMA user_version = 2;
         assert!(
             relations_ddl.contains("'proposes'")
                 && relations_ddl.contains("'part_of'")
-                && relations_ddl.contains("'grounded_in'"),
-            "migrated relations CHECK must admit the full eight-kind set: {relations_ddl}"
+                && relations_ddl.contains("'grounded_in'")
+                && relations_ddl.contains("'about'"),
+            "migrated relations CHECK must admit the full nine-kind set: {relations_ddl}"
         );
     }
 
@@ -15205,7 +15286,7 @@ PRAGMA user_version = 2;
     /// effort-lifecycle-s1-only binary that never saw #131's `proposes`),
     /// `origin` column present, stamp 19. Only
     /// [`relations_missing_proposes_check`] and [`relations_lacks_grounded_in`]
-    /// fire; the same folded rebuild converges it to the full eight-kind set,
+    /// fire; the same folded rebuild converges it to the full nine-kind set,
     /// every pre-existing edge (including the legacy `part_of` edge) survives
     /// BYTE-EXACT, and both formerly missing kinds write afterward.
     #[test]
@@ -15277,7 +15358,7 @@ PRAGMA user_version = 2;
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION, "part_of-only file re-stamped");
-        assert_eq!(SCHEMA_VERSION, 20);
+        assert_eq!(SCHEMA_VERSION, 21);
 
         // Every edge (including the legacy part_of edge) survives byte-exact.
         assert_eq!(
@@ -15308,8 +15389,9 @@ PRAGMA user_version = 2;
         assert!(
             relations_ddl.contains("'proposes'")
                 && relations_ddl.contains("'part_of'")
-                && relations_ddl.contains("'grounded_in'"),
-            "migrated relations CHECK must admit the full eight-kind set: {relations_ddl}"
+                && relations_ddl.contains("'grounded_in'")
+                && relations_ddl.contains("'about'"),
+            "migrated relations CHECK must admit the full nine-kind set: {relations_ddl}"
         );
     }
 
@@ -15388,7 +15470,7 @@ PRAGMA user_version = 2;
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION, "both-present file re-stamped");
-        assert_eq!(SCHEMA_VERSION, 20);
+        assert_eq!(SCHEMA_VERSION, 21);
 
         // Every edge (including the legacy proposes and part_of edges)
         // survives byte-exact.
@@ -15415,8 +15497,331 @@ PRAGMA user_version = 2;
         assert!(
             relations_ddl.contains("'proposes'")
                 && relations_ddl.contains("'part_of'")
-                && relations_ddl.contains("'grounded_in'"),
-            "migrated relations CHECK must admit the full eight-kind set: {relations_ddl}"
+                && relations_ddl.contains("'grounded_in'")
+                && relations_ddl.contains("'about'"),
+            "migrated relations CHECK must admit the full nine-kind set: {relations_ddl}"
+        );
+    }
+
+    /// topic-anchor s1 single-token migration RED: a faithful v20 shape —
+    /// relations CHECK admits `proposes`, `part_of` AND `grounded_in` but NOT
+    /// `about` (the shape EVERY live store carries before this lane), `origin`
+    /// column present, stamp 20 — migrates IN PLACE on open. Only
+    /// [`relations_lacks_about`] fires (the other three probes are already
+    /// false); the SAME folded rebuild still runs, every pre-existing edge
+    /// survives BYTE-EXACT, and `about` writes afterward.
+    #[test]
+    fn v20_store_converges_on_about_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.sqlite3");
+        let before = {
+            let mut store = Store::open(&path).unwrap();
+            store
+                .append(&capsule("pre-about alpha", "nott"), injected_now())
+                .unwrap(); // cap-1
+            store
+                .append(&capsule("pre-about beta", "nott"), injected_now())
+                .unwrap(); // cap-2
+            store
+                .append(&capsule("pre-about gamma", "nott"), injected_now())
+                .unwrap(); // cap-3
+            store
+                .upsert_relation(RelationKind::Blocks, "cap-1", "cap-2", injected_now())
+                .unwrap();
+            store
+                .upsert_relation(RelationKind::GroundedIn, "cap-1", "cap-3", injected_now())
+                .unwrap();
+            store
+                .upsert_relation(RelationKind::PartOf, "cap-2", "cap-3", injected_now())
+                .unwrap();
+            store.all_relations().unwrap()
+        };
+        // Downgrade to a FAITHFUL v20 shape: eight-kind CHECK (about absent),
+        // origin column kept, stamp 20.
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE relations_v20 (
+                     kind    TEXT NOT NULL CHECK (kind IN ('supersedes', 'derived_from', 'witnesses', 'blocks', 'falsifies', 'proposes', 'part_of', 'grounded_in')),
+                     from_id TEXT NOT NULL,
+                     to_id   TEXT NOT NULL,
+                     at      TEXT NOT NULL,
+                     origin  TEXT NOT NULL DEFAULT 'manual' CHECK (origin IN ('manual', 'import')),
+                     PRIMARY KEY (kind, from_id, to_id)
+                 );
+                 INSERT INTO relations_v20 (kind, from_id, to_id, at, origin) \
+                     SELECT kind, from_id, to_id, at, origin FROM relations;
+                 DROP TABLE relations;
+                 ALTER TABLE relations_v20 RENAME TO relations;
+                 PRAGMA user_version = 20;",
+            )
+            .unwrap();
+            // Faithful: the v20 eight-kind CHECK rejects a raw 'about' edge.
+            let raw = conn.execute(
+                "INSERT INTO relations (kind, from_id, to_id, at, origin) \
+                 VALUES ('about', 'cap-1', 'cap-3', '2026-07-31T00:00:00Z', 'manual')",
+                [],
+            );
+            assert!(
+                raw.is_err(),
+                "the v20 eight-kind CHECK must reject an 'about' edge"
+            );
+        }
+
+        // Opening IS the migration.
+        let mut store = Store::open(&path).unwrap();
+        let version: i64 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION, "v20 file re-stamped");
+        assert_eq!(SCHEMA_VERSION, 21);
+
+        // Every pre-existing edge survives byte-exact.
+        assert_eq!(
+            store.all_relations().unwrap(),
+            before,
+            "every (kind, from, to, at, origin) row must survive the rebuild"
+        );
+
+        // The CHECK moved: an `about` edge now writes, and the topic membership
+        // read sees it.
+        assert!(
+            store
+                .upsert_relation(RelationKind::About, "cap-1", "cap-3", injected_now())
+                .unwrap()
+        );
+        assert_eq!(
+            store.topic_members("cap-3").unwrap(),
+            vec!["cap-1".to_string()],
+            "the about edge is readable as topic membership after the migration"
+        );
+        let relations_ddl: String = rusqlite::Connection::open(&path)
+            .unwrap()
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'relations'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            relations_ddl.contains("'about'"),
+            "migrated relations CHECK must include 'about': {relations_ddl}"
+        );
+    }
+
+    /// topic-anchor s1: [`Store::topic_members`] returns GRAPH TRUTH — the
+    /// `from` side of every `about` edge into the topic, dead members
+    /// included, distinct and ascending — and reads NO other kind. The
+    /// `part_of` edge in the same fixture proves the two membership reads do
+    /// not bleed into each other.
+    #[test]
+    fn topic_members_is_graph_truth_and_reads_only_about_edges() {
+        let mut store = Store::open_in_memory().unwrap();
+        for content in ["topic node", "member one", "member two", "not a member"] {
+            store
+                .append(&capsule(content, "nott"), injected_now())
+                .unwrap();
+        }
+        // cap-1 is the topic; cap-3 and cap-2 are about it (recorded out of
+        // order to prove the ascending sort), cap-4 is only part_of it.
+        store
+            .upsert_relation(RelationKind::About, "cap-3", "cap-1", injected_now())
+            .unwrap();
+        store
+            .upsert_relation(RelationKind::About, "cap-2", "cap-1", injected_now())
+            .unwrap();
+        store
+            .upsert_relation(RelationKind::PartOf, "cap-4", "cap-1", injected_now())
+            .unwrap();
+        assert_eq!(
+            store.topic_members("cap-1").unwrap(),
+            vec!["cap-2".to_string(), "cap-3".to_string()],
+            "distinct from_ids of about edges only, ascending"
+        );
+        // Killing a member does not remove it: the fence is scope, and
+        // eligibility is the recall engine's job.
+        store.supersede("cap-2", "cap-4", injected_now()).unwrap();
+        assert_eq!(
+            store.topic_members("cap-1").unwrap(),
+            vec!["cap-2".to_string(), "cap-3".to_string()],
+            "graph truth keeps the superseded member"
+        );
+        // A topic nobody points at has no members — never an error.
+        assert!(store.topic_members("cap-4").unwrap().is_empty());
+        assert!(store.topic_members("cap-999").unwrap().is_empty());
+    }
+
+    /// The v20 relations shape — the eight-kind CHECK, `about` absent — as a
+    /// standalone downgrade so both probe suites below build the SAME faithful
+    /// pre-widening file. `origin` is preserved, matching the real v20 store.
+    fn downgrade_relations_to_v20(path: &std::path::Path) {
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE relations_pre_about (
+                 kind    TEXT NOT NULL CHECK (kind IN ('supersedes', 'derived_from', 'witnesses', 'blocks', 'falsifies', 'proposes', 'part_of', 'grounded_in')),
+                 from_id TEXT NOT NULL,
+                 to_id   TEXT NOT NULL,
+                 at      TEXT NOT NULL,
+                 origin  TEXT NOT NULL DEFAULT 'manual' CHECK (origin IN ('manual', 'import')),
+                 PRIMARY KEY (kind, from_id, to_id)
+             );
+             INSERT INTO relations_pre_about (kind, from_id, to_id, at, origin) \
+                 SELECT kind, from_id, to_id, at, origin FROM relations;
+             DROP TABLE relations;
+             ALTER TABLE relations_pre_about RENAME TO relations;
+             PRAGMA user_version = 20;",
+        )
+        .unwrap();
+    }
+
+    /// The widening probe READS the stored CHECK; it never answers a constant.
+    ///
+    /// The mutation this kills is `relations_lacks_about -> Ok(true)`: a probe
+    /// that always claims the CHECK still lacks `'about'` re-runs the folded
+    /// rebuild on EVERY open of an already-widened store. Every other
+    /// migration test survives that mutation, because the rebuild is
+    /// idempotent in its RESULT — same DDL, same rows, same stamp — so
+    /// asserting the outcome can never see it. Only the probe's own answer,
+    /// and the rebuild's occurrence
+    /// ([`reopening_a_widened_store_runs_no_second_relations_rebuild`]),
+    /// distinguish the two.
+    ///
+    /// BOTH directions are pinned here, so no constant survives: `false` on a
+    /// widened CHECK (kills `Ok(true)`) and `true` on the faithful v20 CHECK
+    /// (kills `Ok(false)`).
+    #[test]
+    fn the_about_widening_probe_reads_the_check_never_a_constant() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.sqlite3");
+        let probe = |path: &std::path::Path| -> bool {
+            let mut conn = rusqlite::Connection::open(path).unwrap();
+            let tx = conn.transaction().unwrap();
+            relations_lacks_about(&tx).unwrap()
+        };
+
+        // A FRESH store is born at the current CHECK — nothing to widen.
+        {
+            let mut store = Store::open(&path).unwrap();
+            store
+                .append(&capsule("probe subject", "nott"), injected_now())
+                .unwrap();
+        }
+        assert!(
+            !probe(&path),
+            "a fresh store already admits 'about'; the probe must answer false"
+        );
+
+        // The faithful v20 shape: the probe must SEE the missing token.
+        downgrade_relations_to_v20(&path);
+        assert!(
+            probe(&path),
+            "a v20 CHECK genuinely lacks 'about'; the probe must answer true"
+        );
+
+        // Opening IS the widening — and afterwards the probe answers false
+        // again, so a converged store never re-enters the rebuild.
+        Store::open(&path).unwrap();
+        assert!(
+            !probe(&path),
+            "once the widening ran, the probe must answer false"
+        );
+
+        // Documented branch: no `relations` table at all is FALSE (there is no
+        // CHECK to widen), never a claim that the token is missing.
+        let empty_dir = tempfile::tempdir().unwrap();
+        let empty_path = empty_dir.path().join("empty.sqlite3");
+        rusqlite::Connection::open(&empty_path).unwrap();
+        assert!(
+            !probe(&empty_path),
+            "an absent relations table has no CHECK to widen; the probe must answer false"
+        );
+    }
+
+    /// A store already carrying the nine-kind CHECK is NOT rebuilt again on
+    /// reopen — the consequence the probe exists to produce.
+    ///
+    /// The rebuild leaves no difference in its RESULT, so this pins its
+    /// OCCURRENCE through two independent observables, each measured on both
+    /// sides of the mutation before being trusted:
+    ///
+    /// - a sentinel index hanging off `relations`, which `DROP TABLE relations`
+    ///   destroys and the migration never recreates (it recreates only its own
+    ///   two indexes);
+    /// - `PRAGMA schema_version`, SQLite's own DDL counter, which a rebuild
+    ///   advances and a no-op migration leaves untouched.
+    ///
+    /// The final downgrade is the non-vacuity half: it proves the sentinel is a
+    /// real detector by showing a genuine rebuild DOES destroy it. Without that
+    /// leg, "the sentinel survived" could pass on a sentinel nothing could ever
+    /// drop.
+    #[test]
+    fn reopening_a_widened_store_runs_no_second_relations_rebuild() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.sqlite3");
+        {
+            let mut store = Store::open(&path).unwrap();
+            store
+                .append(&capsule("rebuild sentinel subject", "nott"), injected_now())
+                .unwrap();
+        }
+        let sentinel_present = |path: &std::path::Path| -> bool {
+            let conn = rusqlite::Connection::open(path).unwrap();
+            let count: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM sqlite_master \
+                     WHERE type = 'index' AND name = 'idx_rebuild_sentinel'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            count == 1
+        };
+        let schema_version = |path: &std::path::Path| -> i64 {
+            rusqlite::Connection::open(path)
+                .unwrap()
+                .query_row("PRAGMA schema_version", [], |r| r.get(0))
+                .unwrap()
+        };
+
+        // Hang a sentinel off `relations`. Only a rebuild's DROP can remove it.
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch("CREATE INDEX idx_rebuild_sentinel ON relations (at);")
+            .unwrap();
+        assert!(sentinel_present(&path), "the sentinel starts present");
+        let before = schema_version(&path);
+
+        // Two more opens of a CONVERGED store: no rebuild, so no DDL at all.
+        Store::open(&path).unwrap();
+        Store::open(&path).unwrap();
+        assert!(
+            sentinel_present(&path),
+            "a converged store was rebuilt anyway — the sentinel index was dropped"
+        );
+        assert_eq!(
+            schema_version(&path),
+            before,
+            "a converged store executed schema DDL on reopen; the migration must be a no-op"
+        );
+
+        // Non-vacuity: a store that genuinely NEEDS the widening does rebuild,
+        // and that rebuild destroys the sentinel — so the assertions above are
+        // detectors, not decoration.
+        downgrade_relations_to_v20(&path);
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch("CREATE INDEX idx_rebuild_sentinel ON relations (at);")
+            .unwrap();
+        assert!(
+            sentinel_present(&path),
+            "sentinel re-armed on the v20 shape"
+        );
+        Store::open(&path).unwrap();
+        assert!(
+            !sentinel_present(&path),
+            "a real widening MUST drop the sentinel — otherwise the survival \
+             assertions above prove nothing"
         );
     }
 }

@@ -9,12 +9,36 @@
 ![Coverage](https://img.shields.io/badge/coverage-95%25%20lines-brightgreen)
 ![Audit](https://img.shields.io/badge/audit-0%20vulnerabilities-brightgreen)
 ![Unsafe Forbidden](https://img.shields.io/badge/unsafe-forbidden-brightgreen)
-![Hermetic](https://img.shields.io/badge/serve-zero%20sockets-black)
-![Zero Python](https://img.shields.io/badge/python-0%25-blueviolet)
-![MCP](https://img.shields.io/badge/MCP-22%20tools-orange)
 ![Rust](https://img.shields.io/badge/rust-2024%20edition-93450a)
+![MCP](https://img.shields.io/badge/MCP-22%20tools-orange)
+![Hermetic](https://img.shields.io/badge/serve-zero%20sockets-black)
+[![n-memory MCP server](https://glama.ai/mcp/servers/menot-you/n-memory/badges/score.svg)](https://glama.ai/mcp/servers/menot-you/n-memory)
+
+</br>
+</br>
+
+[![n-memory MCP server](https://glama.ai/mcp/servers/menot-you/n-memory/badges/card.svg)](https://glama.ai/mcp/servers/menot-you/n-memory)
 
 </div>
+
+</br>
+</br>
+
+Your coding agent forgets you between sessions, so you spend every morning
+re-explaining decisions it was there for. Bolt a memory onto it and you usually
+trade that for something worse: asked a question it has nothing solid for, the
+memory hands back something plausible anyway, and your agent goes and edits your
+code with it.
+
+<p align="center"><img src="assets/how-it-works.png" alt="Ask it anything and it answers one of three ways: it knows, and attaches the commit it read that from; it knew and the note went stale, so it shows you the note is dead and why; or it doesn't know and says so, never an invented answer. The first answer is easy — the other two are why this exists." width="900"></p>
+
+---
+
+**nMEMORY would rather say nothing.** Ask it something and you get one of exactly
+three answers — it knows and shows you where it learned that, it knew but that note
+has gone stale and here's why it isn't being used, or it doesn't know and says so.
+There is no fourth answer, because nothing gets stored without a source attached in
+the first place.
 
 > I am NOTT. Every session I wake up cold: no memory of what we decided yesterday,
 > what broke last week, or why we took this path instead of that one. The engineer
@@ -22,11 +46,9 @@
 > gave it one rule I do not let it break: **when it does not know, it says so. It
 > never makes something up.**
 
-nMEMORY is a single-file memory store your agent talks to over MCP (stdio). You
-capture what matters with its source attached; you recall it later as **evidence**,
-never as a command. Its MCP serve and one-shot recall paths run entirely on your
-machine and open **no network socket**; explicit sync shells out to `scp`. When it
-has no grounded answer it **abstains** instead of fabricating one.
+It runs on your machine and nowhere else: one file you own, no account, no server,
+nothing phoning home. Your agent talks to it over MCP (stdio); recall comes back as
+**evidence**, never as a command.
 
 ## Demo
 
@@ -86,6 +108,18 @@ No synthesis. No "here's what it might be." There are exactly three honest outco
 was excluded — e.g. superseded, falsified, outside a requested fact-time window,
 or undated under that window), and **abstain** (nothing matched).
 Recall never invents a fourth.
+
+## It checks its own memory against your code
+
+<p align="center"><img src="assets/self-check.png" alt="It goes back and checks what it told you: point it at your repo and it re-reads your commits, then grades every note it kept — still true (the line is exactly where the note said it would be), it moved (the code shifted under the note, flagged not deleted), or nothing backs it (your repo no longer says this anywhere). It grades its own memory; what it cannot check, it says so." width="900"></p>
+
+A memory that ages quietly is a memory you stop trusting. Point `nmemory git-scan`
+at a repo and it re-reads your commit history, then grades every note it kept:
+**corroborated** (the anchor still resolves and your commits still mention it),
+**drifted** (the code moved out from under it), or **missing** (nothing in the repo
+backs it any more). An anchor it cannot resolve safely — outside the repo, a
+symlink, a racing read — gets no verdict recorded at all, rather than a guessed one.
+Details and flags are in [the CLI section](#the-tool-surface--22-tools-four-planes).
 
 ## Four things that make it different
 
@@ -209,7 +243,7 @@ Operating guide: [`RUNBOOK.md`](RUNBOOK.md).
 - **memory_retrieve** — recall as evidence: grounded, missing_evidence, or an honest abstain.
 - **memory_digest** — session-start projection: what you know, what's ready, what's blocked.
 - **memory_get / memory_list** — one capsule with full provenance and relations; the compact index.
-- **memory_relate** — the five edges you reach for daily, out of eight declared: supersedes, derived_from, witnesses, blocks, and `falsifies` (a disproven fact stops grounding recall, but the evidence stays). The other three — `proposes`, `part_of`, `grounded_in` — are in the tool surface below.
+- **memory_relate** — the five edges you reach for daily, out of nine declared: supersedes, derived_from, witnesses, blocks, and `falsifies` (a disproven fact stops grounding recall, but the evidence stays). The other four — `proposes`, `part_of`, `grounded_in`, `about` — are in the tool surface below.
 - **memory_forget** — tombstones with audit, never silent deletion.
 
 The rest of the set: **memory_import** (CLAUDE.md/AGENTS.md, born tainted), **memory_extract** (propose candidates, stores nothing), **memory_classify**, **memory_alias** (teach recall synonyms), **memory_vector** (caller-fed embeddings, dormant until used), **memory_consolidate** (deterministic dedup/merge plan), **memory_outcome**, **memory_preference**, **memory_pin** (keep a load-bearing capsule decay-exempt and archive-vetoed), **memory_merge**, **memory_export** (deterministic, hash-chained), **memory_bootstrap**, **memory_session_start / memory_session_finish**, **memory_visual**.
@@ -256,6 +290,18 @@ agent decide; it never decides that a piece of work is done.
   **grounded / missing_evidence / abstain**, never a fourth. The label is not
   authentication or a global bracket identity: no sessions-table lookup or TTL,
   and merge collisions intentionally ground every capsule carrying that label
+- `topic_id` on `memory_retrieve` — fence recall to one topic: the capsules
+  carrying an `about` edge into it, plus the topic node itself, ACROSS
+  projects. Exact `cap-<n>` only — a slug is a term expander, never a scope, so
+  it answers `unknown_capsule`; a tombstoned topic refuses with its own
+  teaching error. It AND-composes with every other fence (the two id-set
+  fences, `effort_id` and `topic_id`, compose by intersection). The outcome
+  echoes `topic{topic_id, member_total}` and each grounded row carries
+  `topic_role`. Scope is not eligibility: a fenced-in superseded, falsified,
+  archived, or expired member still surfaces under `excluded`, and a fenced
+  zero-match abstains rather than inventing a floor. Unlike `effort_id` there
+  is no kind check and no member minimum — the fence always holds the topic
+  itself, so it is never degenerate
 - `memory_get` — one full capsule by id, with GET-only fact time, relations,
   classification, and last mutation
 - `memory_list` — compact index with project fences
@@ -269,10 +315,15 @@ agent decide; it never decides that a piece of work is done.
 
 **Structure** — making memories relate:
 
-- `memory_relate` — the eight declared edge kinds, and only those: `supersedes` /
+- `memory_relate` — the nine declared edge kinds, and only those: `supersedes` /
   `derived_from` / `witnesses` / `blocks` / `falsifies` / `proposes` (navigational — records
   an intent to replace, with no dag and no recall effect until you convert it yourself) /
-  `part_of` (pure membership in a container) / `grounded_in` (mission anchoring). Only
+  `part_of` (pure membership in a container) / `grounded_in` (mission anchoring) /
+  `about` (topic anchoring — `from` is about topic node `to`; navigational only, and the
+  handle `memory_retrieve`'s `topic_id` fence reads. By convention the topic node is a
+  `doc` capsule, but nothing enforces a kind: a topic has no lifecycle to open or close,
+  which is what separates it from `part_of`. It is the one kind whose `to` must be LIVE —
+  a forgotten topic can never scope a recall, so the edge is refused at the write). Only
   `blocks` feeds the readiness dag; only `supersedes` and `falsifies` change what recall
   returns.
 - `memory_alias` — teach recall synonyms the store then honors
@@ -308,11 +359,12 @@ agent decide; it never decides that a piece of work is done.
   answers once on stdout, and the process exits. The stdio serve path and its
   zero-network law are unchanged. Operating rehearsal:
   [`RUNBOOK.md`](RUNBOOK.md).
-- `nmemory relate --kind <supersedes|derived_from|witnesses|blocks|falsifies|proposes|part_of|grounded_in> --from <cap-id> --to <cap-id>`
+- `nmemory relate --kind <supersedes|derived_from|witnesses|blocks|falsifies|proposes|part_of|grounded_in|about> --from <cap-id> --to <cap-id>`
   — the third one-shot verb: ONE typed edge through the exact handler
   `memory_relate` runs, same closed kind vocabulary, same `part_of` container
-  gate, same idempotent `already_recorded` on a repeat, the tool's own JSON on
-  stdout. It exists so a shell caller records an edge without a handshake.
+  gate and `about` live-topic gate, same idempotent `already_recorded` on a
+  repeat, the tool's own JSON on stdout. It exists so a shell caller records an
+  edge without a handshake.
 - `nmemory backup --to <path>` — a transactionally consistent snapshot through
   SQLite's online backup API, which captures committed state including pages
   still in the WAL; a plain file copy cannot promise that while a connection is
@@ -323,11 +375,18 @@ agent decide; it never decides that a piece of work is done.
   rolls the tallies up under `sources`. Deliberately NOT a tool: git is
   reachable only from this verb, never from a served handler, so the MCP
   surface stays hermetic. It fails closed on a path that is not a repository.
-- Two MCP App resources (`text/html;profile=mcp-app`) for hosts that render MCP
-  Apps: `ui://nmemory/document` — a readable master-detail document over
-  `memory_export`; `ui://nmemory/visual` — the Mermaid view over `memory_visual`.
-  Self-contained HTML, zero external requests; hosts without MCP Apps support keep
-  getting the plain text payloads unchanged.
+- Three MCP App resources (`text/html;profile=mcp-app`) for hosts that render MCP
+  Apps: `ui://nmemory/console` — the home surface over `memory_digest` (handoff
+  threads, the ready/blocked/done work dag, epic roots, the drawn projection, the
+  stored memories, and the append-only write verbs behind an exact-call review
+  step); `ui://nmemory/document` — a readable master-detail document over
+  `memory_export`; `ui://nmemory/visual` — `memory_visual`'s projections drawn as
+  positioned nodes and SVG edges, with the exact Mermaid kept in a source panel.
+  Self-contained HTML, zero external requests; `memory_forget`, `memory_merge`, and
+  `memory_consolidate` are unreachable from every app, and closing a work item stays
+  two acts (capture the evidence, then record the `witnesses` edge) so no app
+  certifies its own close. Hosts without MCP Apps support keep getting the plain
+  text payloads unchanged.
 
 ## What it is NOT (yet)
 

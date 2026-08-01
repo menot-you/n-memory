@@ -6,6 +6,57 @@ All notable changes to nMEMORY. The format follows
 `menot-you/n-memory` mirror. Every entry states what shipped, verified against
 the released source — never against commit messages alone.
 
+## [0.3.0] — 2026-07-31
+
+### Added
+
+- `about` — a ninth `memory_relate` kind recording that a capsule is about a
+  TOPIC node (`from --about--> to`), navigational only: never a dag input,
+  never a recall exclusion, and byte-inert to the digest. By convention the
+  topic node is a `doc` capsule, but no kind is enforced — a topic has no
+  lifecycle to open or close, which is what separates it from `part_of`. It is
+  the one kind that refuses a tombstoned `to`, because a forgotten topic can
+  never scope a recall and the edge could never be read.
+- `topic_id` on `memory_retrieve` — an optional scope fence (exact `cap-<n>`;
+  a slug never resolves) that fences both lanes to the topic's `about` members
+  ∪ the topic itself, ACROSS projects, AND-composing with
+  project_id/project_prefix/session_id/effort_id — the two id-set fences by
+  intersection. The outcome echoes `topic{topic_id, member_total}` and every
+  grounded row carries `topic_role`. Scope is not eligibility: a fenced-in
+  superseded, falsified, archived, or expired member still surfaces under
+  `excluded`, and a fenced zero-match abstains. Omitting it is dormant — the
+  envelope is byte-identical.
+- `ui://nmemory/console` — a third MCP App resource, bound to `memory_digest`,
+  and the home surface: handoff threads and store shape, the blocks dag as
+  ready / blocked / done work, the mission spine's epic roots, the drawn
+  projection, and the stored memories with recall. It opens on the ready-set
+  plus exactly one next action, and it fails closed where the digest does — a
+  blocks-cycle or a `grounded_in` cycle shows the concrete cycle and the
+  repair, never a fabricated answer.
+- Writes from the console, limited to the recoverable append-only verbs
+  (`memory_ingest`, `memory_classify`, `memory_relate`, `memory_pin`). Each one
+  passes a review step that shows the exact MCP tool call before sending, and
+  the server's own answer or rejection is displayed verbatim.
+  `memory_forget`, `memory_merge`, and `memory_consolidate` are unreachable
+  from every app. Closing a work item stays two acts — capture the evidence,
+  then record the `witnesses` edge — so no app certifies its own close.
+
+### Changed
+
+- `ui://nmemory/visual` DRAWS the projection instead of dumping the Mermaid
+  string: the emitted grammar is parsed, nodes are laid out by contract depth,
+  edges become inline SVG arrows carrying the server's own class colours, and
+  the exact Mermaid stays in a source panel. All four views (`dag`,
+  `relations`, `tiers`, `sessions`) render. No Mermaid renderer is embedded and
+  the resource stays URL-free.
+- The design tokens, the `ui/*` handshake, the capsule detail renderer, and the
+  diagram renderer now exist exactly once, shared by all three resources.
+- `memory_digest` / `memory_bootstrap` `open_efforts` now admits an effort when
+  the project fence holds the epic OR any `part_of` member — previously only
+  the epic's own project surfaced it — because a cross-project effort is
+  reachable from any of its projects. Witness, supersede, and tombstone
+  semantics are unchanged.
+
 ## [0.2.1] — 2026-07-28
 
 ### Changed

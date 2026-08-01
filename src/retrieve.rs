@@ -820,6 +820,73 @@ pub enum EffortRole {
     Member,
 }
 
+/// topic-anchor s1: the RESOLVED topic scope injected by the server after it
+/// validates `topic_id` (exists → not tombstoned). The engine receives an
+/// ALREADY-VALID scope — both teaching rejections (`unknown_capsule`, which a
+/// slug also lands on, and `tombstoned_capsule`) fire at the boundary before
+/// this is built. `None` on the query keeps the entire engine byte-identical
+/// (dormancy).
+///
+/// A topic needs NO further precondition: unlike an effort it has no
+/// lifecycle to be open or closed, no persisted kind to check (the `doc`
+/// convention is documentation, never a gate), and no zero-member rejection —
+/// the fence always contains the topic node itself, so it is never degenerate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopicScope {
+    /// The capsule id (`cap-<n>`) serving as the topic node.
+    pub topic_id: String,
+    /// The topic's members — the `from` side of every `about` edge INTO the
+    /// topic, GRAPH TRUTH (dead members included). The SQL fence is this set ∪
+    /// `{topic_id}`; the echoed `member_total` is exactly its length.
+    pub member_ids: Vec<String>,
+}
+
+impl TopicScope {
+    /// The SQL membership fence id-set: members ∪ {topic}, deterministic
+    /// order. Built ONCE per recall, then AND-composed with any effort set.
+    fn fence_ids(&self) -> Vec<String> {
+        let mut ids = self.member_ids.clone();
+        if !ids.iter().any(|id| id == &self.topic_id) {
+            ids.push(self.topic_id.clone());
+        }
+        ids
+    }
+
+    /// Graph-truth membership size — the echoed `member_total`.
+    fn member_total(&self) -> usize {
+        self.member_ids.len()
+    }
+}
+
+/// topic-anchor s1: the per-response echo of the resolved topic scope, so a
+/// caller sees WHICH topic fenced the recall. It carries no `open` flag by
+/// design: a topic has no lifecycle to report.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TopicEcho {
+    /// The topic capsule id the fence resolved.
+    pub topic_id: String,
+    /// Graph-truth member count (dead members included).
+    pub member_total: usize,
+}
+
+/// topic-anchor s1: a grounded row's relationship to the fencing topic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TopicRole {
+    /// This row IS the topic capsule.
+    Topic,
+    /// This row carries an `about` edge into the topic.
+    Member,
+}
+
+/// One recall request: the caller-expanded terms plus every fence applied to
+/// them.
+///
+/// FENCES AND-COMPOSE, so setting one can only narrow what grounds the answer,
+/// never widen it, and a field left unset applies NO fence rather than a
+/// permissive default. `terms` is the exception that keeps the empty case
+/// honest: a query with no tokenizable term is refused with
+/// [`RetrieveError::EmptyQuery`] instead of matching everything.
 #[derive(Debug, Clone, Default)]
 pub struct RetrieveQuery {
     /// Caller-expanded search terms. A term's words are AND-matched
@@ -918,6 +985,16 @@ pub struct RetrieveQuery {
     /// eligibility is untouched, so a fenced-in dead member still surfaces
     /// under `excluded{…}`.
     pub effort: Option<EffortScope>,
+    /// topic-anchor s1: the RESOLVED topic scope. `None` (the default) is
+    /// DORMANT — byte-identical to the pre-topic engine, zero new reads.
+    /// `Some(scope)` fences BOTH lanes to the topic's members ∪ {topic} (an
+    /// AND-composed id-set, never a post-filter — INTERSECTED with the
+    /// [`RetrieveQuery::effort`] set when both are present), echoes
+    /// `topic{…}` on the outcome, stamps `topic_role` on each grounded row,
+    /// and names the topic in the honest-empty fence label. SCOPE only —
+    /// downstream eligibility is untouched, so a fenced-in dead member still
+    /// surfaces under `excluded{…}`.
+    pub topic: Option<TopicScope>,
 }
 
 /// One recall result wrapped as DATA — the evidence envelope
@@ -1062,6 +1139,12 @@ pub struct Evidence {
     /// the byte-identical dormant path. Explain data, never authority.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort_role: Option<EffortRole>,
+    /// topic-anchor s1: this row's role in the fencing topic — `"topic"` for
+    /// the topic capsule itself, `"member"` for a row carrying an `about` edge
+    /// into it. Present ONLY when the query carried a `topic_id`; omitted on
+    /// the byte-identical dormant path. Explain data, never authority.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topic_role: Option<TopicRole>,
 }
 
 /// The wire form of a capsule's newest git corroboration (S2 git witness
@@ -1153,6 +1236,10 @@ pub enum RetrieveResponse {
         /// path). A closed effort still grounds, echoing `open:false`.
         #[serde(skip_serializing_if = "Option::is_none")]
         effort: Option<EffortEcho>,
+        /// topic-anchor s1: the resolved topic scope echo, present ONLY when
+        /// the query carried a `topic_id` (omitted on the dormant path).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        topic: Option<TopicEcho>,
     },
     /// One or more executed lanes (or the tombstone id probe) DID match
     /// stored capsules, but every match was excluded by an eligibility
@@ -1175,6 +1262,11 @@ pub enum RetrieveResponse {
         /// that produced this outcome are still named per-reason in `excluded`.
         #[serde(skip_serializing_if = "Option::is_none")]
         effort: Option<EffortEcho>,
+        /// topic-anchor s1: the resolved topic scope echo, present ONLY when
+        /// the query carried a `topic_id`. The fenced-in dead members that
+        /// produced this outcome are still named per-reason in `excluded`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        topic: Option<TopicEcho>,
     },
     /// Nothing matched at all — the honest empty answer, never a
     /// fabricated one.
@@ -1189,6 +1281,12 @@ pub enum RetrieveResponse {
         /// twin. A fenced zero-match ABSTAINS (never floored).
         #[serde(skip_serializing_if = "Option::is_none")]
         effort: Option<EffortEcho>,
+        /// topic-anchor s1: the resolved topic scope echo, present ONLY when
+        /// the query carried a `topic_id`. The `reason` text already names the
+        /// topic in its composed fence label; this is the machine twin. A
+        /// fenced zero-match ABSTAINS (never floored).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        topic: Option<TopicEcho>,
     },
 }
 
@@ -1555,18 +1653,42 @@ fn retrieve_observed<S: RecallStore>(
         }
     }
 
-    // S3 effort-lifecycle: the resolved effort scope (already valid — every
-    // teaching rejection fired at the boundary). Compute its SQL fence id-set
-    // (members ∪ {epic}) ONCE; both lanes AND-compose it onto the project/
-    // session fences. `None` keeps `effort_ids` `None`, so the store queries
-    // and their bytes are byte-identical to the pre-S3 engine (dormancy). The
-    // echo is built once and shared by all three honest outcomes.
+    // S3 effort-lifecycle + topic-anchor s1: the resolved id-set scopes
+    // (already valid — every teaching rejection fired at the boundary).
+    // Compute each SQL fence id-set ONCE — effort members ∪ {epic}, topic
+    // members ∪ {topic} — then AND-compose them into the ONE set both lanes
+    // apply on top of the project/session fences. Two id-set fences compose by
+    // INTERSECTION, which is what AND means: a row must sit in both. An empty
+    // intersection (disjoint effort and topic) matches nothing and abstains —
+    // the honest answer, never a widened one. With neither scope the set stays
+    // `None`, so the store queries and their bytes are byte-identical to the
+    // pre-S3 engine (dormancy). The echoes are built once and shared by all
+    // three honest outcomes.
     let effort_fence_ids: Option<Vec<String>> = query.effort.as_ref().map(EffortScope::fence_ids);
-    let effort_ids: Option<&[String]> = effort_fence_ids.as_deref();
+    let topic_fence_ids: Option<Vec<String>> = query.topic.as_ref().map(TopicScope::fence_ids);
+    let scope_fence_ids: Option<Vec<String>> = match (&effort_fence_ids, &topic_fence_ids) {
+        (Some(effort), Some(topic)) => {
+            let topic_set: HashSet<&str> = topic.iter().map(String::as_str).collect();
+            Some(
+                effort
+                    .iter()
+                    .filter(|id| topic_set.contains(id.as_str()))
+                    .cloned()
+                    .collect(),
+            )
+        }
+        (Some(ids), None) | (None, Some(ids)) => Some(ids.clone()),
+        (None, None) => None,
+    };
+    let effort_ids: Option<&[String]> = scope_fence_ids.as_deref();
     let effort_echo = query.effort.as_ref().map(|scope| EffortEcho {
         epic_id: scope.epic_id.clone(),
         member_total: scope.member_total(),
         open: scope.open,
+    });
+    let topic_echo = query.topic.as_ref().map(|scope| TopicEcho {
+        topic_id: scope.topic_id.clone(),
+        member_total: scope.member_total(),
     });
 
     // Fence label for the honest empty answers (w2-fix): BOTH scope
@@ -1587,10 +1709,25 @@ fn retrieve_observed<S: RecallStore>(
             fence.push_str(&format!(" and store-local capsule label '{session_id}'"));
         }
     }
+    // topic-anchor s1: the topic clause prepends BEFORE the effort clause
+    // below, so when both are present the EFFORT still LEADS (S3's frozen
+    // contract) and the topic reads second. A topic-free query leaves `fence`
+    // byte-identical.
+    if let Some(scope) = &query.topic {
+        let topic_clause = format!(
+            "topic '{}' ({} members)",
+            scope.topic_id,
+            scope.member_total()
+        );
+        fence = match fence.strip_prefix(" within ") {
+            Some(rest) => format!(" within {topic_clause} and {rest}"),
+            None => format!(" within {topic_clause}"),
+        };
+    }
     // S3: the effort clause LEADS the composed fence label (the contract
     // example: ` within effort 'cap-42' (7 members) and project 'nott'`). It
-    // AND-composes with whatever project/session fence already built above;
-    // an effort-free query leaves `fence` byte-identical.
+    // AND-composes with whatever project/session/topic fence already built
+    // above; an effort-free query leaves `fence` byte-identical.
     if let Some(scope) = &query.effort {
         let effort_clause = format!(
             "effort '{}' ({} members)",
@@ -1745,6 +1882,7 @@ fn retrieve_observed<S: RecallStore>(
             response: RetrieveResponse::Abstain {
                 reason: empty_lane_reason(),
                 effort: effort_echo,
+                topic: topic_echo,
             },
             term_lane: lane.run_fts.then_some(TermLaneObservation::Abstain),
             lane_override: lane.override_,
@@ -1882,7 +2020,7 @@ fn retrieve_observed<S: RecallStore>(
             format!("matched{fence}")
         };
         return Ok(RetrieveExecution {
-            response: missing_evidence(total, excluded, &match_clause, effort_echo),
+            response: missing_evidence(total, excluded, &match_clause, effort_echo, topic_echo),
             term_lane,
             lane_override: lane.override_,
         });
@@ -2049,6 +2187,16 @@ fn retrieve_observed<S: RecallStore>(
                 EffortRole::Member
             }
         });
+        // topic-anchor s1: the same stamp for the fencing topic — the topic
+        // node itself vs an `about` member. `None` keeps the envelope
+        // byte-identical.
+        let topic_role = query.topic.as_ref().map(|scope| {
+            if candidate.stored.id.as_str() == scope.topic_id {
+                TopicRole::Topic
+            } else {
+                TopicRole::Member
+            }
+        });
         let envelope = evidence_for(
             candidate,
             top_score,
@@ -2058,6 +2206,7 @@ fn retrieve_observed<S: RecallStore>(
             epistemics,
             corroboration,
             effort_role,
+            topic_role,
         );
         let serialized = serde_json::to_string(&envelope)
             .map_err(|e| RetrieveError::Serialize(e.to_string()))?;
@@ -2096,6 +2245,7 @@ fn retrieve_observed<S: RecallStore>(
             excluded,
             receipt_id: None,
             effort: effort_echo,
+            topic: topic_echo,
         },
         term_lane,
         lane_override: lane.override_,
@@ -2119,6 +2269,7 @@ fn missing_evidence(
     excluded: BTreeMap<ExclusionReason, usize>,
     match_clause: &str,
     effort: Option<EffortEcho>,
+    topic: Option<TopicEcho>,
 ) -> RetrieveResponse {
     let detail: Vec<String> = excluded
         .iter()
@@ -2152,6 +2303,7 @@ fn missing_evidence(
         excluded,
         reason,
         effort,
+        topic,
     }
 }
 
@@ -2186,6 +2338,7 @@ fn evidence_for(
     epistemics: Option<EpistemicsRecord>,
     corroboration: Option<CorroborationSummary>,
     effort_role: Option<EffortRole>,
+    topic_role: Option<TopicRole>,
 ) -> Evidence {
     let stored = &candidate.stored;
     let capsule = &stored.capsule;
@@ -2227,6 +2380,7 @@ fn evidence_for(
         corroboration: corroboration.map(CorroborationWire::from),
         corroboration_weight: candidate.corroboration_weight.map(round2),
         effort_role,
+        topic_role,
     }
 }
 
@@ -7990,6 +8144,449 @@ mod tests {
             let mut store = two_effort_world();
             let mut q = query(&["token"]);
             q.effort = Some(effort_a());
+            serde_json::to_vec(&retrieve(&mut store, &q, NOW).unwrap()).unwrap()
+        };
+        assert_eq!(run(), run(), "seq/id only — no clock, no nondeterminism");
+    }
+
+    // --- topic-anchor s1: topic_id scoped retrieve ------------------------
+
+    /// A CROSS-PROJECT topic world — the whole point of the topic anchor.
+    /// cap-1 is a member in project A, cap-2 a member in project B, cap-3 the
+    /// topic node in project C, and cap-4 an off-topic row in project A that
+    /// carries the SAME term, so a fence that leaks would surface it.
+    fn cross_project_topic_world() -> Store {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append(
+                &cap("token note from alpha", "proj-a", 0.9, VF, None),
+                APPENDED,
+            )
+            .unwrap(); // cap-1
+        store
+            .append(
+                &cap("token note from beta", "proj-b", 0.9, VF, None),
+                APPENDED,
+            )
+            .unwrap(); // cap-2
+        store
+            .append(
+                &cap("token the topic node", "proj-c", 0.9, VF, None),
+                APPENDED,
+            )
+            .unwrap(); // cap-3
+        store
+            .append(
+                &cap("token unrelated in alpha", "proj-a", 0.9, VF, None),
+                APPENDED,
+            )
+            .unwrap(); // cap-4
+        store
+            .upsert_relation(RelationKind::About, "cap-1", "cap-3", APPENDED)
+            .unwrap();
+        store
+            .upsert_relation(RelationKind::About, "cap-2", "cap-3", APPENDED)
+            .unwrap();
+        store
+    }
+
+    /// The topic scope for [`cross_project_topic_world`]: node cap-3, members
+    /// cap-1 (project A) and cap-2 (project B).
+    fn topic_c() -> TopicScope {
+        TopicScope {
+            topic_id: "cap-3".to_string(),
+            member_ids: vec!["cap-1".to_string(), "cap-2".to_string()],
+        }
+    }
+
+    /// T1 — the fence crosses project boundaries and stamps each role.
+    #[test]
+    fn topic_fence_unions_members_across_projects_and_stamps_roles() {
+        let mut store = cross_project_topic_world();
+        let mut q = query(&["token"]);
+        q.topic = Some(topic_c());
+        let response = retrieve(&mut store, &q, NOW).unwrap();
+        let value = serde_json::to_value(&response).unwrap();
+        assert_eq!(value["outcome"], "grounded", "{value}");
+        let roles: BTreeMap<String, String> = value["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["id"].as_str().unwrap().to_string(),
+                    r["topic_role"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        // All three ground with NO project fence — two projects, one topic.
+        assert_eq!(roles.get("cap-1").map(String::as_str), Some("member"));
+        assert_eq!(roles.get("cap-2").map(String::as_str), Some("member"));
+        assert_eq!(roles.get("cap-3").map(String::as_str), Some("topic"));
+        // The off-topic row carries the SAME term and must never leak in.
+        assert!(
+            !roles.contains_key("cap-4"),
+            "a non-member with the same term leaked past the fence: {roles:?}"
+        );
+        assert_eq!(value["topic"]["topic_id"], "cap-3");
+        assert_eq!(value["topic"]["member_total"], 2);
+        assert!(
+            value["topic"].get("open").is_none(),
+            "a topic has no lifecycle, so the echo carries no open flag: {}",
+            value["topic"]
+        );
+    }
+
+    /// T2 — the topic fence AND-composes with the project fence: only the
+    /// member that is ALSO in project A grounds. The other member is outside
+    /// the composed scope entirely (scope, not exclusion), so it is absent
+    /// from `excluded` — exactly the effort fence's semantics.
+    #[test]
+    fn topic_fence_and_composes_with_the_project_fence() {
+        let mut store = cross_project_topic_world();
+        let q = RetrieveQuery {
+            terms: vec!["token".to_string()],
+            project_id: Some("proj-a".to_string()),
+            topic: Some(topic_c()),
+            ..RetrieveQuery::default()
+        };
+        let response = retrieve(&mut store, &q, NOW).unwrap();
+        let RetrieveResponse::Grounded {
+            results, excluded, ..
+        } = &response
+        else {
+            panic!("project A's member must ground: {response:?}");
+        };
+        let ids: Vec<&str> = results.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["cap-1"],
+            "only the member inside BOTH fences grounds"
+        );
+        assert!(
+            excluded.is_empty(),
+            "out-of-scope rows are fenced, never excluded: {excluded:?}"
+        );
+    }
+
+    /// The vector lane obeys the same fence: two identically-embedded rows,
+    /// only the topic member survives.
+    #[test]
+    fn topic_fence_holds_in_the_vector_lane() {
+        let mut store = cross_project_topic_world();
+        store
+            .put_embedding("cap-1", &[1.0, 0.0], "m", APPENDED)
+            .unwrap();
+        store
+            .put_embedding("cap-4", &[1.0, 0.0], "m", APPENDED)
+            .unwrap();
+        let q = RetrieveQuery {
+            terms: vec!["token".to_string()],
+            lane: Some(Lane::Vector),
+            query_embedding: Some(vec![1.0, 0.0]),
+            topic: Some(topic_c()),
+            ..RetrieveQuery::default()
+        };
+        let response = retrieve(&mut store, &q, NOW).unwrap();
+        let RetrieveResponse::Grounded { results, .. } = &response else {
+            panic!("the vector lane must ground the topic member: {response:?}");
+        };
+        let ids: Vec<&str> = results.iter().map(|e| e.id.as_str()).collect();
+        assert!(
+            ids.contains(&"cap-1"),
+            "the embedded member grounds: {ids:?}"
+        );
+        assert!(
+            !ids.contains(&"cap-4"),
+            "an identically-embedded non-member leaked past the vector fence: {ids:?}"
+        );
+    }
+
+    /// T4 at the engine seam — byte-golden dormancy: a query WITHOUT a topic
+    /// scope must be byte-for-byte identical to the pre-topic engine, i.e. to
+    /// the SAME four capsules in a store that never learned the topic
+    /// machinery (no `about` edges). A `contains("topic")` probe both
+    /// false-passes on a null field and false-FAILS on content bearing the
+    /// token; full-wire identity is neither.
+    ///
+    /// Two-store identity ALONE is not enough, and the difference matters: a
+    /// field that serializes to `null` in BOTH stores is identical in both and
+    /// slips through, so dropping a `skip_serializing_if` would still pass.
+    /// The STRUCTURAL half below closes that hole by asserting the new keys are
+    /// ABSENT from the parsed object — key lookup, never a substring probe, so
+    /// content bearing the word "topic" cannot false-fail it.
+    #[test]
+    fn topic_absent_is_byte_identical_dormant() {
+        let mut with_topics = cross_project_topic_world();
+        let mut pre_topic = Store::open_in_memory().unwrap();
+        for (content, project) in [
+            ("token note from alpha", "proj-a"),
+            ("token note from beta", "proj-b"),
+            ("token the topic node", "proj-c"),
+            ("token unrelated in alpha", "proj-a"),
+        ] {
+            pre_topic
+                .append(&cap(content, project, 0.9, VF, None), APPENDED)
+                .unwrap();
+        }
+        let dormant =
+            serde_json::to_string(&retrieve(&mut with_topics, &query(&["token"]), NOW).unwrap())
+                .unwrap();
+        let baseline =
+            serde_json::to_string(&retrieve(&mut pre_topic, &query(&["token"]), NOW).unwrap())
+                .unwrap();
+        assert_eq!(
+            dormant, baseline,
+            "a topic-free recall is byte-identical to the pre-topic engine: {dormant}"
+        );
+        // Structural half: the two new keys must be ABSENT, not merely null.
+        let value: serde_json::Value = serde_json::from_str(&dormant).unwrap();
+        assert!(
+            value.get("topic").is_none(),
+            "the topic echo key must be absent on a dormant recall: {dormant}"
+        );
+        for row in value["results"].as_array().unwrap() {
+            assert!(
+                row.get("topic_role").is_none(),
+                "topic_role must be absent on a dormant envelope: {row}"
+            );
+        }
+    }
+
+    /// T5 — a fenced-in DEAD member surfaces under `excluded`, never collapsing
+    /// the outcome to abstain. Scope is not eligibility.
+    #[test]
+    fn fenced_dead_topic_member_surfaces_in_excluded() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append(&cap("topic node headline", "nott", 0.9, VF, None), APPENDED)
+            .unwrap(); // cap-1 topic
+        store
+            .append(&cap("widget live member", "nott", 0.9, VF, None), APPENDED)
+            .unwrap(); // cap-2 live member
+        store
+            .append(&cap("widget stale member", "nott", 0.9, VF, None), APPENDED)
+            .unwrap(); // cap-3 superseded member
+        store
+            .append(
+                &cap("widget successor outside", "nott", 0.9, VF, None),
+                APPENDED,
+            )
+            .unwrap(); // cap-4 successor, NOT about the topic
+        store
+            .upsert_relation(RelationKind::About, "cap-2", "cap-1", APPENDED)
+            .unwrap();
+        store
+            .upsert_relation(RelationKind::About, "cap-3", "cap-1", APPENDED)
+            .unwrap();
+        store.supersede("cap-3", "cap-4", APPENDED).unwrap();
+
+        let mut q = query(&["widget"]);
+        q.topic = Some(TopicScope {
+            topic_id: "cap-1".to_string(),
+            member_ids: vec!["cap-2".to_string(), "cap-3".to_string()],
+        });
+        let response = retrieve(&mut store, &q, NOW).unwrap();
+        let RetrieveResponse::Grounded {
+            results, excluded, ..
+        } = &response
+        else {
+            panic!("the live member must ground; the dead one must not abstain: {response:?}");
+        };
+        let ids: Vec<&str> = results.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["cap-2"], "only the live fenced member grounds");
+        assert_eq!(
+            excluded.get(&ExclusionReason::Superseded).copied(),
+            Some(1),
+            "the fenced-in dead member surfaces under excluded, not abstain: {excluded:?}"
+        );
+        assert!(
+            !ids.contains(&"cap-4"),
+            "the successor is outside the fence"
+        );
+    }
+
+    /// A fenced zero-match ABSTAINS and the honest-empty text NAMES the topic
+    /// fence — never a floored, fabricated row.
+    #[test]
+    fn fenced_zero_match_abstains_and_names_the_topic_fence() {
+        let mut store = cross_project_topic_world();
+        let mut q = query(&["kiwi"]);
+        q.topic = Some(topic_c());
+        let response = retrieve(&mut store, &q, NOW).unwrap();
+        let RetrieveResponse::Abstain { reason, topic, .. } = &response else {
+            panic!("a fenced zero-match must abstain, never floor: {response:?}");
+        };
+        assert!(
+            reason.contains("within topic 'cap-3' (2 members)"),
+            "the honest-empty text names the topic fence: {reason}"
+        );
+        assert_eq!(
+            topic.as_ref().map(|t| t.member_total),
+            Some(2),
+            "the machine twin of the fence label rides the abstain"
+        );
+    }
+
+    /// Composed with an effort, the EFFORT clause still LEADS the fence label
+    /// (S3's frozen contract) and the topic reads second.
+    #[test]
+    fn topic_clause_follows_the_effort_clause_in_the_fence_label() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append(&cap("epic and topic node", "nott", 0.9, VF, None), APPENDED)
+            .unwrap(); // cap-1
+        store
+            .append(&cap("banana member", "nott", 0.9, VF, None), APPENDED)
+            .unwrap(); // cap-2
+        store
+            .set_classification("cap-1", "epic", "project", NOW)
+            .unwrap();
+        store
+            .upsert_relation(RelationKind::PartOf, "cap-2", "cap-1", APPENDED)
+            .unwrap();
+        store
+            .upsert_relation(RelationKind::About, "cap-2", "cap-1", APPENDED)
+            .unwrap();
+        let q = RetrieveQuery {
+            terms: vec!["kiwi".to_string()],
+            project_id: Some("nott".to_string()),
+            effort: Some(EffortScope {
+                epic_id: "cap-1".to_string(),
+                member_ids: vec!["cap-2".to_string()],
+                open: true,
+            }),
+            topic: Some(TopicScope {
+                topic_id: "cap-1".to_string(),
+                member_ids: vec!["cap-2".to_string()],
+            }),
+            ..RetrieveQuery::default()
+        };
+        let response = retrieve(&mut store, &q, NOW).unwrap();
+        let RetrieveResponse::Abstain { reason, .. } = &response else {
+            panic!("expected abstain, got {response:?}");
+        };
+        assert!(
+            reason.contains(
+                "within effort 'cap-1' (1 members) and topic 'cap-1' (1 members) and project 'nott'"
+            ),
+            "effort leads, topic follows, project last: {reason}"
+        );
+    }
+
+    /// Two id-set fences compose by INTERSECTION, which is what AND means.
+    /// The effort holds {cap-1, cap-2}; the topic holds {cap-3, cap-4}; they
+    /// are disjoint, so nothing can satisfy both and recall ABSTAINS — never
+    /// widened to the union, never floored.
+    #[test]
+    fn disjoint_effort_and_topic_fences_intersect_to_nothing_and_abstain() {
+        let mut store = Store::open_in_memory().unwrap();
+        for content in [
+            "widget epic node",
+            "widget effort member",
+            "widget topic node",
+            "widget topic member",
+        ] {
+            store
+                .append(&cap(content, "nott", 0.9, VF, None), APPENDED)
+                .unwrap();
+        }
+        store
+            .set_classification("cap-1", "epic", "project", NOW)
+            .unwrap();
+        store
+            .upsert_relation(RelationKind::PartOf, "cap-2", "cap-1", APPENDED)
+            .unwrap();
+        store
+            .upsert_relation(RelationKind::About, "cap-4", "cap-3", APPENDED)
+            .unwrap();
+        // Each fence ALONE grounds — the differential that makes the
+        // intersection result meaningful rather than a vacuous empty store.
+        let effort_only = RetrieveQuery {
+            terms: vec!["widget".to_string()],
+            effort: Some(EffortScope {
+                epic_id: "cap-1".to_string(),
+                member_ids: vec!["cap-2".to_string()],
+                open: true,
+            }),
+            ..RetrieveQuery::default()
+        };
+        assert!(
+            matches!(
+                retrieve(&mut store, &effort_only, NOW).unwrap(),
+                RetrieveResponse::Grounded { .. }
+            ),
+            "the effort fence alone grounds"
+        );
+        let topic_only = RetrieveQuery {
+            terms: vec!["widget".to_string()],
+            topic: Some(TopicScope {
+                topic_id: "cap-3".to_string(),
+                member_ids: vec!["cap-4".to_string()],
+            }),
+            ..RetrieveQuery::default()
+        };
+        assert!(
+            matches!(
+                retrieve(&mut store, &topic_only, NOW).unwrap(),
+                RetrieveResponse::Grounded { .. }
+            ),
+            "the topic fence alone grounds"
+        );
+        // Together: disjoint sets intersect to nothing.
+        let both = RetrieveQuery {
+            terms: vec!["widget".to_string()],
+            effort: effort_only.effort.clone(),
+            topic: topic_only.topic.clone(),
+            ..RetrieveQuery::default()
+        };
+        let response = retrieve(&mut store, &both, NOW).unwrap();
+        let RetrieveResponse::Abstain { effort, topic, .. } = &response else {
+            panic!("disjoint id-set fences must abstain, never union: {response:?}");
+        };
+        assert!(
+            effort.is_some() && topic.is_some(),
+            "both echoes ride the abstain so the caller sees WHICH pair emptied it"
+        );
+    }
+
+    /// A topic with NO members is NOT degenerate: the fence still contains the
+    /// topic node, so the topic capsule itself grounds. This is exactly why
+    /// `topic_id` has no zero-member rejection while `effort_id` does.
+    #[test]
+    fn memberless_topic_still_grounds_the_topic_node_itself() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append(&cap("widget lonely topic", "nott", 0.9, VF, None), APPENDED)
+            .unwrap(); // cap-1
+        store
+            .append(&cap("widget outsider row", "nott", 0.9, VF, None), APPENDED)
+            .unwrap(); // cap-2
+        let mut q = query(&["widget"]);
+        q.topic = Some(TopicScope {
+            topic_id: "cap-1".to_string(),
+            member_ids: Vec::new(),
+        });
+        let response = retrieve(&mut store, &q, NOW).unwrap();
+        let value = serde_json::to_value(&response).unwrap();
+        assert_eq!(value["outcome"], "grounded", "{value}");
+        let ids: Vec<&str> = value["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["cap-1"], "only the topic node is in the fence");
+        assert_eq!(value["results"][0]["topic_role"], "topic");
+        assert_eq!(value["topic"]["member_total"], 0);
+    }
+
+    #[test]
+    fn topic_scoped_recall_is_deterministic() {
+        let run = || {
+            let mut store = cross_project_topic_world();
+            let mut q = query(&["token"]);
+            q.topic = Some(topic_c());
             serde_json::to_vec(&retrieve(&mut store, &q, NOW).unwrap()).unwrap()
         };
         assert_eq!(run(), run(), "seq/id only — no clock, no nondeterminism");

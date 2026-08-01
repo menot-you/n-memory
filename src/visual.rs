@@ -13,7 +13,7 @@
 //! - **`dag`** — the blocks-dag as `graph TD`, ready / blocked / done nodes
 //!   each styled distinctly. It obeys the SAME law as `memory_digest`'s dag
 //!   section: the projection is recomputed per call via
-//!   [`relation::Dag::project_excluding`]; superseded/tombstoned capsules are
+//!   [`crate::relation::Dag::project_excluding`]; superseded/tombstoned capsules are
 //!   dead to it and VANISH; a witnessed blocks-participant is DONE —
 //!   proof-carrying closure, styled distinctly and KEPT in the graph (it
 //!   stays live and recallable, unlike a dead node); and a LIVE blocks-cycle

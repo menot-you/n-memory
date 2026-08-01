@@ -71,6 +71,7 @@ const FUSED_ENVELOPE_KEYS: &[&str] = &[
     "corroboration",
     "corroboration_weight",
     "effort_role",
+    "topic_role",
 ];
 
 /// Test seam for the public entry: every recall in this suite injects

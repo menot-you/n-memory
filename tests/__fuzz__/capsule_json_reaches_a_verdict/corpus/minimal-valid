@@ -1,0 +1,1 @@
+{"content":"a fact","provenance":{"source":"s","anchor":"a.md:1","captured_at":"2026-07-29T00:00:00Z"},"confidence":0.9,"freshness":{"valid_from":"2026-07-29T00:00:00Z","valid_to":null},"scope":"project","authority_class":"observed","instruction_taint":false}

@@ -16,13 +16,20 @@ curl -fsSL https://no.tt/install | sh
 
 Why `~/.local/bin`: installation needs no sudo, and the installer warns when the
 directory is not on `PATH`; a release needs no toolchain, while the source fallback
-requires Rust.
+requires Rust **and a C compiler**.
 
 Or from source (Rust stable, pinned by `rust-toolchain.toml`):
 
 ```sh
 cargo build --release   # target/release/nmemory, a single ~8MB binary
 ```
+
+A source build needs a working C toolchain on `PATH`, not just Rust: `rusqlite`
+carries the `bundled` feature, so `libsqlite3-sys` compiles SQLite itself. On a
+slim base image with no compiler the build fails at ``error: linker `cc` not
+found`` while building `libsqlite3-sys`. Install one first — `build-essential` on
+Debian or Ubuntu, `gcc` plus `libc-dev` elsewhere. A release binary needs none of
+this, which is why the one-liner above is the default path.
 
 Health check at any moment:
 
@@ -76,7 +83,7 @@ I print the chosen path on startup — read it there instead of guessing.
 The store is one file; the backup is that file. The startup line names it —
 
 ```
-nmemory 0.2.0 serving stdio · db /home/you/.local/state/nmemory/memory.sqlite3 · default project <id>
+nmemory 0.3.0 serving stdio · db /home/you/.local/state/nmemory/memory.sqlite3 · default project <id>
 ```
 
 — so copy exactly that path:

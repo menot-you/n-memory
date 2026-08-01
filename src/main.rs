@@ -64,7 +64,7 @@ const GIT_SCAN_USAGE: &str = "usage: nmemory git-scan --repo <path> [--project <
 /// rather than re-declaring the set here (see [`parse_relation_kind`]).
 const RELATE_USAGE: &str = "usage: nmemory relate --kind \
                             <supersedes|derived_from|witnesses|blocks|falsifies|proposes|\
-                            part_of|grounded_in> --from <cap-id> --to <cap-id> [--db <path>]";
+                            part_of|grounded_in|about> --from <cap-id> --to <cap-id> [--db <path>]";
 
 /// Typed boot failures — printed to stderr, exit code 1, never a panic.
 #[derive(Debug, thiserror::Error)]
@@ -573,7 +573,7 @@ fn parse_relation_kind(raw: &str) -> Result<RelationKindParam, BootError> {
     serde_json::from_value(serde_json::Value::String(raw.to_string())).map_err(|_| {
         BootError::RelateUsage(format!(
             "--kind {raw:?} is not one of the closed relation kinds: supersedes, derived_from, \
-             witnesses, blocks, falsifies, proposes, part_of, grounded_in"
+             witnesses, blocks, falsifies, proposes, part_of, grounded_in, about"
         ))
     })
 }
@@ -956,9 +956,10 @@ fn run_git_scan_command(argv: &[String]) -> Result<(), BootError> {
 
 /// Handle `nmemory relate --kind <kind> --from <cap-id> --to <cap-id>`:
 /// ONE one-shot `memory_relate` through the exact handler the MCP tool
-/// runs — the SAME closed 8-kind wire vocabulary ([`parse_relation_kind`]
+/// runs — the SAME closed 9-kind wire vocabulary ([`parse_relation_kind`]
 /// deserializes into the exact [`RelationKindParam`] the tool schema uses),
-/// the same `part_of` container gate and self-relation rejection, and the
+/// the same `part_of` container gate, `about` live-topic gate and
+/// self-relation rejection, and the
 /// same idempotent `already_recorded` semantics — with the one-line JSON
 /// outcome on stdout. Unblocks a shell caller (e.g. plugin effort-lifecycle
 /// wiring) recording ONE edge without paying an MCP handshake.
