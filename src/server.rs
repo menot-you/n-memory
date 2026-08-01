@@ -77,7 +77,7 @@ use crate::mcp_app;
 use crate::relation;
 use crate::retrieve::{
     self, AdvisoryLabel, DataFraming, EffortScope, Lane, RetrieveError, RetrieveQuery,
-    RetrieveResponse, TimeWindow, anchor_content_hash, headline_of,
+    RetrieveResponse, TimeWindow, TopicScope, anchor_content_hash, headline_of,
 };
 use crate::store::{
     EventTimeRange, ImportBlockRow, ListFilter, MergeApplied, MergeSummary, RelationKind,
@@ -975,6 +975,25 @@ pub struct RetrieveParams {
     /// Omitted is DORMANT — byte-identical to a pre-S3 recall.
     #[serde(default)]
     pub effort_id: Option<String>,
+    /// OPTIONAL topic-anchor scope fence. Only an EXACT capsule id (`cap-<n>`)
+    /// resolves — a slug never scopes recall (it is a term expander, not an
+    /// authority input), so a slug in `topic_id` answers `unknown_capsule`.
+    /// The named capsule must exist and not be tombstoned; each failing
+    /// precondition returns its own teaching error rather than a silent empty
+    /// recall. NOTHING ELSE is required: a topic has no lifecycle, no required
+    /// persisted kind (the `doc` convention is documentation, never a gate),
+    /// and no member minimum — the fence always contains the topic itself.
+    /// When it resolves, recall is fenced in BOTH lanes to the topic's
+    /// members ∪ {topic} — the `from` side of every `about` edge INTO it,
+    /// ACROSS projects — AND-composed with any project/session/effort fence
+    /// (two id-set fences intersect), the outcome echoes `topic{topic_id,
+    /// member_total}`, and every grounded row carries `topic_role`. SCOPE
+    /// only: a fenced-in dead member (superseded / falsified / archived /
+    /// expired) still surfaces under `excluded{…}`, and a fenced zero-match
+    /// ABSTAINS (never floored). Omitted is DORMANT — byte-identical to a
+    /// pre-topic recall.
+    #[serde(default)]
+    pub topic_id: Option<String>,
 }
 
 /// `memory_digest` params.
@@ -1179,8 +1198,10 @@ pub struct BootstrapResponse {
     /// trim by budget from the tail (NEVER floored — only the first
     /// constraint and the one next action are irreducible); each surfaced
     /// epic id joins the `handles` dedup. The per-effort next action is its
-    /// `ready[0]`. ABSENT when the scope holds no open epic — additive
-    /// dormancy, so an effort-free bootstrap reads byte-identical.
+    /// `ready[0]`. An effort is in scope when the fence holds its epic OR
+    /// ANY of its `part_of` members (mirroring digest). ABSENT when no
+    /// open effort touches the scope — additive dormancy, so an
+    /// effort-free bootstrap reads byte-identical.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub open_efforts: Vec<EffortRow>,
     /// S2: the EXACT count of open efforts in scope (pre-cap, pre-budget) —
@@ -1582,11 +1603,11 @@ impl RecentFailures {
 /// effort is a persisted `kind=epic` capsule that is NOT witnessed, NOT
 /// superseded, and NOT tombstoned — a zero-member open epic still rides the
 /// board. The epic headline flattens in; the remaining fields are GRAPH
-/// TRUTH: `project_prefix` fences WHICH epics appear (the flattened
-/// headline is a capsule row), but the member counters stay UNFENCED — an
-/// effort spans projects by design (the cross-repo workstream), so its
-/// members are counted and surfaced regardless of the reader's project
-/// fence.
+/// TRUTH: `project_prefix` fences WHICH efforts appear — an effort rides
+/// when the fence holds its epic OR ANY of its `part_of` members — and
+/// the member counters stay UNFENCED — an effort spans projects by design
+/// (the cross-repo workstream), so its members are counted and surfaced
+/// regardless of the reader's project fence.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct EffortRow {
     /// The epic's compact headline (id, project, taint, created_at,
@@ -1803,11 +1824,13 @@ pub struct DigestResponse {
     pub pinned_total: usize,
     /// S2 effort-lifecycle: the OPEN efforts board — one [`EffortRow`] per
     /// OPEN epic (persisted kind epic, NOT witnessed/superseded/tombstoned)
-    /// whose flattened headline passes the `project_prefix` capsule fence,
+    /// admitted by the `project_prefix` capsule fence through its OWN
+    /// project OR through ANY of its `part_of` members' projects (an effort
+    /// spans projects — a member's fence surfaces the whole effort),
     /// newest-first by `newest_id` sequence and capped at the headline knob.
     /// The per-effort member counters ride UNFENCED (graph truth — an effort
-    /// spans projects). ABSENT when the scope holds no open epic — additive
-    /// dormancy, so an effort-free store reads byte-identical.
+    /// spans projects). ABSENT when no open effort touches the scope —
+    /// additive dormancy, so an effort-free store reads byte-identical.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub open_efforts: Vec<EffortRow>,
     /// S2: the EXACT count of open efforts in scope (the capped-list +
@@ -2065,6 +2088,7 @@ impl MemoryServer {
     pub fn new(store: Store, defaults: IngestDefaults, config: BoundaryConfig) -> Self {
         let mut tool_router = Self::tool_router();
         for (tool_name, resource_uri) in [
+            ("memory_digest", mcp_app::CONSOLE_URI),
             ("memory_export", mcp_app::DOCUMENT_URI),
             ("memory_visual", mcp_app::VISUAL_URI),
         ] {
@@ -2719,6 +2743,85 @@ fn effort_zero_members(id: &str) -> rmcp::ErrorData {
              INTO it before it can scope recall (a degenerate fence rejects rather than answering \
              an empty recall). Record membership first (memory_relate {{kind: \"part_of\", \
              from: <member>, to: {id:?}}}) or retrieve without effort_id"
+        ),
+        None,
+    )
+}
+
+/// topic-anchor s1: resolve a caller `topic_id` into the validated
+/// [`TopicScope`] the recall engine fences on — or the teaching rejection.
+/// Order (each step its own error): the id must name a STORED capsule (a slug
+/// names none → `unknown_capsule`); it must not be tombstoned
+/// (`tombstoned_capsule`). That is the WHOLE gate — deliberately shorter than
+/// [`resolve_effort_scope`]'s: a topic has no lifecycle to be open or closed,
+/// no required persisted kind (the `doc` convention is documentation, never a
+/// gate), and no member minimum, because the fence always contains the topic
+/// node itself and so is never degenerate.
+fn resolve_topic_scope(store: &Store, topic_id: &str) -> Result<TopicScope, rmcp::ErrorData> {
+    let internal = |e: StoreError| {
+        rmcp::ErrorData::internal_error(format!("memory_retrieve failed: {e}"), None)
+    };
+    if !store.capsule_exists(topic_id).map_err(internal)? {
+        return Err(topic_unknown_capsule(topic_id));
+    }
+    if store.get_tombstone(topic_id).map_err(internal)?.is_some() {
+        return Err(topic_tombstoned_capsule(topic_id));
+    }
+    let member_ids = store.topic_members(topic_id).map_err(internal)?;
+    Ok(TopicScope {
+        topic_id: topic_id.to_string(),
+        member_ids,
+    })
+}
+
+/// topic-anchor s1 teaching error (-32002): `topic_id` names no stored
+/// capsule. A slug fed as scope lands here — a topic is addressed by exact
+/// `cap-<n>`, never a slug. Carries the `unknown_capsule` machine
+/// discriminator (data{kind,id}).
+fn topic_unknown_capsule(id: &str) -> rmcp::ErrorData {
+    state_not_found(
+        "unknown_capsule",
+        id,
+        format!(
+            "topic_id {id:?} names no stored capsule — a topic is a stored capsule \
+             addressed by exact capsule id (cap-<n>); a slug never resolves scope. Capture \
+             the topic node first (by convention a doc capsule) and point member capsules at \
+             it with memory_relate {{kind: \"about\", from: <member>, to: <topic>}}, or \
+             retrieve without topic_id"
+        ),
+    )
+}
+
+/// topic-anchor s1 teaching error (-32002): the topic capsule is tombstoned.
+/// The content is gone; only the marker remains, so it can never scope recall
+/// — the same refusal `memory_relate` applies when recording an `about` edge
+/// INTO a tombstoned topic. Carries the `tombstoned_capsule` machine
+/// discriminator (data{kind,id}).
+fn topic_tombstoned_capsule(id: &str) -> rmcp::ErrorData {
+    state_not_found(
+        "tombstoned_capsule",
+        id,
+        format!(
+            "topic_id {id:?} is tombstoned; the content is gone, only the marker remains — a \
+             forgotten topic can never scope recall. Retrieve without topic_id, or pass a live \
+             topic capsule"
+        ),
+    )
+}
+
+/// topic-anchor s1: the teaching -32602 for an `about` edge whose topic `to`
+/// is tombstoned. `about` is the ONE kind that refuses a forgotten `to`:
+/// every other edge is history, but this one exists solely to be READ by the
+/// `topic_id` recall fence — and that fence refuses a tombstoned topic — so
+/// the edge could never be used. Rejecting at the write says so once, instead
+/// of storing a row that silently answers nothing.
+fn about_tombstoned_topic_reject(to: &str) -> rmcp::ErrorData {
+    rmcp::ErrorData::invalid_params(
+        format!(
+            "about anchors a capsule to a TOPIC — `to` must be a live capsule; {to:?} is \
+             tombstoned, and memory_retrieve refuses a tombstoned topic_id, so the edge could \
+             never scope a recall. Point `to` at a live topic capsule (by convention a doc \
+             capsule)"
         ),
         None,
     )
@@ -3445,9 +3548,11 @@ fn dag_status_of(projection: &DagProjection, cap: usize) -> DagStatus {
 /// (`witnesses`) and supersession (`supersedes`) — no extra `all_relations`
 /// read — and the ONE already-computed `projection` supplies ready/blocked/
 /// done. `epic_ids` is the indexed classifications query; `in_scope` fences
-/// WHICH epics surface (their flattened headline is a capsule row);
-/// `global` (the unfenced live capsule map) resolves cross-project members
-/// for the handoff. `dag_cap` bounds each row's `ready`/`blocked`/`done`
+/// WHICH efforts surface — an effort rides when the fence holds its epic
+/// OR ANY of its `part_of` members (an effort spans projects, so a
+/// member's project claims the whole effort); `global` (the unfenced live
+/// capsule map) resolves the epic row and cross-project members for the
+/// handoff. `dag_cap` bounds each row's `ready`/`blocked`/`done`
 /// id lists (the headline knob — both callers keep this capped, exact
 /// totals beside it); `row_cap` bounds how many effort ROWS this call
 /// returns — `memory_digest` passes its own N-cap (documented: rows cap at
@@ -3496,10 +3601,21 @@ fn open_efforts_projection(
     let mut scored: Vec<(i64, i64, EffortRow)> = Vec::new();
     for epic_id in epic_ids {
         let epic = epic_id.as_str();
-        // Scope fences WHICH epics ride; witness/supersede/tombstone decide
-        // OPEN. `in_scope` already excludes tombstoned (the list primitive),
-        // so a scoped epic is a live capsule.
-        if !in_scope.contains(epic) || witnessed.contains(epic) || superseded.contains(epic) {
+        // Scope fences WHICH efforts ride — the epic in scope OR ANY of its
+        // `part_of` members in scope (an effort spans projects, so a
+        // member's project claims the whole effort); witness/supersede/
+        // tombstone decide OPEN, unchanged. `in_scope` holds only live
+        // capsules (the list primitive excludes tombstoned), so a member
+        // hit is a live member; a member-admitted epic still resolves its
+        // row from the unfenced `global` live map below, which already
+        // drops a tombstoned epic.
+        let member_in_scope = members_of
+            .get(epic)
+            .is_some_and(|ms| ms.iter().any(|m| in_scope.contains(m)));
+        if (!in_scope.contains(epic) && !member_in_scope)
+            || witnessed.contains(epic)
+            || superseded.contains(epic)
+        {
             continue;
         }
         let Some(epic_stored) = global.get(epic) else {
@@ -4177,7 +4293,7 @@ pub struct ClassifyResponse {
 /// The closed relation-kind vocabulary on the wire — mirrors
 /// [`RelationKind`] (donor B closed enum; u6h added `falsifies`, b2 staged
 /// review added `proposes`, effort-lifecycle s1 added `part_of`,
-/// planning-plane s1 added `grounded_in`).
+/// planning-plane s1 added `grounded_in`, topic-anchor s1 added `about`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RelationKindParam {
@@ -4202,6 +4318,10 @@ pub enum RelationKindParam {
     /// epic) — the planning-plane anchor surfaced by `memory_digest`'s
     /// mission section, NEVER a dag input.
     GroundedIn,
+    /// `from` is ABOUT topic node `to` — the topic anchor `memory_retrieve`'s
+    /// `topic_id` scope fence reads. NEVER a dag input and never a recall
+    /// exclusion.
+    About,
 }
 
 impl From<RelationKindParam> for RelationKind {
@@ -4215,6 +4335,7 @@ impl From<RelationKindParam> for RelationKind {
             RelationKindParam::Proposes => RelationKind::Proposes,
             RelationKindParam::PartOf => RelationKind::PartOf,
             RelationKindParam::GroundedIn => RelationKind::GroundedIn,
+            RelationKindParam::About => RelationKind::About,
         }
     }
 }
@@ -5398,7 +5519,7 @@ impl MemoryServer {
     /// returned verbatim.
     #[tool(
         name = "memory_retrieve",
-        description = "Recall stored memories. Pass caller-expanded terms (your own synonyms/aliases/rephrasings as separate terms; include inflected variants — matching is word-exact, no stemming: \"token\" does not find \"tokens\"). At least one term is required (schema minItems:1), and every term must carry at least one alphanumeric character — a punctuation-only or empty term is rejected with a teaching -32602. When the term lane runs, each term is ALSO expanded with its memory_alias-taught aliases (an alias hit grounds and is explained as alias:<term> in matched_terms). Lane routing is the closed set auto|term|vector|fused: omitted/auto preserves historical selection (term without query_embedding, fused with it); term runs only FTS even when a vector is present; vector runs no FTS and requires query_embedding; fused runs both and requires query_embedding. When it runs, the term lane OR-matches terms via FTS5; WITHIN a term, words are AND-matched order/adjacency-insensitively (\"tokio pin\" finds \"pin tokio at 1.38\") and Latin diacritics fold (\"configuracao\" finds \"configuração\"). Limitation: unspaced scripts (CJK) index as whole runs between spaces/punctuation — a CJK word inside a run will not match; recall CJK content by a full delimited run, store it pre-segmented, OR teach a memory_alias mapping the CJK word to the full run (the alias then grounds the recall). Scope fences: project_id (exact), project_prefix (subtree: \"nott\" covers \"nott\" and \"nott/x\", never \"nottx\"), and optional session_id AND-compose before ranking. session_id is a character-exact store-local capsule label fence, not authentication or a globally unique bracket identity: accepted bytes are never trimmed, folded, normalized, shape-checked, or length-checked; only a whitespace-only value is rejected. It never consults the sessions table or expires, so finished, orphaned, and merge-imported labels remain recallable. Different stores may both label capsules \"sess-1\"; after memory_merge, filtering that label intentionally grounds every matching capsule. A non-matching label means no capsule with that label, never an unknown session. Optional time_window {from?, to?} (RFC3339, at least one bound) fences PRE-RANKING by declared fact-time, including BEFORE vector_k selects the vector lane's top eligible cosine matches: a capsule grounds only when its event range intersects the window; capsules without a declaration are excluded and counted as undated (excluded gains outside_time_window/undated). Ranking is lane-specific. Term-only ranking uses coverage descending, then bm25 ascending, then the advisory decay key (confidence × 2^(-age_days/90) from valid_from), freshness, usage late keys, and append order; envelopes carry decayed_weight SERIALIZED ROUNDED to 2 decimals (0.548992 rides the wire as 0.55; ordering uses the unrounded key), and stored confidence is never mutated. Forced-vector ranking uses one-lane RRF over cosine rank. Fused ranking uses two-lane RRF over the independent term and vector ranks. RRF ties use append order, and fusion_rank preserves the pre-weight-blend RRF position. Results are few, dense, token-budgeted (nonzero budget always returns the top result even if it alone overshoots — the floor of one; token_budget 0, like limit 0, returns none; trimmed_by_limit/trimmed_by_budget name the cut cause). Results ride under the `results` key. Every result is an evidence envelope; its wire fields: label ADVISORY_NOT_AUTHORITY + framing DATA + id + headline + instruction_taint + authority_class + confidence + provenance + freshness + decayed_weight + relevance + bm25 (per-lane ranking keys, absent when that lane did not score the result) + vector_similarity (vector lane only) + anchor_live (advisory path:line existence probe resolving ROOT-RELATIVE anchors against the repo anchor root: true/false/\"unknown\"; an absolute anchor reads \"unknown\" — the fence never over-claims liveness for a path it cannot resolve) + anchor_drift (u-r2 advisory CONTENT-change probe beside anchor_live: the anchored file re-hashed through the same fail-closed root fence and compared against its capture-time hash — \"unchanged\" | \"drifted\" | \"unknown\"; \"unknown\" whenever either hash is unavailable: a non-path or fence-rejected anchor, a symlink, a missing/unreadable file, or a capsule with no capture-time hash recorded — existence questions stay anchor_live's, deletion reads anchor_live:false with drift \"unknown\") + evidence_state/proof_hint/stale_if (the persisted epistemic sidecar, each present only when annotated — evidence_state is the closed observed|inferred|unverified set; the two hints are ADVISORY STRINGS surfaced verbatim, never executed or evaluated) + matched_terms (the explain: which of your terms grounded it, alias:<term> on alias hits); the full content stays one memory_get away. THREE honest outcomes: \"grounded\" (eligible evidence found; an excluded {reason: count} section appears when ineligible matches ALSO existed); \"missing_evidence\" (an executed lane matched — or the lane-independent id probe named a forgotten id — but EVERY match is excluded: per-reason counts under excluded {quarantined, falsified, archived, superseded, expired, not_yet_valid, outside_time_window, undated, tombstoned}; each match counts under the FIRST fence in that order — quarantined dominates everything (the taint signal never disappears), falsified dominates archived+superseded (a falsified claim — targeted by a memory_relate falsifies edge — must never hide behind a softer bucket; its bytes stay served by get/list), archived dominates superseded (applying consolidation tiers is observable on recall); all but tombstoned stay reachable via memory_get/list, a tombstoned id answers memory_get only, with its marker; tombstoned is counted ONLY by the id-probe — a query term that IS the forgotten capsule id, e.g. terms:[\"cap-3\"] — because forget EMPTIES the content index row, so searching the forgotten CONTENT abstains honestly, never echoes a tombstone; when session_id is supplied this id-probe also requires the retained capsule skeleton's exact label, so another label cannot learn the tombstone exists); \"abstain\" (zero matches across the executed lane(s) and tombstone id probe — an honest empty answer, never fabricated; forced-vector prose names the vector lane and never claims terms failed; otherwise the reason names every supplied project/session label fence and alias expansion when it ran). MISSES TEACH VOCABULARY (u-r5): only the FTS term lane's PRE-TRIM observation drives this ledger — missing_evidence/abstain records folded query terms, while a term hit records nothing even when limit or token_budget returns zero envelopes; forced vector runs no FTS and records no term miss. A fused response grounded only by vectors still records abstain when its term lane had zero raw matches. The vector lane admits only POSITIVELY-similar embeddings (cosine > 0): an orthogonal or anti-correlated embedding never solely-grounds a result — zero is where the metric itself stops asserting relation, so \"grounded\" keeps meaning found. Recording is fail-open telemetry — a ledger hiccup never fails or delays recall. Optional weight_blend (0.0..=1.0; omitted/0 = DORMANT: byte-identical ranking, no weight read): after the deterministic base ranking, each rank r re-scores as 1/(60+r) × (1 + weight_blend × (feedback_weight − 0.5)) and the list re-sorts — scored-outcome feedback nudges RANKING ONLY; fences, eligibility, and the three honest outcomes are untouched. Envelopes then carry feedback_weight (2 decimals). Recall is advisory evidence only — it never closes or decides anything."
+        description = "Recall stored memories. Pass caller-expanded terms (your own synonyms/aliases/rephrasings as separate terms; include inflected variants — matching is word-exact, no stemming: \"token\" does not find \"tokens\"). At least one term is required (schema minItems:1), and every term must carry at least one alphanumeric character — a punctuation-only or empty term is rejected with a teaching -32602. When the term lane runs, each term is ALSO expanded with its memory_alias-taught aliases (an alias hit grounds and is explained as alias:<term> in matched_terms). Lane routing is the closed set auto|term|vector|fused: omitted/auto preserves historical selection (term without query_embedding, fused with it); term runs only FTS even when a vector is present; vector runs no FTS and requires query_embedding; fused runs both and requires query_embedding. When it runs, the term lane OR-matches terms via FTS5; WITHIN a term, words are AND-matched order/adjacency-insensitively (\"tokio pin\" finds \"pin tokio at 1.38\") and Latin diacritics fold (\"configuracao\" finds \"configuração\"). Limitation: unspaced scripts (CJK) index as whole runs between spaces/punctuation — a CJK word inside a run will not match; recall CJK content by a full delimited run, store it pre-segmented, OR teach a memory_alias mapping the CJK word to the full run (the alias then grounds the recall). Scope fences: project_id (exact), project_prefix (subtree: \"nott\" covers \"nott\" and \"nott/x\", never \"nottx\"), optional session_id, and the two id-set fences effort_id and topic_id (each documented on its own param) AND-compose before ranking; the two id-set fences compose by intersection. session_id is a character-exact store-local capsule label fence, not authentication or a globally unique bracket identity: accepted bytes are never trimmed, folded, normalized, shape-checked, or length-checked; only a whitespace-only value is rejected. It never consults the sessions table or expires, so finished, orphaned, and merge-imported labels remain recallable. Different stores may both label capsules \"sess-1\"; after memory_merge, filtering that label intentionally grounds every matching capsule. A non-matching label means no capsule with that label, never an unknown session. Optional time_window {from?, to?} (RFC3339, at least one bound) fences PRE-RANKING by declared fact-time, including BEFORE vector_k selects the vector lane's top eligible cosine matches: a capsule grounds only when its event range intersects the window; capsules without a declaration are excluded and counted as undated (excluded gains outside_time_window/undated). Ranking is lane-specific. Term-only ranking uses coverage descending, then bm25 ascending, then the advisory decay key (confidence × 2^(-age_days/90) from valid_from), freshness, usage late keys, and append order; envelopes carry decayed_weight SERIALIZED ROUNDED to 2 decimals (0.548992 rides the wire as 0.55; ordering uses the unrounded key), and stored confidence is never mutated. Forced-vector ranking uses one-lane RRF over cosine rank. Fused ranking uses two-lane RRF over the independent term and vector ranks. RRF ties use append order, and fusion_rank preserves the pre-weight-blend RRF position. Results are few, dense, token-budgeted (nonzero budget always returns the top result even if it alone overshoots — the floor of one; token_budget 0, like limit 0, returns none; trimmed_by_limit/trimmed_by_budget name the cut cause). Results ride under the `results` key. Every result is an evidence envelope; its wire fields: label ADVISORY_NOT_AUTHORITY + framing DATA + id + headline + instruction_taint + authority_class + confidence + provenance + freshness + decayed_weight + relevance + bm25 (per-lane ranking keys, absent when that lane did not score the result) + vector_similarity (vector lane only) + anchor_live (advisory path:line existence probe resolving ROOT-RELATIVE anchors against the repo anchor root: true/false/\"unknown\"; an absolute anchor reads \"unknown\" — the fence never over-claims liveness for a path it cannot resolve) + anchor_drift (u-r2 advisory CONTENT-change probe beside anchor_live: the anchored file re-hashed through the same fail-closed root fence and compared against its capture-time hash — \"unchanged\" | \"drifted\" | \"unknown\"; \"unknown\" whenever either hash is unavailable: a non-path or fence-rejected anchor, a symlink, a missing/unreadable file, or a capsule with no capture-time hash recorded — existence questions stay anchor_live's, deletion reads anchor_live:false with drift \"unknown\") + evidence_state/proof_hint/stale_if (the persisted epistemic sidecar, each present only when annotated — evidence_state is the closed observed|inferred|unverified set; the two hints are ADVISORY STRINGS surfaced verbatim, never executed or evaluated) + matched_terms (the explain: which of your terms grounded it, alias:<term> on alias hits); the full content stays one memory_get away. THREE honest outcomes: \"grounded\" (eligible evidence found; an excluded {reason: count} section appears when ineligible matches ALSO existed); \"missing_evidence\" (an executed lane matched — or the lane-independent id probe named a forgotten id — but EVERY match is excluded: per-reason counts under excluded {quarantined, falsified, archived, superseded, expired, not_yet_valid, outside_time_window, undated, tombstoned}; each match counts under the FIRST fence in that order — quarantined dominates everything (the taint signal never disappears), falsified dominates archived+superseded (a falsified claim — targeted by a memory_relate falsifies edge — must never hide behind a softer bucket; its bytes stay served by get/list), archived dominates superseded (applying consolidation tiers is observable on recall); all but tombstoned stay reachable via memory_get/list, a tombstoned id answers memory_get only, with its marker; tombstoned is counted ONLY by the id-probe — a query term that IS the forgotten capsule id, e.g. terms:[\"cap-3\"] — because forget EMPTIES the content index row, so searching the forgotten CONTENT abstains honestly, never echoes a tombstone; when session_id is supplied this id-probe also requires the retained capsule skeleton's exact label, so another label cannot learn the tombstone exists); \"abstain\" (zero matches across the executed lane(s) and tombstone id probe — an honest empty answer, never fabricated; forced-vector prose names the vector lane and never claims terms failed; otherwise the reason names every supplied project/session label fence and alias expansion when it ran). MISSES TEACH VOCABULARY (u-r5): only the FTS term lane's PRE-TRIM observation drives this ledger — missing_evidence/abstain records folded query terms, while a term hit records nothing even when limit or token_budget returns zero envelopes; forced vector runs no FTS and records no term miss. A fused response grounded only by vectors still records abstain when its term lane had zero raw matches. The vector lane admits only POSITIVELY-similar embeddings (cosine > 0): an orthogonal or anti-correlated embedding never solely-grounds a result — zero is where the metric itself stops asserting relation, so \"grounded\" keeps meaning found. Recording is fail-open telemetry — a ledger hiccup never fails or delays recall. Optional weight_blend (0.0..=1.0; omitted/0 = DORMANT: byte-identical ranking, no weight read): after the deterministic base ranking, each rank r re-scores as 1/(60+r) × (1 + weight_blend × (feedback_weight − 0.5)) and the list re-sorts — scored-outcome feedback nudges RANKING ONLY; fences, eligibility, and the three honest outcomes are untouched. Envelopes then carry feedback_weight (2 decimals). Recall is advisory evidence only — it never closes or decides anything."
     )]
     pub async fn retrieve(
         &self,
@@ -5465,6 +5586,15 @@ impl MemoryServer {
             .as_deref()
             .map(|id| resolve_effort_scope(&store, id))
             .transpose()?;
+        // topic-anchor s1: same boundary discipline — both teaching rejections
+        // (unknown_capsule / tombstoned_capsule) fire here, never inside the
+        // engine. `None` keeps the query dormant (byte-identical).
+        let topic = params
+            .0
+            .topic_id
+            .as_deref()
+            .map(|id| resolve_topic_scope(&store, id))
+            .transpose()?;
         let query = RetrieveQuery {
             terms: params.0.terms,
             project_id: params.0.project_id,
@@ -5480,6 +5610,7 @@ impl MemoryServer {
             include_staged: params.0.include_staged.unwrap_or(false),
             corroboration_blend: params.0.corroboration_blend,
             effort,
+            topic,
         };
         let response: RetrieveResponse =
             retrieve::retrieve(&mut store, &query, now, &self.config.anchor_root).map_err(|e| {
@@ -5681,10 +5812,12 @@ impl MemoryServer {
         // dag input).
         let grounded = grounded_in_projection(&store, &relation_rows, &tombstoned)?;
         let mission = mission_status(&store, &all, &grounded, n, now)?;
-        // S2 effort-lifecycle: the OPEN efforts board. WHICH epics ride is
-        // the project_prefix capsule fence (`all`, already tombstone- and
-        // proposal-excluded); the member counters are graph truth resolved
-        // against the UNFENCED live map so a cross-project effort is whole.
+        // S2 effort-lifecycle: the OPEN efforts board. WHICH efforts ride
+        // is the project_prefix capsule fence (`all`, already tombstone-
+        // and proposal-excluded) — an effort rides when the fence holds its
+        // epic OR ANY of its `part_of` members; the member counters are
+        // graph truth resolved against the UNFENCED live map so a
+        // cross-project effort is whole.
         let scoped_ids: BTreeSet<&str> = all.iter().map(|s| s.id.as_str()).collect();
         // #156-c: an UNFENCED call (no project_prefix) already read the
         // full store-global live list (captured pre-retain above as
@@ -5984,10 +6117,12 @@ impl MemoryServer {
         }
 
         // S2 effort-lifecycle: the OPEN efforts board mirror, placed between
-        // `ready` and `decisions`. WHICH epics ride is the bootstrap scope
+        // `ready` and `decisions`. WHICH efforts ride is the bootstrap scope
         // fence (`in_scope`, now ALSO review-fence-excluded like digest —
-        // #156-b); the member counters resolve against the UNFENCED live
-        // map (graph truth — an effort spans projects). #156-a: the row
+        // #156-b) — an effort rides when the fence holds its epic OR ANY of
+        // its `part_of` members; the member counters resolve against the
+        // UNFENCED live map (graph truth — an effort spans projects).
+        // #156-a: the row
         // list is BUDGET-GOVERNED ONLY (`row_cap: usize::MAX` — this
         // response's own field doc promises "never a silent cap"), while
         // each row's ready/blocked/done id lists stay capped at the
@@ -7309,7 +7444,7 @@ impl MemoryServer {
     /// `memory_relate` — record one typed edge in the relation graph.
     #[tool(
         name = "memory_relate",
-        description = "Record ONE directed, typed relation edge from --kind--> to. Closed kinds: supersedes (from replaces to), derived_from (from was materialized out of to), witnesses (from is evidence attesting to — the ATTESTED to, when a blocks-participant, becomes DONE in memory_digest's blocks-dag: proof-carrying CLOSURE that leaves ready/blocked and stops gating dependents yet STAYS recallable — distinct from supersede's REPLACEMENT and forget's DESTRUCTION), blocks (from blocks to — feeds memory_digest's blocks-dag ready/blocked/done projection; cycles are detected there, fail-closed with the concrete cycle — repair = supersede, forget, OR witness a member), falsifies (from contradicts capsule to — the target becomes recall-INELIGIBLE, its bytes untouched and still served by memory_get/list; it is NOT a dag input), proposes (from PROPOSES to replace to — b2 staged review; NAVIGATIONAL only: no dag/ready/done effect and no recall-exclusion effect, and never auto-converted to supersedes), part_of (from is a member of container to — pure membership; NEVER a dag input, so it is byte-inert to the blocks-dag; to MUST be a capsule persisted as kind 'epic' or 'task' — classify the container first), grounded_in (from — the child task/epic/plan node — hangs off parent to; the planning-plane anchor surfaced by memory_digest's mission section, NEVER a dag input). Endpoints: to is ALWAYS a stored capsule; from is a stored capsule too — EXCEPT falsifies, whose from may instead be a stored OUTCOME record id (out-<n> from memory_outcome), i.e. an observed outcome falsifying a claim (capsule→capsule falsifies is also allowed). Edges are readable back on memory_get's relations list (and memory_export / the memory_digest relations count). Both endpoints must be stored (tombstoned still counts — edges are history); self-relations are rejected. Re-recording an edge is an idempotent no-op keeping the first timestamp, answered with already_recorded: true (a fresh write answers false). Recording a falsifies edge is the ONLY way to fence a capsule from recall this way — an outcome record alone never does. Every edge recorded here carries origin 'manual' — a caller decision the machine NEVER auto-reverses; only the stale-import mechanism's own origin='import' supersedes edges can be machine-reversed on re-import (memory_get shows origin on import edges; first write wins on replay). Audited."
+        description = "Record ONE directed, typed relation edge from --kind--> to. Closed kinds: supersedes (from replaces to), derived_from (from was materialized out of to), witnesses (from is evidence attesting to — the ATTESTED to, when a blocks-participant, becomes DONE in memory_digest's blocks-dag: proof-carrying CLOSURE that leaves ready/blocked and stops gating dependents yet STAYS recallable — distinct from supersede's REPLACEMENT and forget's DESTRUCTION), blocks (from blocks to — feeds memory_digest's blocks-dag ready/blocked/done projection; cycles are detected there, fail-closed with the concrete cycle — repair = supersede, forget, OR witness a member), falsifies (from contradicts capsule to — the target becomes recall-INELIGIBLE, its bytes untouched and still served by memory_get/list; it is NOT a dag input), proposes (from PROPOSES to replace to — b2 staged review; NAVIGATIONAL only: no dag/ready/done effect and no recall-exclusion effect, and never auto-converted to supersedes), part_of (from is a member of container to — pure membership; NEVER a dag input, so it is byte-inert to the blocks-dag; to MUST be a capsule persisted as kind 'epic' or 'task' — classify the container first), grounded_in (from — the child task/epic/plan node — hangs off parent to; the planning-plane anchor surfaced by memory_digest's mission section, NEVER a dag input), about (from is ABOUT topic node to — the topic anchor memory_retrieve's topic_id scope fence reads; NAVIGATIONAL only: NEVER a dag input and NO recall-exclusion effect. By convention `to` is a doc capsule serving as the topic node, but NO kind is enforced — a topic has no lifecycle to open or close, which is exactly what separates it from part_of. `to` MUST be a LIVE capsule: about is the one kind that refuses a tombstoned target, because the topic_id fence refuses a tombstoned topic and the edge could never be read). Endpoints: to is ALWAYS a stored capsule; from is a stored capsule too — EXCEPT falsifies, whose from may instead be a stored OUTCOME record id (out-<n> from memory_outcome), i.e. an observed outcome falsifying a claim (capsule→capsule falsifies is also allowed). Edges are readable back on memory_get's relations list (and memory_export / the memory_digest relations count). Both endpoints must be stored (tombstoned still counts — edges are history — EXCEPT about, whose `to` must be live); self-relations are rejected. Re-recording an edge is an idempotent no-op keeping the first timestamp, answered with already_recorded: true (a fresh write answers false). Recording a falsifies edge is the ONLY way to fence a capsule from recall this way — an outcome record alone never does. Every edge recorded here carries origin 'manual' — a caller decision the machine NEVER auto-reverses; only the stale-import mechanism's own origin='import' supersedes edges can be machine-reversed on re-import (memory_get shows origin on import edges; first write wins on replay). Audited."
     )]
     pub async fn relate(
         &self,
@@ -7346,6 +7481,23 @@ impl MemoryServer {
                     }
                 }
             }
+        }
+        // topic-anchor s1 — `about` anchors INTO a topic node that must be
+        // LIVE. This is the one kind that refuses a tombstoned `to`: every
+        // other edge is history, but this one exists only to be read by the
+        // `topic_id` recall fence, which refuses a tombstoned topic — so the
+        // edge could never be used. A `to` that is not stored at all falls
+        // through to upsert_relation's UnknownCapsule handling. No kind check:
+        // the `doc` topic-node convention is documentation, never a gate.
+        if kind == RelationKind::About
+            && store
+                .get_tombstone(&p.to)
+                .map_err(|e| {
+                    rmcp::ErrorData::internal_error(format!("memory_relate failed: {e}"), None)
+                })?
+                .is_some()
+        {
+            return Err(about_tombstoned_topic_reject(&p.to));
         }
         let freshly_inserted =
             store
@@ -8810,6 +8962,7 @@ mod tests {
     fn generated_view_tools_bind_their_exact_mcp_app_resources() {
         let server = server();
         for (tool_name, resource_uri) in [
+            ("memory_digest", mcp_app::CONSOLE_URI),
             ("memory_export", mcp_app::DOCUMENT_URI),
             ("memory_visual", mcp_app::VISUAL_URI),
         ] {
@@ -14961,7 +15114,8 @@ mod tests {
     /// [`five_relation_kinds_pass_the_store_check_ontology`]. u6h added
     /// `falsifies` as the fifth kind; b2 staged review added `proposes` as
     /// the sixth; effort-lifecycle s1 added `part_of` as the seventh;
-    /// planning-plane s1 added `grounded_in` as the eighth.
+    /// planning-plane s1 added `grounded_in` as the eighth; topic-anchor s1
+    /// added `about` as the ninth.
     #[test]
     fn relation_kind_closed_set_pinned_across_its_copies() {
         let contract: Vec<&str> = crate::relation::RelationKind::ALL
@@ -14973,7 +15127,7 @@ mod tests {
             contract, store_side,
             "contract and store sets must not drift"
         );
-        assert_eq!(contract.len(), 8, "the ontology is closed at eight kinds");
+        assert_eq!(contract.len(), 9, "the ontology is closed at nine kinds");
         for name in &contract {
             // Tool-param copy: the wire name deserializes and maps onto
             // the store kind carrying the SAME wire name.
@@ -15875,6 +16029,129 @@ mod tests {
             bootstrap_unfenced + 1,
             "only a project-fenced bootstrap pays the extra store-global rescan \
              (unfenced={bootstrap_unfenced}, fenced={bootstrap_fenced})"
+        );
+    }
+
+    /// S2 CROSS-PROJECT FENCE — an effort is admitted through ANY member's
+    /// project fence, not only the epic's own: an epic filed under
+    /// "ticket-a" with one `part_of` member filed under "repo-b" rides a
+    /// digest AND a bootstrap fenced to "repo-b" — the member's project
+    /// claims the whole effort, the epic row resolving from the unfenced
+    /// global live map.
+    #[tokio::test]
+    async fn open_efforts_admit_the_effort_through_a_member_projects_fence() {
+        let server = server();
+        let mut epic = item("cross-project effort epic");
+        epic.project_id = Some("ticket-a".to_string());
+        ingest_one(&server, epic).await; // cap-1
+        classify_as(&server, "cap-1", CandidateKindParam::Epic).await;
+        let mut member = item("member task living in the other repo");
+        member.project_id = Some("repo-b".to_string());
+        ingest_one(&server, member).await; // cap-2
+        relate_edge(&server, RelationKindParam::PartOf, "cap-2", "cap-1").await;
+
+        let digest = response_json(
+            &server
+                .digest(Parameters(DigestParams {
+                    headlines: None,
+                    project_prefix: Some("repo-b".to_string()),
+                }))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(
+            digest["open_efforts_total"], 1,
+            "the member's fence admits the whole effort: {digest}"
+        );
+        let row = &digest["open_efforts"][0];
+        assert_eq!(row["id"], "cap-1", "the epic row rides the member's fence");
+        assert_eq!(row["member_total"], 1);
+        assert_eq!(row["newest_id"], "cap-2");
+
+        let bootstrap = response_json(
+            &server
+                .bootstrap(Parameters(BootstrapParams {
+                    project_id: None,
+                    project_prefix: Some("repo-b".to_string()),
+                    terms: None,
+                    token_budget: None,
+                }))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(
+            bootstrap["open_efforts_total"], 1,
+            "bootstrap mirrors the member-fence admission: {bootstrap}"
+        );
+        assert_eq!(bootstrap["open_efforts"][0]["id"], "cap-1");
+    }
+
+    /// S2 CROSS-PROJECT FENCE NEGATIVE — a fence holding NEITHER the epic
+    /// NOR any of its members never surfaces the effort: member-through
+    /// admission widens to the effort's OWN projects only, not to every
+    /// fence.
+    #[tokio::test]
+    async fn open_efforts_omit_an_effort_with_no_member_in_the_fence() {
+        let server = server();
+        let mut epic = item("foreign effort epic");
+        epic.project_id = Some("ticket-a".to_string());
+        ingest_one(&server, epic).await; // cap-1
+        classify_as(&server, "cap-1", CandidateKindParam::Epic).await;
+        let mut member = item("member in the epic's own project");
+        member.project_id = Some("ticket-a".to_string());
+        ingest_one(&server, member).await; // cap-2
+        relate_edge(&server, RelationKindParam::PartOf, "cap-2", "cap-1").await;
+        // The fenced project holds a live capsule, just no effort member.
+        let mut bystander = item("unrelated capsule in repo-b");
+        bystander.project_id = Some("repo-b".to_string());
+        ingest_one(&server, bystander).await; // cap-3
+
+        let digest = response_json(
+            &server
+                .digest(Parameters(DigestParams {
+                    headlines: None,
+                    project_prefix: Some("repo-b".to_string()),
+                }))
+                .await
+                .unwrap(),
+        );
+        assert!(
+            digest.get("open_efforts").is_none(),
+            "no member in the fence → the effort never rides: {digest}"
+        );
+        assert!(digest.get("open_efforts_total").is_none());
+    }
+
+    /// S2 — the epic's OWN project fence still admits the effort (the
+    /// pre-widening behavior survives): a digest fenced to the epic's
+    /// project lists it even when every member lives elsewhere.
+    #[tokio::test]
+    async fn open_efforts_still_admit_the_effort_by_the_epics_own_project() {
+        let server = server();
+        let mut epic = item("home-project effort epic");
+        epic.project_id = Some("ticket-a".to_string());
+        ingest_one(&server, epic).await; // cap-1
+        classify_as(&server, "cap-1", CandidateKindParam::Epic).await;
+        let mut member = item("member living in the other repo");
+        member.project_id = Some("repo-b".to_string());
+        ingest_one(&server, member).await; // cap-2
+        relate_edge(&server, RelationKindParam::PartOf, "cap-2", "cap-1").await;
+
+        let digest = response_json(
+            &server
+                .digest(Parameters(DigestParams {
+                    headlines: None,
+                    project_prefix: Some("ticket-a".to_string()),
+                }))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(digest["open_efforts_total"], 1);
+        let row = &digest["open_efforts"][0];
+        assert_eq!(row["id"], "cap-1");
+        assert_eq!(
+            row["member_total"], 1,
+            "the cross-project member still counts"
         );
     }
 
@@ -19878,5 +20155,307 @@ mod tests {
             }))
             .await
             .unwrap_err()
+    }
+
+    // --- topic-anchor s1: topic_id scoped retrieve (server) ---------------
+
+    async fn retrieve_topic(
+        server: &MemoryServer,
+        term: &str,
+        topic_id: Option<&str>,
+    ) -> CallToolResult {
+        server
+            .retrieve(Parameters(RetrieveParams {
+                terms: vec![term.to_string()],
+                topic_id: topic_id.map(str::to_string),
+                ..RetrieveParams::default()
+            }))
+            .await
+            .unwrap()
+    }
+
+    /// Extract the `rmcp::ErrorData` from a rejected topic-scoped retrieve.
+    async fn retrieve_topic_err(
+        server: &MemoryServer,
+        term: &str,
+        topic_id: &str,
+    ) -> rmcp::ErrorData {
+        server
+            .retrieve(Parameters(RetrieveParams {
+                terms: vec![term.to_string()],
+                topic_id: Some(topic_id.to_string()),
+                ..RetrieveParams::default()
+            }))
+            .await
+            .unwrap_err()
+    }
+
+    /// A resolvable topic: cap-1 is the topic node (NO classification — the
+    /// doc convention is never enforced), cap-2/cap-3 are `about` it, all
+    /// carrying "widget".
+    async fn topic_server() -> MemoryServer {
+        let server = server();
+        ingest_one(&server, item("widget topic node")).await; // cap-1
+        ingest_one(&server, item("widget member one")).await; // cap-2
+        ingest_one(&server, item("widget member two")).await; // cap-3
+        relate(&server, RelationKindParam::About, "cap-2", "cap-1").await;
+        relate(&server, RelationKindParam::About, "cap-3", "cap-1").await;
+        server
+    }
+
+    /// T3a — an unknown capsule id is its own teaching error, mirroring
+    /// effort_id's `unknown_capsule` discriminator.
+    #[tokio::test]
+    async fn topic_id_unknown_capsule_rejects_and_teaches_the_about_edge() {
+        let server = server();
+        ingest_one(&server, item("some unrelated fact")).await;
+        let err = retrieve_topic_err(&server, "widget", "cap-999").await;
+        assert_eq!(err.code, ErrorCode::RESOURCE_NOT_FOUND);
+        assert_eq!(
+            err.data,
+            Some(json!({"kind": "unknown_capsule", "id": "cap-999"}))
+        );
+        assert!(
+            err.message
+                .contains("topic_id \"cap-999\" names no stored capsule"),
+            "frozen anchor: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("memory_relate {kind: \"about\"")
+                && err.message.contains("retrieve without topic_id"),
+            "names the recovery: {}",
+            err.message
+        );
+    }
+
+    /// T3b — a SLUG never resolves scope. It is a term expander, not an
+    /// authority input, so even a slug the alias table knows lands on
+    /// `unknown_capsule`.
+    #[tokio::test]
+    async fn topic_id_slug_is_unknown_capsule_never_resolves_scope() {
+        let server = topic_server().await;
+        server
+            .alias(Parameters(AliasParams {
+                term: Some("topic-anchor".to_string()),
+                alias: Some("widget".to_string()),
+            }))
+            .await
+            .unwrap();
+        let err = retrieve_topic_err(&server, "widget", "topic-anchor").await;
+        assert_eq!(err.code, ErrorCode::RESOURCE_NOT_FOUND);
+        assert_eq!(
+            err.data,
+            Some(json!({"kind": "unknown_capsule", "id": "topic-anchor"}))
+        );
+    }
+
+    /// T3c — a tombstoned topic refuses with its own teaching error.
+    #[tokio::test]
+    async fn topic_id_tombstoned_topic_rejects() {
+        let server = topic_server().await;
+        server
+            .forget(Parameters(ForgetParams {
+                id: "cap-1".to_string(),
+                mode: TombstoneModeParam::Purged,
+                reason: "topic retired".to_string(),
+            }))
+            .await
+            .unwrap();
+        let err = retrieve_topic_err(&server, "widget", "cap-1").await;
+        assert_eq!(err.code, ErrorCode::RESOURCE_NOT_FOUND);
+        assert_eq!(
+            err.data,
+            Some(json!({"kind": "tombstoned_capsule", "id": "cap-1"}))
+        );
+        assert!(
+            err.message.contains("is tombstoned") && err.message.contains("can never scope recall"),
+            "{}",
+            err.message
+        );
+    }
+
+    /// A topic needs NO classification: an UNCLASSIFIED capsule resolves as a
+    /// topic (where the same shape is a teaching rejection for `effort_id`).
+    /// The `doc` convention is documentation, never a gate.
+    #[tokio::test]
+    async fn topic_id_resolves_an_unclassified_capsule_and_echoes_roles() {
+        let server = topic_server().await;
+        let value = response_json(&retrieve_topic(&server, "widget", Some("cap-1")).await);
+        assert_eq!(value["outcome"], "grounded");
+        assert_eq!(value["topic"]["topic_id"], "cap-1");
+        assert_eq!(value["topic"]["member_total"], 2);
+        let roles: std::collections::BTreeMap<String, String> = value["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["id"].as_str().unwrap().to_string(),
+                    r["topic_role"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(roles.get("cap-1").map(String::as_str), Some("topic"));
+        assert_eq!(roles.get("cap-2").map(String::as_str), Some("member"));
+        assert_eq!(roles.get("cap-3").map(String::as_str), Some("member"));
+    }
+
+    /// T4 at the wire — byte-golden dormancy: learning the topic machinery
+    /// leaves a recall with no `topic_id` byte-identical to the pre-topic
+    /// wire. `before` is captured over the SAME three stored capsules BEFORE
+    /// any `about` edge exists — that IS the pre-topic engine.
+    #[tokio::test]
+    async fn topic_absent_leaves_the_retrieve_wire_byte_identical() {
+        let server = server();
+        ingest_one(&server, item("widget topic node")).await; // cap-1
+        ingest_one(&server, item("widget member one")).await; // cap-2
+        ingest_one(&server, item("widget member two")).await; // cap-3
+        let mut before = response_json(&retrieve_topic(&server, "widget", None).await);
+        relate(&server, RelationKindParam::About, "cap-2", "cap-1").await;
+        relate(&server, RelationKindParam::About, "cap-3", "cap-1").await;
+        let mut after = response_json(&retrieve_topic(&server, "widget", None).await);
+        // The monotonic recall receipt legitimately differs between two calls
+        // and is not part of the topic surface; strip it before comparing the
+        // rest of the wire byte-for-byte.
+        before.as_object_mut().unwrap().remove("receipt_id");
+        after.as_object_mut().unwrap().remove("receipt_id");
+        assert_eq!(
+            before, after,
+            "learning the topic machinery leaves a dormant recall byte-identical"
+        );
+        // Two-store identity alone cannot see a field that is null in BOTH, so
+        // assert the new keys are ABSENT structurally (key lookup, never a
+        // substring probe — content bearing "topic" cannot false-fail it).
+        assert!(
+            after.get("topic").is_none(),
+            "the topic echo key must be absent on a dormant recall: {after}"
+        );
+        for row in after["results"].as_array().unwrap() {
+            assert!(
+                row.get("topic_role").is_none(),
+                "topic_role must be absent on a dormant envelope: {row}"
+            );
+        }
+    }
+
+    /// T6a — `about` into a TOMBSTONED topic is rejected at the write. Every
+    /// other kind admits a forgotten endpoint (edges are history); this one
+    /// refuses, because the `topic_id` fence refuses a tombstoned topic and
+    /// the edge could never be read.
+    #[tokio::test]
+    async fn about_into_a_tombstoned_topic_is_rejected_at_the_write() {
+        let server = server();
+        ingest_one(&server, item("widget topic node")).await; // cap-1
+        ingest_one(&server, item("widget member one")).await; // cap-2
+        server
+            .forget(Parameters(ForgetParams {
+                id: "cap-1".to_string(),
+                mode: TombstoneModeParam::Purged,
+                reason: "topic retired".to_string(),
+            }))
+            .await
+            .unwrap();
+        let err = server
+            .relate(Parameters(RelateParams {
+                kind: RelationKindParam::About,
+                from: "cap-2".to_string(),
+                to: "cap-1".to_string(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        assert!(
+            err.message.contains("about anchors a capsule to a TOPIC")
+                && err.message.contains("is tombstoned"),
+            "names the rule: {}",
+            err.message
+        );
+        // Differential: the SAME tombstoned target is still legal for a kind
+        // that is history — so the refusal is about `about`, not about forget.
+        let ok = response_json(
+            &server
+                .relate(Parameters(RelateParams {
+                    kind: RelationKindParam::DerivedFrom,
+                    from: "cap-2".to_string(),
+                    to: "cap-1".to_string(),
+                }))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(ok["recorded"], true, "edges are history for other kinds");
+    }
+
+    /// T6b — a self-relation is rejected for `about` too (the existing law, at
+    /// the real tool surface).
+    #[tokio::test]
+    async fn about_self_relation_is_rejected() {
+        let server = server();
+        ingest_one(&server, item("widget topic node")).await; // cap-1
+        let err = server
+            .relate(Parameters(RelateParams {
+                kind: RelationKindParam::About,
+                from: "cap-1".to_string(),
+                to: "cap-1".to_string(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        assert!(
+            err.message
+                .contains("cannot be in a 'about' relation with itself"),
+            "{}",
+            err.message
+        );
+    }
+
+    /// T6c — `about` is absent from the dag projection inputs: `about` edges
+    /// touching BLOCKS PARTICIPANTS leave `memory_digest`'s dag section
+    /// byte-identical. Two edges, because they fail differently: one BETWEEN
+    /// the two participants (which would gate or kill one of them if the
+    /// projection read the kind), and one from a participant to a capsule that
+    /// is NOT in the blocks universe at all (which would DRAG that capsule in
+    /// and surface it as ready work — the failure a same-universe edge alone
+    /// cannot expose).
+    #[tokio::test]
+    async fn an_about_edge_between_blocks_participants_leaves_the_digest_dag_unchanged() {
+        let server = server();
+        ingest_one(&server, item("plan the rollout")).await; // cap-1
+        ingest_one(&server, item("ship the rollout")).await; // cap-2
+        ingest_one(&server, item("the rollout topic node")).await; // cap-3, no blocks edge
+        relate(&server, RelationKindParam::Blocks, "cap-1", "cap-2").await;
+        async fn digest_of(server: &MemoryServer) -> Value {
+            response_json(
+                &server
+                    .digest(Parameters(DigestParams {
+                        headlines: None,
+                        project_prefix: None,
+                    }))
+                    .await
+                    .unwrap(),
+            )
+        }
+        let before = digest_of(&server).await;
+        assert_eq!(before["dag"]["ready"], json!(["cap-1"]), "{before}");
+        relate(&server, RelationKindParam::About, "cap-2", "cap-1").await;
+        relate(&server, RelationKindParam::About, "cap-1", "cap-3").await;
+        let after = digest_of(&server).await;
+        assert_eq!(
+            after["dag"], before["dag"],
+            "about edges touching blocks participants are byte-inert to the dag"
+        );
+        // Named explicitly: the off-dag topic node must never be dragged into
+        // the work surface by an edge that merely labels it.
+        assert_eq!(
+            after["dag"]["ready"],
+            json!(["cap-1"]),
+            "an about-only capsule must never surface as ready work: {after}"
+        );
+        // The edges DID write — otherwise this test would be vacuous.
+        assert_eq!(
+            after["relations"].as_u64().unwrap(),
+            before["relations"].as_u64().unwrap() + 2,
+            "both about edges are recorded; the dag simply never reads them"
+        );
     }
 }

@@ -1,4 +1,9 @@
 #![forbid(unsafe_code)]
+// Denied HERE and not workspace-wide: this crate is already at zero missing
+// docs and three capabilities are not, so a workspace deny would ship with a
+// per-crate allow list — a floor written as its own exceptions. The three that
+// are not clean carry a shrinking count in quality/ratchets.toml instead.
+#![deny(missing_docs)]
 //! # nmemory — hermetic, single-file, local memory for LLM agents.
 //!
 //! Capture with mandatory provenance; recall that is grounded-or-abstain and

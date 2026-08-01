@@ -6,7 +6,7 @@
 
 [package]
 name = "nmemory"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 description = "nMEMORY: capture with mandatory provenance, recall that is grounded-or-abstain and ADVISORY_NOT_AUTHORITY. Hermetic single-file SQLite, stdio MCP, zero network."
 # Owner-ratified 2026-07-20 (ledger cap-82): AGPL-3.0-only, monorepo-wide canon.
@@ -23,7 +23,9 @@ categories = ["command-line-utilities", "database", "development-tools"]
 # consumer's `cargo install` never reads that file — rustup resolves it from the
 # working directory upward, and the unpacked .crate sits under the registry
 # cache — so the pin is restated here, where cargo does enforce it, and the file
-# itself is excluded below rather than shipped inert.
+# itself is excluded below rather than shipped inert. The value is the
+# workspace's, and tools/assemble-mirror-candidate.sh materializes it back to a
+# literal in the standalone mirror candidate.
 rust-version = "1.96.1"
 # What the .crate does NOT carry. Every path here is either internal-only (it is
 # also stripped from the public mirror by tools/mirror-strip.d/n-memory.list) or
@@ -60,6 +62,7 @@ exclude = [
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # provenance.source_hash mechanism (sha256 hex); hashing POLICY lands in s3.
+# NOT hoisted: nmedia pins sha2 0.10, so the version is not uniform.
 sha2 = "0.11"
 hex = "0.4"
 # Keyed tombstone fingerprints (w1 forget_capsule): HMAC-SHA-256 over the
@@ -78,6 +81,8 @@ rusqlite = { version = "0.39", features = ["backup", "bundled"] }
 tempfile = "3"
 tracing = "0.1"
 # stdio MCP surface (s5). stdio ONLY — no HTTP transport, no network.
+# NEVER hoisted: the rmcp 1.7 / 2.2 split across the legs is governed, and a
+# workspace-root `[patch]` for rmcp would rebind this crate off registry bytes.
 rmcp = { version = "2.2", features = ["server", "transport-io"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
 # rmcp tool macros derive parameter schemas via schemars (donor B parity).
@@ -92,3 +97,19 @@ unsafe_code = "forbid"
 [lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
+
+[dev-dependencies]
+# The fuzz/property harnesses under tests/fuzz_*.rs. See the workspace entry for
+# why the version is pinned and why it stays a dev dependency.
+bolero = "0.13.4"
+# The deterministic instruction-count benches in benches/hot_paths.rs. The
+# library version MUST match the `iai-callgrind-runner` pin in
+# tools/gates/registry.toml — the harness refuses a runner whose version
+# disagrees with it.
+iai-callgrind = "0.16.1"
+
+# `harness = false` because iai-callgrind supplies its own `main!`; libtest's
+# harness would swallow it and report zero benchmarks.
+[[bench]]
+name = "hot_paths"
+harness = false

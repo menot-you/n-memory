@@ -18,25 +18,33 @@
 //!    | `proposes` | the proposing capsule | the target it proposes to replace | a staged, unratified replacement (navigational only) |
 //!    | `part_of` | the member capsule | the container epic/task | membership of a capsule in an effort container |
 //!    | `grounded_in` | the child task/epic/plan node | its parent epic | the planning-plane mission anchor |
+//!    | `about` | any capsule the topic covers | the topic capsule | the topic anchor a recall fence reads |
 //!
 //!    Wire names are **snake_case** (`supersedes`, `derived_from`,
 //!    `witnesses`, `blocks`, `falsifies`, `proposes`, `part_of`,
-//!    `grounded_in`) — chosen (over kebab-case) to byte-match the donor
-//!    &1532 contract, the store-side relation-kind CHECK ontology, and the
-//!    `memory_relate` tool vocabulary. As built, records cross the layers BY
-//!    WIRE NAME (`as_str()` / [`FromStr`]); a server-side parity test pins
+//!    `grounded_in`, `about`) — chosen (over kebab-case) to byte-match the
+//!    donor &1532 contract, the store-side relation-kind CHECK ontology, and
+//!    the `memory_relate` tool vocabulary. As built, records cross the layers
+//!    BY WIRE NAME (`as_str()` / [`FromStr`]); a server-side parity test pins
 //!    all five copies of the closed set (contract module, store enum, tool
 //!    param, SQL CHECK, and the wire-name docs) to these exact bytes so none
 //!    can drift. The enum is CLOSED: adding a kind is a deliberate, reviewed
 //!    ontology change, never an incidental one (u6h added `falsifies`; b2
 //!    staged review added `proposes`; effort-lifecycle s1 added `part_of`;
-//!    planning-plane s1 added `grounded_in`).
+//!    planning-plane s1 added `grounded_in`; topic-anchor s1 added `about`).
 //!
 //!    `part_of` is PURE MEMBERSHIP — `from` is a member of container `to`,
 //!    and like `falsifies` it is NOT a dag input (it joins neither the
 //!    blocks universe nor the supersede liveness set); the [`Dag`] projection
 //!    below folds `blocks`/`supersedes`/`witnesses` only, so a `part_of`
 //!    edge is BYTE-INERT to every ready/blocked/done answer.
+//!
+//!    `about` is the TOPIC ANCHOR — `from` is about topic node `to`. Like
+//!    `part_of` it is NOT a dag input and carries no recall-EXCLUSION effect;
+//!    it exists so `memory_retrieve`'s `topic_id` can fence recall to a
+//!    topic's members across projects. A topic has NO LIFECYCLE — nothing
+//!    opens, closes, or completes it — which is exactly why this is not
+//!    `part_of` (whose `to` must be a persisted epic/task container).
 //!
 //!    `falsifies` is the ONLY kind whose `from_id` may name a non-capsule:
 //!    an outcome record id (`out-<n>`, the u6h substrate) may falsify a
@@ -108,7 +116,7 @@ use time::OffsetDateTime;
 
 use crate::extract::CandidateKind;
 
-/// The eight declared relation kinds. Wire names are the snake_case forms
+/// The nine declared relation kinds. Wire names are the snake_case forms
 /// fixed by the donor &1532 contract and mirrored by the store's CHECK
 /// ontology; see the module docs for the direction each kind reads in.
 /// `falsifies` (u6h) is the recall-eligibility kind — closed like the rest.
@@ -121,22 +129,57 @@ use crate::extract::CandidateKind;
 /// container `to`; like `falsifies` and `proposes` it is NOT a dag input.
 /// `grounded_in` (planning-plane s1) is the mission-anchoring kind — also
 /// NOT a dag input; see the [`RelationKind::GroundedIn`] variant doc.
+/// `about` (topic-anchor s1) is the topic-anchoring kind — also NOT a dag
+/// input; see the [`RelationKind::About`] variant doc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RelationKind {
+    /// `from` replaces `to`. The only kind that KILLS its target: `to` leaves
+    /// the dag's live set and stops grounding recall, and no later supersession
+    /// of `from` resurrects it — supersession is historical fact.
     Supersedes,
+    /// `from` was materialized out of `to`. Provenance only: it records where a
+    /// capsule came from and is inert to every ready/blocked/done answer.
     DerivedFrom,
+    /// `from` is the evidence attesting `to`. The ATTESTED side (`to`) becomes
+    /// done and stops blocking its dependents, while staying live and still
+    /// grounding recall — closure with proof, as opposed to replacement.
     Witnesses,
+    /// `from` must close before `to` can be ready. The ONLY kind that builds
+    /// the dag's node universe, so a capsule reachable by no `blocks` edge is
+    /// never reported as work at all.
     Blocks,
+    /// `from` contradicts `to`. Uniquely, `from` may name a non-capsule — an
+    /// outcome record `out-<n>`. The falsified capsule stops grounding recall
+    /// while its bytes stay served by `get`/`list`: a contradiction hides a
+    /// claim from answers without destroying the record of it.
     Falsifies,
+    /// `from` offers to replace `to`, and nothing acts on it. Navigational
+    /// only: no dag effect and no recall exclusion. Ratification is an explicit
+    /// caller-side conversion to [`RelationKind::Supersedes`]; the machine
+    /// NEVER promotes one on its own.
     Proposes,
+    /// `from` is a member of container `to`. Pure membership — byte-inert to
+    /// every dag answer, so grouping capsules into an effort can never change
+    /// what is ready.
     PartOf,
+    /// `from` anchors to its parent epic `to` in the planning plane. Like
+    /// [`RelationKind::PartOf`] it is not a dag input; it answers "what mission
+    /// is this under", never "can this be picked up".
     GroundedIn,
+    /// `from` is ABOUT topic node `to` — the topic anchor. Like
+    /// [`RelationKind::PartOf`] it is not a dag input, and it fences nothing
+    /// out of recall; it answers "what is this about", so `memory_retrieve`'s
+    /// `topic_id` can scope recall to a topic's members ACROSS projects. The
+    /// convention (never enforced) is that `to` is a `doc` capsule serving as
+    /// the topic node: a topic has no lifecycle to open or close, which is
+    /// precisely what separates it from [`RelationKind::PartOf`].
+    About,
 }
 
 impl RelationKind {
     /// All declared kinds, in contract order.
-    pub const ALL: [RelationKind; 8] = [
+    pub const ALL: [RelationKind; 9] = [
         RelationKind::Supersedes,
         RelationKind::DerivedFrom,
         RelationKind::Witnesses,
@@ -145,6 +188,7 @@ impl RelationKind {
         RelationKind::Proposes,
         RelationKind::PartOf,
         RelationKind::GroundedIn,
+        RelationKind::About,
     ];
 
     /// The closed contract rank of this kind: its position in [`Self::ALL`],
@@ -175,6 +219,7 @@ impl RelationKind {
             RelationKind::Proposes => "proposes",
             RelationKind::PartOf => "part_of",
             RelationKind::GroundedIn => "grounded_in",
+            RelationKind::About => "about",
         }
     }
 }
@@ -201,6 +246,7 @@ impl FromStr for RelationKind {
             "proposes" => Ok(RelationKind::Proposes),
             "part_of" => Ok(RelationKind::PartOf),
             "grounded_in" => Ok(RelationKind::GroundedIn),
+            "about" => Ok(RelationKind::About),
             other => Err(RelationError::UnknownKind(other.to_owned())),
         }
     }
@@ -219,7 +265,7 @@ pub enum RelationError {
     /// A string outside the closed ontology reached [`RelationKind::from_str`].
     #[error(
         "relation rejected: unknown kind {0:?} \
-         (closed enum: supersedes, derived_from, witnesses, blocks, falsifies, proposes, part_of, grounded_in)"
+         (closed enum: supersedes, derived_from, witnesses, blocks, falsifies, proposes, part_of, grounded_in, about)"
     )]
     UnknownKind(String),
 }
@@ -280,6 +326,10 @@ impl RelationRecord {
         })
     }
 
+    /// The edge's kind. Read it BEFORE either endpoint: `from_id` and `to_id`
+    /// mean different things per kind — blocker/blocked, evidence/attested,
+    /// newer/replaced — so an accessor pair read without the kind is two ids
+    /// with no direction.
     #[must_use]
     pub fn kind(&self) -> RelationKind {
         self.kind
@@ -784,7 +834,8 @@ mod tests {
                 "falsifies",
                 "proposes",
                 "part_of",
-                "grounded_in"
+                "grounded_in",
+                "about"
             ]
         );
     }
@@ -973,6 +1024,47 @@ mod tests {
         // The unrelated blocks edge is untouched.
         assert_eq!(dag.ready(), vec!["plan"]);
         assert_eq!(dag.blocked_by("ship"), vec!["plan"]);
+    }
+
+    #[test]
+    fn about_is_not_a_dag_input_even_between_two_blocks_participants() {
+        // topic-anchor s1: `about` is the topic anchor, NOT a dag input. The
+        // hard case is an `about` edge whose BOTH endpoints already sit in the
+        // blocks universe — if the projection read the kind at all, the edge
+        // would gate or kill one of them. It must be BYTE-INERT: the same
+        // ready/blocked/done/liveness answers with and without it.
+        let base = vec![
+            rec(RelationKind::Blocks, "plan", "ship"),
+            rec(RelationKind::Blocks, "ship", "announce"),
+        ];
+        let mut with_about = base.clone();
+        // Between two blocks participants, in BOTH directions, plus one edge
+        // to a topic node that is not a blocks participant at all.
+        with_about.push(rec(RelationKind::About, "ship", "plan"));
+        with_about.push(rec(RelationKind::About, "plan", "announce"));
+        with_about.push(rec(RelationKind::About, "ship", "topic-doc"));
+
+        let before = Dag::project(&base).expect("acyclic");
+        let after = Dag::project(&with_about).expect("about adds no cycle");
+        assert_eq!(after.ready(), before.ready(), "ready is untouched");
+        assert_eq!(after.done(), before.done(), "done is untouched");
+        for id in ["plan", "ship", "announce"] {
+            assert_eq!(
+                after.blocked_by(id),
+                before.blocked_by(id),
+                "blocked_by({id}) is untouched by an about edge"
+            );
+            assert_eq!(
+                after.is_live(id),
+                before.is_live(id),
+                "liveness of {id} is untouched by an about edge"
+            );
+        }
+        // The topic node joins nothing: an about-only endpoint is never a node.
+        assert!(
+            !after.is_live("topic-doc"),
+            "an about-only topic node is not a dag node"
+        );
     }
 
     // ---- dag projection: witnessed → done (u-r3) ----

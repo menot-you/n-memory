@@ -3,7 +3,7 @@
 //! Shell-level: drives the BUILT binary as a subprocess (not the library
 //! directly), matching what a real shell caller runs. Seeds two capsules
 //! straight through the library into the SAME db file the subprocess then
-//! opens, then asserts the CLI verb's contract: the closed 8-kind wire
+//! opens, then asserts the CLI verb's contract: the closed 9-kind wire
 //! vocabulary rejects an unknown kind, `part_of` into a non-container
 //! answers the SAME teaching message `memory_relate` gives over MCP, and
 //! the happy path records the edge and reports `already_recorded` on
