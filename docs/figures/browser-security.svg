@@ -1,0 +1,299 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 540" role="img" aria-labelledby="title desc">
+  <title id="title">nBROWSER: Hop-by-Hop SSRF Guard, SemanticView &amp; Origin Vault</title>
+  <desc id="desc">Architectural diagram illustrating nBROWSER hop-by-hop SSRF validation, dual execution seams, and generation-locked SemanticView with AES-256-GCM origin vault.</desc>
+
+  <defs>
+    <linearGradient id="headerGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#E4733A" />
+      <stop offset="50%" stop-color="#8FB3B0" />
+      <stop offset="100%" stop-color="#E8A33D" />
+    </linearGradient>
+
+    <marker id="arrow-copper" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#E4733A" />
+    </marker>
+
+    <marker id="arrow-cyan" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#8FB3B0" />
+    </marker>
+  </defs>
+
+  <!-- Background Canvas -->
+  <rect width="1120" height="540" fill="#0F0E0D" />
+
+  <!-- Top Decorative Header Line -->
+  <rect x="25" y="16" width="1070" height="2" fill="url(#headerGrad)" rx="1" />
+
+  <!-- Diagram Header -->
+  <g transform="translate(25, 26)">
+    <text x="0" y="22" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="#ECE7DE" letter-spacing="0.5">nBROWSER: Hop-by-Hop SSRF Guard, SemanticView &amp; Origin Vault</text>
+    <text x="1070" y="22" text-anchor="end" font-family="monospace" font-size="11" fill="#8FB3B0">SECURITY ARCHITECTURE · SYSTEMD SCOPE · doc_gen LOCKED</text>
+  </g>
+
+  <!-- ========================================================================= -->
+  <!-- COLUMN 1: HOP-BY-HOP SSRF &amp; DNS KERNEL -->
+  <!-- ========================================================================= -->
+  <g transform="translate(25, 68)">
+    <!-- Column Container -->
+    <rect width="340" height="448" rx="8" fill="#171513" stroke="#2E2A27" stroke-width="1.5" />
+    <path d="M 0 8 Q 0 0 8 0 L 332 0 Q 340 0 340 8 L 340 38 L 0 38 Z" fill="#201C19" />
+    <rect x="14" y="12" width="6" height="15" rx="2" fill="#E4733A" />
+    <text x="28" y="24" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#ECE7DE" letter-spacing="0.5">1. HOP-BY-HOP SSRF &amp; DNS KERNEL</text>
+    <text x="326" y="24" text-anchor="end" font-family="monospace" font-size="9" fill="#E4733A">EGRESS GATE</text>
+
+    <!-- Card 1.1: Per-Hop DNS Resolution -->
+    <g transform="translate(12, 48)">
+      <rect width="316" height="118" rx="6" fill="#1C1A17" stroke="#2E2A27" stroke-width="1" />
+      <rect x="10" y="9" width="4" height="13" rx="1.5" fill="#E4733A" />
+      <text x="20" y="20" font-family="Arial, sans-serif" font-size="11.5" font-weight="bold" fill="#ECE7DE">Per-Hop DNS Resolution</text>
+      <rect x="226" y="9" width="80" height="15" rx="3" fill="#26211C" stroke="#3D3227" stroke-width="0.8" />
+      <text x="266" y="20" text-anchor="middle" font-family="monospace" font-size="8" fill="#E4733A">PRE-CONNECT</text>
+      
+      <text x="12" y="41" font-family="Arial, sans-serif" font-size="10" fill="#B5AEA3">
+        <tspan font-family="monospace" font-size="9.5" fill="#8FB3B0">egress_guard.py</tspan> intercepts and resolves DNS
+      </text>
+      <text x="12" y="57" font-family="Arial, sans-serif" font-size="10" fill="#B5AEA3">prior to TCP socket creation.</text>
+      
+      <path d="M 12 70 L 304 70" stroke="#2E2A27" stroke-dasharray="3 3" />
+      
+      <text x="12" y="86" font-family="Arial, sans-serif" font-size="9.5" fill="#ECE7DE">
+        <tspan fill="#E4733A" font-weight="bold">→</tspan> Evaluated per redirect hop (301/302/307).
+      </text>
+      <text x="12" y="103" font-family="Arial, sans-serif" font-size="9.5" fill="#ECE7DE">
+        <tspan fill="#E4733A" font-weight="bold">→</tspan> Re-evaluated on every subresource fetch.
+      </text>
+    </g>
+
+    <!-- Card 1.2: Blocked Internal Ranges -->
+    <g transform="translate(12, 176)">
+      <rect width="316" height="130" rx="6" fill="#1C1A17" stroke="#2E2A27" stroke-width="1" />
+      <rect x="10" y="9" width="4" height="13" rx="1.5" fill="#C4523A" />
+      <text x="20" y="20" font-family="Arial, sans-serif" font-size="11.5" font-weight="bold" fill="#ECE7DE">Blocked Internal Ranges</text>
+      <rect x="236" y="9" width="70" height="15" rx="3" fill="#2B1C1A" stroke="#522722" stroke-width="0.8" />
+      <text x="271" y="20" text-anchor="middle" font-family="monospace" font-size="8" fill="#C4523A">FAIL CLOSED</text>
+      
+      <rect x="12" y="32" width="292" height="20" rx="3" fill="#241B1A" stroke="#3D2624" stroke-width="0.8" />
+      <text x="18" y="46" font-family="monospace" font-size="9" fill="#C4523A">127.0.0.0/8 · ::1 · RFC1918 (10/8, 172.16, 192.168)</text>
+
+      <rect x="12" y="57" width="292" height="20" rx="3" fill="#241B1A" stroke="#3D2624" stroke-width="0.8" />
+      <text x="18" y="71" font-family="monospace" font-size="9" fill="#E8A33D">169.254.169.254 (Cloud IMDS / Link-Local)</text>
+
+      <text x="12" y="96" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">
+        Defends against <tspan fill="#ECE7DE" font-weight="bold">DNS rebinding</tspan> attacks: pinned IP
+      </text>
+      <text x="12" y="112" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">must remain public throughout handshake.</text>
+    </g>
+
+    <!-- Card 1.3: Same-Origin Crawl Frontier -->
+    <g transform="translate(12, 316)">
+      <rect width="316" height="120" rx="6" fill="#1C1A17" stroke="#2E2A27" stroke-width="1" />
+      <rect x="10" y="9" width="4" height="13" rx="1.5" fill="#8FB3B0" />
+      <text x="20" y="20" font-family="Arial, sans-serif" font-size="11.5" font-weight="bold" fill="#ECE7DE">Same-Origin Crawl Frontier</text>
+      <text x="12" y="42" font-family="monospace" font-size="10" fill="#8FB3B0">nbrowser_site_crawl</text>
+
+      <text x="12" y="62" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">
+        <tspan fill="#8FB3B0">▪</tspan> Enforces <tspan fill="#ECE7DE">robots.txt</tspan> parsed under SSRF guard.
+      </text>
+      <text x="12" y="79" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">
+        <tspan fill="#8FB3B0">▪</tspan> Strict page budget cap avoids crawl runaway.
+      </text>
+      <text x="12" y="96" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">
+        <tspan fill="#8FB3B0">▪</tspan> Ephemeral single-use cursor locks traversal path.
+      </text>
+      <text x="12" y="112" font-family="monospace" font-size="8.5" fill="#E4733A">Boundary: origin strictly matches seed target</text>
+    </g>
+  </g>
+
+  <!-- Flow Connector 1 -> 2 (Top) -->
+  <path d="M 365 174 L 388 174" stroke="#E4733A" stroke-width="2" marker-end="url(#arrow-copper)" />
+  <!-- Flow Connector 1 -> 2 (Bottom) -->
+  <path d="M 365 376 L 388 376" stroke="#8FB3B0" stroke-width="2" marker-end="url(#arrow-cyan)" />
+
+  <!-- ========================================================================= -->
+  <!-- COLUMN 2: DUAL EXECUTION SEAMS (AUTHORITYSEAM) -->
+  <!-- ========================================================================= -->
+  <g transform="translate(390, 68)">
+    <!-- Column Container -->
+    <rect width="340" height="448" rx="8" fill="#171513" stroke="#2E2A27" stroke-width="1.5" />
+    <path d="M 0 8 Q 0 0 8 0 L 332 0 Q 340 0 340 8 L 340 38 L 0 38 Z" fill="#201C19" />
+    <rect x="14" y="12" width="6" height="15" rx="2" fill="#8FB3B0" />
+    <text x="28" y="24" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#ECE7DE" letter-spacing="0.5">2. DUAL EXECUTION SEAMS</text>
+    <text x="326" y="24" text-anchor="end" font-family="monospace" font-size="9" fill="#8FB3B0">AUTHORITYSEAM</text>
+
+    <!-- Card 2.1: Zero-Browser Static Seam -->
+    <g transform="translate(12, 48)">
+      <rect width="316" height="118" rx="6" fill="#1C1A17" stroke="#2E2A27" stroke-width="1" />
+      <rect x="10" y="9" width="4" height="13" rx="1.5" fill="#8FB3B0" />
+      <text x="20" y="20" font-family="Arial, sans-serif" font-size="11.5" font-weight="bold" fill="#ECE7DE">Zero-Browser Static Seam</text>
+      <rect x="216" y="9" width="90" height="15" rx="3" fill="#1A2423" stroke="#2B4744" stroke-width="0.8" />
+      <text x="261" y="20" text-anchor="middle" font-family="monospace" font-size="8" fill="#8FB3B0">NO CHROMIUM</text>
+
+      <text x="12" y="41" font-family="monospace" font-size="9" fill="#ECE7DE">nbrowser_page_extract</text>
+      <text x="156" y="41" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">+ web search</text>
+
+      <text x="12" y="60" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">
+        Converts public documentation and static web pages
+      </text>
+      <text x="12" y="76" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">
+        into clean cited Markdown + token budget bounds.
+      </text>
+
+      <rect x="12" y="87" width="292" height="21" rx="3" fill="#151413" stroke="#2E2A27" stroke-width="0.8" />
+      <text x="18" y="101" font-family="monospace" font-size="8.5" fill="#8FB3B0">Speed: ~200ms · 0 GPU · Complete SSRF insulation</text>
+    </g>
+
+    <!-- Card 2.2: Isolated CloakBrowser Engine -->
+    <g transform="translate(12, 176)">
+      <rect width="316" height="130" rx="6" fill="#1C1A17" stroke="#2E2A27" stroke-width="1" />
+      <rect x="10" y="9" width="4" height="13" rx="1.5" fill="#E4733A" />
+      <text x="20" y="20" font-family="Arial, sans-serif" font-size="11.5" font-weight="bold" fill="#ECE7DE">Isolated CloakBrowser Engine</text>
+      <rect x="210" y="9" width="96" height="15" rx="3" fill="#281E19" stroke="#523223" stroke-width="0.8" />
+      <text x="258" y="20" text-anchor="middle" font-family="monospace" font-size="8" fill="#E4733A">SYSTEMD SCOPE</text>
+
+      <text x="12" y="40" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">
+        <tspan fill="#ECE7DE" font-weight="bold">fortress / tilion</tspan> anti-fingerprinting runtime.
+      </text>
+      <text x="12" y="58" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">
+        Runs in an ephemeral, isolated OS sandbox scope.
+      </text>
+
+      <rect x="12" y="70" width="292" height="23" rx="3" fill="#241916" stroke="#3D241E" stroke-width="0.8" />
+      <text x="18" y="85" font-family="monospace" font-size="8.5" fill="#C4523A">ZERO fallback to personal browser profiles</text>
+
+      <text x="12" y="110" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">
+        Cookie jars, storage &amp; canvas seeds scrubbed on exit.
+      </text>
+    </g>
+
+    <!-- Card 2.3: Multi-Provider Search Merge -->
+    <g transform="translate(12, 316)">
+      <rect width="316" height="120" rx="6" fill="#1C1A17" stroke="#2E2A27" stroke-width="1" />
+      <rect x="10" y="9" width="4" height="13" rx="1.5" fill="#E8A33D" />
+      <text x="20" y="20" font-family="Arial, sans-serif" font-size="11.5" font-weight="bold" fill="#ECE7DE">Multi-Provider Search Merge</text>
+      <text x="12" y="42" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">Parallel dispatch to resilient search upstreams:</text>
+
+      <!-- Provider badges -->
+      <g transform="translate(12, 52)">
+        <rect x="0" y="0" width="66" height="20" rx="3" fill="#24201A" stroke="#3D3524" stroke-width="0.8" />
+        <text x="33" y="14" text-anchor="middle" font-family="monospace" font-size="8.5" fill="#E8A33D">Tavily</text>
+
+        <rect x="74" y="0" width="68" height="20" rx="3" fill="#24201A" stroke="#3D3524" stroke-width="0.8" />
+        <text x="108" y="14" text-anchor="middle" font-family="monospace" font-size="8.5" fill="#E8A33D">Firecrawl</text>
+
+        <rect x="150" y="0" width="64" height="20" rx="3" fill="#24201A" stroke="#3D3524" stroke-width="0.8" />
+        <text x="182" y="14" text-anchor="middle" font-family="monospace" font-size="8.5" fill="#E8A33D">Z.AI</text>
+
+        <rect x="222" y="0" width="70" height="20" rx="3" fill="#24201A" stroke="#3D3524" stroke-width="0.8" />
+        <text x="257" y="14" text-anchor="middle" font-family="monospace" font-size="8.5" fill="#E8A33D">MiniMax</text>
+      </g>
+
+      <text x="12" y="94" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">
+        Deduplicates canonical URLs across providers.
+      </text>
+      <text x="12" y="111" font-family="Arial, sans-serif" font-size="9.5" fill="#ECE7DE">
+        Preserves provenance with exact citation metadata.
+      </text>
+    </g>
+  </g>
+
+  <!-- Flow Connector 2 -> 3 (Top) -->
+  <path d="M 730 174 L 753 174" stroke="#8FB3B0" stroke-width="2" marker-end="url(#arrow-cyan)" />
+  <!-- Flow Connector 2 -> 3 (Bottom) -->
+  <path d="M 730 376 L 753 376" stroke="#E4733A" stroke-width="2" marker-end="url(#arrow-copper)" />
+
+  <!-- ========================================================================= -->
+  <!-- COLUMN 3: GENERATION-LOCKED SEMANTICVIEW &amp; VAULT -->
+  <!-- ========================================================================= -->
+  <g transform="translate(755, 68)">
+    <!-- Column Container -->
+    <rect width="340" height="448" rx="8" fill="#171513" stroke="#2E2A27" stroke-width="1.5" />
+    <path d="M 0 8 Q 0 0 8 0 L 332 0 Q 340 0 340 8 L 340 38 L 0 38 Z" fill="#201C19" />
+    <rect x="14" y="12" width="6" height="15" rx="2" fill="#E8A33D" />
+    <text x="28" y="24" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#ECE7DE" letter-spacing="0.5">3. SEMANTICVIEW &amp; ORIGIN VAULT</text>
+    <text x="326" y="24" text-anchor="end" font-family="monospace" font-size="9" fill="#E8A33D">LOCKED STATE</text>
+
+    <!-- Card 3.1: doc_gen Accessibility Snapshots -->
+    <g transform="translate(12, 48)">
+      <rect width="316" height="118" rx="6" fill="#1C1A17" stroke="#2E2A27" stroke-width="1" />
+      <rect x="10" y="9" width="4" height="13" rx="1.5" fill="#8FB3B0" />
+      <text x="20" y="20" font-family="Arial, sans-serif" font-size="11.5" font-weight="bold" fill="#ECE7DE">doc_gen Accessibility Snapshots</text>
+      <rect x="220" y="9" width="86" height="15" rx="3" fill="#1A2423" stroke="#2B4744" stroke-width="0.8" />
+      <text x="263" y="20" text-anchor="middle" font-family="monospace" font-size="8" fill="#8FB3B0">REF-BOUND</text>
+
+      <text x="12" y="41" font-family="monospace" font-size="9" fill="#8FB3B0">nbrowser_page_snapshot</text>
+      <text x="12" y="58" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">
+        Emits compact <tspan fill="#ECE7DE" font-weight="bold">SemanticView</tspan> tree element refs
+      </text>
+      <text x="12" y="74" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">
+        bound strictly to current <tspan fill="#E4733A" font-family="monospace">doc_gen</tspan> generation counter.
+      </text>
+
+      <rect x="12" y="86" width="292" height="22" rx="3" fill="#241B19" stroke="#3D2924" stroke-width="0.8" />
+      <text x="18" y="100" font-family="monospace" font-size="8.5" fill="#E4733A">Stale refs fail closed after DOM navigation</text>
+    </g>
+
+    <!-- Card 3.2: AES-256-GCM Origin Vault -->
+    <g transform="translate(12, 176)">
+      <rect width="316" height="130" rx="6" fill="#1C1A17" stroke="#2E2A27" stroke-width="1" />
+      <rect x="10" y="9" width="4" height="13" rx="1.5" fill="#E8A33D" />
+      <text x="20" y="20" font-family="Arial, sans-serif" font-size="11.5" font-weight="bold" fill="#ECE7DE">AES-256-GCM Origin Vault</text>
+      <rect x="212" y="9" width="94" height="15" rx="3" fill="#262118" stroke="#4D3F22" stroke-width="0.8" />
+      <text x="259" y="20" text-anchor="middle" font-family="monospace" font-size="8" fill="#E8A33D">ORIGIN-GATED</text>
+
+      <rect x="12" y="32" width="292" height="21" rx="3" fill="#151413" stroke="#2E2A27" stroke-width="0.8" />
+      <text x="18" y="46" font-family="monospace" font-size="9" fill="#8FB3B0">nbrowser.sqlite3 + nbrowser.key (0600)</text>
+
+      <text x="12" y="71" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">
+        Stores domain-scoped credentials encrypted at rest.
+      </text>
+
+      <rect x="12" y="82" width="292" height="38" rx="3" fill="#241E17" stroke="#40321F" stroke-width="0.8" />
+      <text x="18" y="96" font-family="Arial, sans-serif" font-size="9" fill="#ECE7DE" font-weight="bold">Origin Request Gate:</text>
+      <text x="18" y="111" font-family="monospace" font-size="8.5" fill="#E8A33D">Lock: scheme://host:port must match vault record</text>
+    </g>
+
+    <!-- Card 3.3: Paged Diagnostics -->
+    <g transform="translate(12, 316)">
+      <rect width="316" height="120" rx="6" fill="#1C1A17" stroke="#2E2A27" stroke-width="1" />
+      <rect x="10" y="9" width="4" height="13" rx="1.5" fill="#8FB3B0" />
+      <text x="20" y="20" font-family="Arial, sans-serif" font-size="11.5" font-weight="bold" fill="#ECE7DE">Paged Diagnostics</text>
+      <rect x="220" y="9" width="86" height="15" rx="3" fill="#1A2423" stroke="#2B4744" stroke-width="0.8" />
+      <text x="263" y="20" text-anchor="middle" font-family="monospace" font-size="8" fill="#8FB3B0">OBSERVABILITY</text>
+
+      <g transform="translate(12, 36)">
+        <rect x="0" y="0" width="292" height="18" rx="2" fill="#171918" stroke="#2A3836" stroke-width="0.6" />
+        <text x="8" y="13" font-family="monospace" font-size="8.5" fill="#ECE7DE">nbrowser_console_show</text>
+        <text x="284" y="13" text-anchor="end" font-family="monospace" font-size="8" fill="#B5AEA3">bounded offset</text>
+
+        <rect x="0" y="23" width="292" height="18" rx="2" fill="#171918" stroke="#2A3836" stroke-width="0.6" />
+        <text x="8" y="36" font-family="monospace" font-size="8.5" fill="#ECE7DE">nbrowser_network_show</text>
+        <text x="284" y="36" text-anchor="end" font-family="monospace" font-size="8" fill="#B5AEA3">status / timing</text>
+
+        <rect x="0" y="46" width="292" height="18" rx="2" fill="#171918" stroke="#2A3836" stroke-width="0.6" />
+        <text x="8" y="59" font-family="monospace" font-size="8.5" fill="#ECE7DE">nbrowser_content_show</text>
+        <text x="284" y="59" text-anchor="end" font-family="monospace" font-size="8" fill="#B5AEA3">paged body</text>
+      </g>
+
+      <text x="12" y="112" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">
+        Zero memory blowups: all inspections streamed via bounded offsets.
+      </text>
+    </g>
+  </g>
+
+  <!-- Bottom Legend Bar -->
+  <g transform="translate(25, 523)">
+    <circle cx="6" cy="4" r="3.5" fill="#E4733A" />
+    <text x="15" y="7" font-family="Arial, sans-serif" font-size="8.5" fill="#B5AEA3">SSRF Enforcement</text>
+
+    <circle cx="150" cy="4" r="3.5" fill="#8FB3B0" />
+    <text x="159" y="7" font-family="Arial, sans-serif" font-size="8.5" fill="#B5AEA3">Static &amp; Semantic Flow</text>
+
+    <circle cx="310" cy="4" r="3.5" fill="#E8A33D" />
+    <text x="319" y="7" font-family="Arial, sans-serif" font-size="8.5" fill="#B5AEA3">Origin Vault &amp; Credentials</text>
+
+    <circle cx="480" cy="4" r="3.5" fill="#C4523A" />
+    <text x="489" y="7" font-family="Arial, sans-serif" font-size="8.5" fill="#B5AEA3">Blocked / Fail-Closed Target</text>
+
+    <text x="1070" y="7" text-anchor="end" font-family="monospace" font-size="8.5" fill="#B5AEA3">nBROWSER v2 · NOTT DEFENSE ARCHITECTURE</text>
+  </g>
+</svg>

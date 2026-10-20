@@ -1,0 +1,257 @@
+[project]
+license-files = ["LICENSE"]
+license = "AGPL-3.0-only"
+name = "nmemory"
+version = "0.8.0"
+description = "Grounded memory MCP server for LLM agents — Python port of nmemory"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    # Curator inference uses the owning durable run lifecycle, never a vendor launcher.
+    "nspawn",
+    # The System One (System1) transport, by the same two-consumer rule: the
+    # resident curator asks, and so does nSPAWN. Configuration resolution does
+    # NOT move with it — here the file beats the env, in nSPAWN it is the opposite.
+    "nott-system1",
+    # The one door to the store file (SQLite), and the vector distance it runs.
+    "nott-database",
+    "sqlite-vec>=0.1.9",
+    # The official MCP Python SDK serves stdio and Streamable HTTP (`server.py`,
+    # `serve.py`): framing, handshake and protocol version are the standard's.
+    "mcp>=2.3",
+    # The loopback bearer in front of the HTTP door, shared with nBROWSER.
+    "nott-netdoor",
+    
+    # measured against langdetect on 1,819 translated capsule pairs: py3langid
+    # refused 0 of 910 held-out English capsules and 97.1% of the Portuguese
+    # ones, while langdetect refused English at every usable threshold.
+    "py3langid>=0.4.0",
+]
+
+[tool.uv.sources]
+nspawn = { workspace = true }
+nott-system1 = { workspace = true }
+nott-database = { workspace = true }
+nott-netdoor = { workspace = true }
+
+[dependency-groups]
+dev = ["ruff>=0.16.4", "mypy>=2.3.1", "pytest>=8.0.0", "hypothesis>=6.0", "pytest-xdist>=3.6", "vulture>=2.16", "import-linter>=2.15", "pytest-cov>=7.0.0", "mutmut==3.7.0"]
+
+
+[project.urls]
+Homepage = "https://no.tt"
+Repository = "https://github.com/menot-you/n-memory"
+Documentation = "https://github.com/menot-you/n-memory/tree/main/docs"
+Issues = "https://github.com/menot-you/n-memory/issues"
+
+[project.scripts]
+nmemory = "nmemory.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.0,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+
+# THE PACKAGE, DECLARED BY NAME. uv_build ships the one module named after the
+# distribution (`nmemory`), with every file inside it. setuptools' flat-layout
+# discovery refused the whole tree when a stray top-level directory looked like a
+# package: measured 2026-09-14, a `tools/quality.sh` run killed by the timeout left
+# `mutants/` (mutmut's output, ignored by git and so invisible) next to `nmemory/`,
+# and `Multiple top-level packages discovered in a flat-layout` broke the build for
+# every consumer. The catalogue of the tools, `nmemory/tools_schema.json`, is inside
+# the module and so in the wheel: without it `tools/list` answers zero tools in an
+# install outside the source tree, as it did in the first install at
+
+
+[tool.mutmut]
+# Stock mutmut 3.7 (campaign mutmut-standard). Each mutant runs only the tests its
+# function's stats run recorded; xdist workers would lose those stats.
+source_paths = ["nmemory"]
+pytest_add_cli_args = ["-p", "no:xdist"]
+pytest_add_cli_args_test_selection = ["tests"]
+
+[tool.ruff]
+target-version = "py314"
+
+# DEAD CODE, MEASURED. vulture reads the member's product code together with the
+# product code of every consumer that imports it, so a name only a consumer uses is
+# alive; tests are left out, so a name only tests use is reported dead. The
+# consumers are usage sources only: their own findings are outside this member.
+# tests/test_architecture.py runs it from this directory and refuses any finding
+# under nmemory/. Default confidence; no whitelist file.
+[tool.vulture]
+paths = [
+    "nmemory",
+    "evals/nmemory_evals",
+]
+ignore_names = [
+    # Test seams kept on purpose. Store.open_disposable_test_store is how the
+    # suites get a throwaway store: tests/test_ingest.py and most of this
+    # member's tests.
+    "open_disposable_test_store",
+    # Asserted by tests only (test_delivery_inbox.py).
+    "INBOX_ROWS",
+    # EmbeddingClient.set_hook (tests/test_embedding_worker_owner.py).
+    "set_hook",
+    # Protocol member: extract_llm.Proposer.__call__ is the call signature a
+    # proposer must satisfy; it is never called on the Protocol itself.
+    "__call__",
+    # Parameters of subproc.run_with_timeout's @overload stubs, which exist only to
+    # type the call; ignore_decorators = ["@overload"] does not silence them
+    # (measured with vulture 2.16).
+    "encoding",
+    "universal_newlines",
+    # ClassificationScope.GLOBAL is reached only through from_str, which parses
+    # nmemory_kind_classify's scope argument; "global" is a wire value of
+    # ClassificationScopeParam in nmemory/tools_schema.json.
+    "GLOBAL",
+    # RelationKind.CONTRADICTS and PROPOSES are reached only through
+    # RelationKind(value): they are wire values of nmemory_relation_add's kind in
+    # nmemory/tools_schema.json.
+    "CONTRADICTS",
+    "PROPOSES",
+    # io.RawIOBase protocol members of embedding._ReadsWithin: io.BufferedReader
+    # calls them, never by name.
+    "readable",
+    "readinto",
+]
+
+# IMPORT ARCHITECTURE, MEASURED. import-linter reads the import graph of `nmemory`
+# and tests/test_architecture.py runs `lint-imports --no-cache` from this
+# directory. Imports under TYPE_CHECKING stay counted
+# (exclude_type_checking_imports is left off): a type-only import is still a
+# dependency. Function-level imports are counted too, so a lazy import does not
+# hide a cycle.
+[tool.importlinter]
+root_package = "nmemory"
+
+# No module of the package reaches back to a sibling that reaches it.
+[[tool.importlinter.contracts]]
+name = "nmemory modules form no import cycle"
+type = "acyclic_siblings"
+ancestors = ["nmemory"]
+
+# The domain (pure, no I/O) never reaches persistence or a child process, not
+# even through another module. The list grows as the campaign makes a module
+# pure; a module enters it only once it holds.
+[[tool.importlinter.contracts]]
+name = "the domain never reaches persistence or a subprocess"
+type = "forbidden"
+source_modules = [
+    "nmemory.capsule",
+    "nmemory.capsule_ref",
+    "nmemory.classify",
+    "nmemory.consolidate",
+    "nmemory.curator_policy",
+    "nmemory.dod",
+    "nmemory.export",
+    "nmemory.extract",
+    "nmemory.extract_llm",
+    "nmemory.github_plan",
+    "nmemory.journal",
+    "nmemory.project",
+    "nmemory.relation",
+    "nmemory.substrate",
+    "nmemory.taint",
+    "nmemory.wire",
+]
+forbidden_modules = [
+    "nmemory.database",
+    "nmemory.store",
+    "nmemory.subproc",
+]
+
+# A command is an application entry: it never reaches back to the table that
+# dispatches it (a cycle) nor into the MCP door (an application-to-door edge).
+[[tool.importlinter.contracts]]
+name = "the CLI commands never reach the CLI or the MCP door"
+type = "forbidden"
+source_modules = ["nmemory.commands"]
+forbidden_modules = [
+    "nmemory.cli",
+    "nmemory.server",
+]
+
+# A tool handler is an application entry: it reads the HandlerState its call
+# builds and never reaches back into the MCP door that dispatches it (a
+# `handle(server, ...)` would close a cycle), nor into the CLI.
+[[tool.importlinter.contracts]]
+name = "the MCP tools never reach the MCP door or the CLI"
+type = "forbidden"
+source_modules = ["nmemory.tools"]
+forbidden_modules = [
+    "nmemory.cli",
+    "nmemory.server",
+]
+
+# A repository owns its tables and nothing above them: it never reaches the
+# Unit of Work that composes it, the read side, or an application entry.
+[[tool.importlinter.contracts]]
+name = "the repositories never reach the store, the queries or the application"
+type = "forbidden"
+source_modules = ["nmemory.repositories"]
+forbidden_modules = [
+    "nmemory.store",
+    "nmemory.queries",
+    "nmemory.tools",
+    "nmemory.commands",
+    "nmemory.server",
+    "nmemory.cli",
+]
+
+# A query reads over the connection and writes nothing: it never reaches the
+# Unit of Work (whose composites write) or an application entry.
+[[tool.importlinter.contracts]]
+name = "the queries never reach the store or the application"
+type = "forbidden"
+source_modules = ["nmemory.queries"]
+forbidden_modules = [
+    "nmemory.store",
+    "nmemory.tools",
+    "nmemory.commands",
+    "nmemory.server",
+    "nmemory.cli",
+]
+
+# THE LAYERS, outer to inner: an inner layer never imports an outer one, not even
+# through another module. Siblings joined by `:` share a layer and may import each
+# other. `exhaustive` makes every module of the package appear here, so a new module
+# left out of the list fails; there are no ignore_imports.
+#   doors:          the MCP stdio door, the CLI, `nmemory serve`, `python -m nmemory`;
+#   application:    the MCP tools, the CLI commands and the services;
+#   infrastructure: persistence (database, the Store as Unit of Work, repositories,
+#                   queries), the embedding space, and the adapters (subprocess, git,
+#                   gh, context readers, embedding HTTP client, environment, files);
+#                   `lexical` reads NOTT_NMEMORY_TOKEN_CACHE and `language` loads its
+#                   model, so neither is pure yet;
+#   domain:         pure modules, no I/O (also held by the forbidden contract above).
+[[tool.importlinter.contracts]]
+name = "nmemory layers: doors, application, infrastructure, domain"
+type = "layers"
+containers = ["nmemory"]
+exhaustive = true
+layers = [
+    "__main__ : cli : serve : server",
+    "anchors : commands : context : curator : embedding_index : github : hygiene : ingest : portal : project_scan : retrieve : rules : staleness : system1 : tools",
+    "anchor : bridge : capture : config : context_readers : database : embedding : github_client : language : lexical : provider : queries : renamed : repositories : space : store : subproc",
+    "audit_actions : capsule : capsule_ref : classify : consolidate : curator_policy : dod : export : extract : extract_llm : github_plan : journal : project : relation : substrate : taint : wire",
+]
+
+[tool.pytest.ini_options]
+pythonpath = [".", "tests"]
+# PARALLELISM HAS TO BE TURNED ON, and installing xdist does not turn it on (the
+# same measurement apps/spawn already made). The isolation it needs comes from the
+# nott-database pytest plugin: every test gets its own NOTT_DATABASE_DIR.
+addopts = []
+
+[tool.python]
+xdist = "loadfile"
+
+[tool.coverage.run]
+patch = ["subprocess"]
+
+
+[tool.uv.workspace]
+members = ["packages/database", "packages/netdoor", "packages/system1", "evals", "packages/nspawn", "packages/socket"]

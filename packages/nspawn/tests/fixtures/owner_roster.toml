@@ -1,0 +1,166 @@
+# Synthetic recipe roster. Paths and accounts are test data.
+[telemetry]
+otlp_endpoint = "http://127.0.0.1:1"
+
+# ── nSPAWN — the provider roster & defaults ─────────────────────────────────
+[defaults]
+model = "claude-opus-5"
+effort = "max"
+plugins = ["~/.nott/plugin"]
+# Prepended to every provider's own args. $PLUGIN expands to plugin_root.
+args = [
+  "--plugin-dir", "$PLUGIN",
+  "--append-system-prompt-file", "$PLUGIN/NOTT.md",
+]
+
+[bins]
+claude = "/opt/test/bin/claude"
+
+# ── Claude accounts (resolved dynamically from secrets dir) ──────────────────
+[[provider]]
+name = "claude"
+kind = "claude"
+secrets = "~/.nott/secrets/claude"
+strength = 9  # owner: claude and codex1/2 carry the deepest efforts — judgment and planning
+models = ["claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-haiku-4-5"]
+efforts = ["low", "medium", "high", "xhigh", "max"]
+default = true
+
+# ── the two Codex homes ──────────────────────────────────────────────────────
+[[provider]]
+name = "codex1"
+kind = "claude"
+strength = 9  # owner: the deepest efforts, and ultra exists only on codex
+models = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-daybreak-blue-latest"]
+efforts = ["low", "medium", "high", "xhigh", "max", "ultra"]
+
+[provider.env]
+ANTHROPIC_AUTH_TOKEN = "$NOTT_PROXY_API_KEY"
+ANTHROPIC_BASE_URL = "$NOTT_PROXY_BASE_URL"
+ANTHROPIC_MODEL = "$NOTT_PROXY_CODEX_DEFAULT_MODEL"
+ANTHROPIC_DEFAULT_OPUS_MODEL = "$NOTT_PROXY_CODEX_DEFAULT_MODEL"
+ANTHROPIC_DEFAULT_SONNET_MODEL = "$NOTT_PROXY_CODEX_DEFAULT_MODEL"
+ANTHROPIC_DEFAULT_HAIKU_MODEL = "$NOTT_PROXY_CODEX_FAST_MODEL"
+
+[[provider]]
+name = "codex2"
+kind = "claude"
+strength = 9  # owner: the deepest efforts, and ultra exists only on codex
+models = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-daybreak-blue-latest"]
+efforts = ["low", "medium", "high", "xhigh", "max", "ultra"]
+
+# ── zai, kimi and minimax: the SAME Claude binary at another base URL ───────
+
+[provider.env]
+ANTHROPIC_AUTH_TOKEN = "$NOTT_PROXY_API_KEY"
+ANTHROPIC_BASE_URL = "$NOTT_PROXY_BASE_URL"
+ANTHROPIC_MODEL = "$NOTT_PROXY_CODEX_DEFAULT_MODEL"
+ANTHROPIC_DEFAULT_OPUS_MODEL = "$NOTT_PROXY_CODEX_DEFAULT_MODEL"
+ANTHROPIC_DEFAULT_SONNET_MODEL = "$NOTT_PROXY_CODEX_DEFAULT_MODEL"
+ANTHROPIC_DEFAULT_HAIKU_MODEL = "$NOTT_PROXY_CODEX_FAST_MODEL"
+
+[[provider]]
+name = "zai"
+kind = "claude"
+models = ["glm-5.3[1m]", "glm-5V-turbo"]
+strength = 7
+efforts = ["max"]
+auth_env = "ZAI_API_KEY"
+effort = "max"
+
+[provider.env]
+API_TIMEOUT_MS = "3000000"
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1"
+CLAUDE_CODE_AUTO_COMPACT_WINDOW = "1000000"
+ANTHROPIC_AUTH_TOKEN = "$ZAI_API_KEY"
+ANTHROPIC_BASE_URL = "$ZAI_BASE_URL"
+ANTHROPIC_MODEL = "$ZAI_DEFAULT_MODEL"
+ANTHROPIC_DEFAULT_OPUS_MODEL = "$ZAI_DEFAULT_MODEL"
+ANTHROPIC_DEFAULT_SONNET_MODEL = "$ZAI_DEFAULT_MODEL"
+ANTHROPIC_DEFAULT_HAIKU_MODEL = "$ZAI_FAST_MODEL"
+CLAUDE_CODE_SUBAGENT_MODEL = "$ZAI_DEFAULT_MODEL"
+
+
+[[provider]]
+name = "minimax"
+kind = "claude"
+models = ["MiniMax-M3[1m]", "MiniMax-M2.7-highspeed"]
+thrift = 9  # owner: minimax for wide cheap fan-out
+efforts = ["max"]
+auth_env = "MINIMAX_API_KEY"
+effort = "max"
+
+[provider.env]
+API_TIMEOUT_MS = "3000000"
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1"
+CLAUDE_CODE_AUTO_COMPACT_WINDOW = "1000000"
+ANTHROPIC_AUTH_TOKEN = "$MINIMAX_API_KEY"
+ANTHROPIC_BASE_URL = "$MINIMAX_BASE_URL"
+ANTHROPIC_MODEL = "$MINIMAX_DEFAULT_MODEL"
+ANTHROPIC_DEFAULT_OPUS_MODEL = "$MINIMAX_DEFAULT_MODEL"
+ANTHROPIC_DEFAULT_SONNET_MODEL = "$MINIMAX_DEFAULT_MODEL"
+ANTHROPIC_DEFAULT_HAIKU_MODEL = "$MINIMAX_FAST_MODEL"
+CLAUDE_CODE_SUBAGENT_MODEL = "$MINIMAX_DEFAULT_MODEL"
+
+# ── fugumax / fugupro ────────────────────────────────────────────────────────
+[[provider]]
+name = "fugumax"
+kind = "claude"
+strength = 8  # owner: fugu is excellent as JUDGE / REVIEWER
+efforts = ["high", "ultra"]
+models = ["fugu-ultra"]
+
+[provider.env]
+ANTHROPIC_AUTH_TOKEN = "$NOTT_PROXY_API_KEY"
+ANTHROPIC_BASE_URL = "$NOTT_PROXY_BASE_URL"
+ANTHROPIC_MODEL = "fugumax/fugu-ultra"
+ANTHROPIC_DEFAULT_OPUS_MODEL = "fugumax/fugu-ultra"
+ANTHROPIC_DEFAULT_SONNET_MODEL = "fugumax/fugu-ultra"
+ANTHROPIC_DEFAULT_HAIKU_MODEL = "fugumax/fugu-ultra"
+
+[[provider]]
+name = "fugupro"
+kind = "claude"
+strength = 8  # owner: fugu is excellent as JUDGE / REVIEWER
+efforts = ["high", "ultra"]
+models = ["fugu-ultra"]
+
+
+[provider.env]
+ANTHROPIC_AUTH_TOKEN = "$NOTT_PROXY_API_KEY"
+ANTHROPIC_BASE_URL = "$NOTT_PROXY_BASE_URL"
+ANTHROPIC_MODEL = "fugupro/fugu-ultra"
+ANTHROPIC_DEFAULT_OPUS_MODEL = "fugupro/fugu-ultra"
+ANTHROPIC_DEFAULT_SONNET_MODEL = "fugupro/fugu-ultra"
+ANTHROPIC_DEFAULT_HAIKU_MODEL = "fugupro/fugu-ultra"
+
+[[provider]]
+name = "grok"
+kind = "claude"
+strength = 5  # owner: grok is the cross-vendor second opinion
+models = ["grok-4.6", "grok-4.5"]
+model = "grok-4.6"
+efforts = ["low", "medium", "high", "xhigh"]
+
+[provider.env]
+ANTHROPIC_AUTH_TOKEN = "$NOTT_PROXY_API_KEY"
+ANTHROPIC_BASE_URL = "$NOTT_PROXY_BASE_URL"
+
+[[provider]]
+name = "agy"
+kind = "claude"
+design = 9  # owner: kimi and agy are good for FRONT-END
+models = [
+  "gemini-3.8-flash-high",
+  "gemini-3.6-flash-high",
+  "gemini-3.5-flash-low",
+  "gemini-3.1-pro-low",
+  "gpt-oss-120b-medium",
+]
+efforts = ["low", "medium", "high"]
+
+[provider.env]
+ANTHROPIC_AUTH_TOKEN = "$NOTT_PROXY_API_KEY"
+ANTHROPIC_BASE_URL = "$NOTT_PROXY_BASE_URL"
+ANTHROPIC_DEFAULT_SONNET_MODEL = "$NOTT_PROXY_GEMINI_FAST_MODEL"
+ANTHROPIC_DEFAULT_HAIKU_MODEL = "$NOTT_PROXY_GEMINI_FAST_MODEL"

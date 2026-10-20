@@ -1,0 +1,37 @@
+[project]
+license-files = ["LICENSE"]
+license = "AGPL-3.0-only"
+name = "nott-netdoor"
+version = "0.1.0"
+description = "Loopback HTTP bind and bearer admission"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    # The HTTP server `serve_app` runs an ASGI app (the MCP SDK's) on.
+    "uvicorn>=0.30",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.0,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+
+[tool.ruff]
+target-version = "py314"
+
+[tool.python]
+# MEASURED on SERVER, 2026-09-25, at 5cf3444d5: 53 passed, the same serial and under `-n
+# 4 --dist loadfile`. The serial quarantine named a door test of the pre-split
+# harness member (retired in c98b8b2e6) that no longer exists; the AF_UNIX width it measured was cured in libs/socket/nott_socket/door.py.
+xdist = "loadfile"
+
+[tool.mutmut]
+# Stock mutmut 3.7 (campaign mutmut-standard). Each mutant runs only the tests its
+# function's stats run recorded; xdist workers would lose those stats.
+source_paths = ["nott_netdoor"]
+# The conformance test reads this table from the member root.
+also_copy = ["http-door-auth.tsv"]
+pytest_add_cli_args = ["-p", "no:xdist"]
+pytest_add_cli_args_test_selection = ["tests"]

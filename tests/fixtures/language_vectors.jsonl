@@ -1,0 +1,68 @@
+{"id": "en-plain", "expect": "captured", "text": "The curator judges a claim only from the excerpt it was shown, never from the repository at HEAD."}
+{"id": "en-short-rule", "expect": "captured", "text": "The providers.toml roster must support multiple accounts per provider via a [[provider.upstream]] list."}
+{"id": "en-env-names", "expect": "captured", "text": "nMEMORY test fixtures must always clear NOTT_DATABASE_URL, NOTT_NMEMORY_CONFIG and NOTT_OTLP_ENDPOINT."}
+{"id": "en-batch-op", "expect": "captured", "text": "memory_purge must support a batch operation (items: [...]) for atomic multi-capsule purges."}
+{"id": "en-pt-identifier", "expect": "captured", "text": "The review state `precisa_de_humano` is set when the two option orders disagree, and nothing ratifies it automatically."}
+{"id": "en-pt-title", "expect": "captured", "text": "The owner's rule titled 'falha na emissão de nota' covers invoices that fail to issue; it applies to every retry path."}
+{"id": "en-pt-path", "expect": "captured", "text": "Translated capsules keep their original anchor, for example /caminho/arquivo.md:12, so provenance can still be re-obtained."}
+{"id": "en-with-code", "expect": "captured", "text": "Use `gh pr comment --body-file` instead of `--body @file`, because the @ form posts the literal string and not the file contents."}
+{"id": "en-fenced", "expect": "captured", "text": "Run the gate with the disposable store:\n```\nTMPDIR=/var/tmp uv run --group dev pytest tests/test_judge.py -q\n```\nA run under /tmp exhausts the tmpfs inodes."}
+{"id": "en-stack", "expect": "captured", "text": "Traceback (most recent call last):\n  File \"server.py\", line 2050, in _tool_memory_ingest\nsqlite3.OperationalError: database is locked\nThe writer lock was held by a second MCP process on the same store."}
+{"id": "en-json", "expect": "captured", "text": "{\"status\": \"rejected\", \"error\": \"anchor: ingest rejected\"}\nA factual capture without re-obtainable proof is refused per item, never for the whole batch."}
+{"id": "en-log-lines", "expect": "captured", "text": "p99 1393 -> 1186 ms, 1000 -> 998 ms, 1370 -> 733 ms after the SQLite move; the WAL checkpoint was the dominant cost."}
+{"id": "en-long", "expect": "captured", "text": "A leak check must compare every training line against every test file of every front, because two questions can be asked over the same state and a per-front check then passes while the model has already seen the test text under another question."}
+{"id": "code-only", "expect": "captured", "text": "`tools/install-mcp.sh nmemory --rollback`"}
+{"id": "short-label", "expect": "captured", "text": "OK: gate green"}
+{"id": "pt-mixed-2-words", "expect": "captured", "text": "Corrigido: `nott_database.connect`"}
+{"id": "pt-plain", "expect": "refused", "text": "O curador julga uma afirmação apenas pelo trecho que lhe foi mostrado, nunca pelo repositório no HEAD."}
+{"id": "pt-short", "expect": "refused", "text": "Corrigido o bug na VM de testes."}
+{"id": "pt-status", "expect": "refused", "text": "Falta testar na VM antes de fazer o merge da PR."}
+{"id": "pt-decision", "expect": "refused", "text": "Decisão do owner: o treino do Laya pode demorar quanto for preciso, e a GPU fica livre para isso."}
+{"id": "pt-with-code", "expect": "refused", "text": "Use `gh pr comment --body-file` em vez de `--body @arquivo`, porque a forma com @ publica a string literal e não o conteúdo do arquivo."}
+{"id": "pt-with-identifiers", "expect": "refused", "text": "O estado `precisa_de_humano` é marcado quando as duas ordens de opções discordam, e nada o ratifica sozinho."}
+{"id": "pt-long", "expect": "refused", "text": "Uma verificação de fuga tem de comparar cada linha de treino com cada ficheiro de teste de cada frente, porque duas perguntas podem ser feitas sobre o mesmo estado e a verificação por frente passa enquanto o modelo já viu o texto de teste noutra pergunta."}
+{"id": "pt-pt-orthography", "expect": "refused", "text": "O ficheiro de configuração tem de ser lido antes de arrancar o serviço, senão a sessão fica sem ferramentas."}
+{"id": "es-plain", "expect": "refused", "text": "El curador juzga una afirmación solo por el fragmento que se le mostró, nunca por el repositorio completo."}
+{"id": "handoff-pt", "expect": "warned", "text": "Sessão encerrada: o treino v3 do Laya está a correr na GPU e termina por volta das 22:45; falta comparar com o v2."}
+{"id": "quote-pt", "expect": "quote", "text": "aprovo o plano do inglês na captura"}
+{"id": "en-path-then-rule", "expect": "captured", "text": "`docs/readme.md`: fix typo in documentation"}
+{"id": "en-short-fix", "expect": "captured", "text": "Fix a typo in documentation."}
+{"id": "en-code-then-clause", "expect": "captured", "text": "`server.py`: begin now takes effect"}
+{"id": "en-syntax-error", "expect": "captured", "text": "Fix syntax error in configuration."}
+{"id": "en-rule-fix", "expect": "captured", "text": "Rule: fix typo in documentation."}
+{"id": "en-constraint-rule", "expect": "captured", "text": "Rule: `table_name`: violates unique constraint on table."}
+{"id": "en-never-ignore", "expect": "captured", "text": "Rule: never ignore syntax error in configuration."}
+{"id": "en-log-excerpt", "expect": "captured", "text": "Log excerpt: violates unique constraint on table `users`"}
+{"id": "en-log-auth", "expect": "captured", "text": "Log: violates unique constraint on table `auth_user`"}
+{"id": "en-postgres-log", "expect": "captured", "text": "Postgres log: violates unique constraint on table `orders`"}
+{"id": "en-credit-names", "expect": "captured", "text": "Credit: François, Étienne, René, Simone for the implementation."}
+{"id": "en-loanwords", "expect": "captured", "text": "The restaurant menu offers croissants, pain au chocolat, and quiche."}
+{"id": "en-latin-phrase", "expect": "captured", "text": "The agreement includes a quid pro quo condition."}
+{"id": "en-quoted-pt-title", "expect": "captured", "text": "The rule titled 'falha na emissão de nota' covers invoice retries."}
+{"id": "en-quoted-fr-title", "expect": "captured", "text": "The chapter titled 'De la démocratie en Amérique' discusses equality."}
+{"id": "en-quoted-pt-doc", "expect": "captured", "text": "The document titled 'Manual de operações e contingência' was archived."}
+{"id": "en-short-adversarial-01", "expect": "captured", "text": "Enforce resource quota policies."}
+{"id": "en-short-adversarial-02", "expect": "captured", "text": "Configure resource quota policies."}
+{"id": "en-short-adversarial-03", "expect": "captured", "text": "Strict resource quota enforcement."}
+{"id": "en-short-adversarial-04", "expect": "captured", "text": "Error: invalid quota configuration."}
+{"id": "en-short-adversarial-05", "expect": "captured", "text": "Fatal error: invalid quota configuration."}
+{"id": "en-short-adversarial-06", "expect": "captured", "text": "Error: invalid quota parameter."}
+{"id": "en-short-adversarial-07", "expect": "captured", "text": "Configure `app`: enforce resource quota policies."}
+{"id": "en-short-adversarial-08", "expect": "captured", "text": "In `settings.py`: error: invalid quota configuration."}
+{"id": "en-short-adversarial-09", "expect": "captured", "text": "Agenda item: review policies."}
+{"id": "en-short-adversarial-10", "expect": "captured", "text": "Agenda item: review quota policies."}
+{"id": "en-short-adversarial-11", "expect": "captured", "text": "Tabula rasa initial state."}
+{"id": "en-short-adversarial-12", "expect": "captured", "text": "Magna cum laude validation results."}
+{"id": "en-short-adversarial-13", "expect": "captured", "text": "Prima facie invalid quota configuration."}
+{"id": "en-short-adversarial-14", "expect": "captured", "text": "Escalate to Roberto or Fernando."}
+{"id": "en-short-adversarial-15", "expect": "captured", "text": "Ask Carlos, Fernando, or Roberto."}
+{"id": "en-short-adversarial-16", "expect": "captured", "text": "Notify Roberto, Fernando, or Carlos."}
+{"id": "en-short-adversarial-17", "expect": "captured", "text": "Bravado service configuration error."}
+{"id": "en-short-adversarial-18", "expect": "captured", "text": "Torero queue processing error."}
+{"id": "en-short-adversarial-19", "expect": "captured", "text": "Paella recipe database service."}
+{"id": "en-pt-person-names", "expect": "captured", "text": "Contact Roberto da Silva or Fernando da Costa regarding access permissions."}
+{"id": "en-pt-place-names", "expect": "captured", "text": "The Rio de Janeiro and Juiz de Fora datacenters reported latency spikes."}
+{"id": "pt-telegraphic-server", "expect": "refused", "text": "Configuração do servidor atualizada após reiniciar todos serviços."}
+{"id": "pt-telegraphic-docs", "expect": "refused", "text": "Atualizar documentação técnica incluindo novos endpoints REST criados."}
+{"id": "pt-telegraphic-deps", "expect": "refused", "text": "Instalar dependências adicionais necessárias após atualização do sistema."}
+{"id": "en-short-certain", "expect": "captured", "text": "Agenda item: quota parameter error."}

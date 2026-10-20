@@ -1,0 +1,170 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 440" role="img" aria-labelledby="title desc">
+  <title id="title">nBROWSER Hero Banner</title>
+  <desc id="desc">Read the page. Keep the evidence. Bounded web evidence for AI agents with egress guard, isolated Chromium profiles, and compact Markdown citations.</desc>
+
+  <defs>
+    <style>
+      .mono { font-family: ui-monospace, 'SF Mono', Menlo, Monaco, Consolas, 'Liberation Mono', monospace; }
+      .sans { font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+    </style>
+
+    <marker id="copper-arrow" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 1 2 L 8 5 L 1 8 Z" fill="#E4733A" />
+    </marker>
+
+    <pattern id="grid-dots" x="0" y="0" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1" fill="#2E2A27" opacity="0.4" />
+    </pattern>
+
+    <linearGradient id="header-accent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#E4733A" />
+      <stop offset="60%" stop-color="#E8A33D" />
+      <stop offset="100%" stop-color="#8FB3B0" />
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1120" height="440" rx="8" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1" />
+<svg x="1005" y="28" width="65" height="84" viewBox="101 62 309 387"><path fill="#E4733A" fill-rule="evenodd" d="M180 447C182 445 184 441 188 422C191 409 194 398 196 394C199 387 199 387 199 376C198 366 199 358 204 322C207 299 209 278 209 276C209 270 205 260 202 257C198 254 200 253 205 255C216 261 225 321 225 392C225 414 225 429 224 432C223 438 219 443 216 443C215 443 210 448 210 449C210 450 213 450 217 450L224 450L226 446C229 442 229 441 230 427C231 419 232 409 233 405C234 398 234 396 233 385C231 374 231 366 232 324C233 277 233 276 231 270C230 267 229 262 229 260L228 255L236 253C240 251 249 247 257 243C277 232 289 230 295 238C299 243 299 247 296 260C291 278 291 281 304 314C320 355 320 358 305 413C299 435 297 440 292 441C289 442 284 447 284 449C284 450 286 450 291 450C302 450 302 449 309 422C315 399 324 369 328 362C331 356 331 353 326 344C319 329 315 302 319 288C321 278 321 278 325 286C327 289 336 301 344 312C372 347 377 359 383 403C387 434 387 440 379 443C377 444 374 445 373 447L372 450L379 450C388 450 389 449 391 444C393 440 393 438 390 413C389 399 388 380 387 370L387 352L382 348C365 330 349 291 350 271C351 266 351 261 352 261C353 259 356 239 356 235C355 229 356 230 358 236C359 241 359 246 358 263C357 285 358 290 360 282L361 278L362 282C362 285 363 291 363 295C363 302 363 302 365 301C368 301 368 301 368 307C370 316 376 330 376 323C376 319 378 321 380 327C382 331 383 333 384 333C384 332 387 334 389 337C392 342 394 343 393 340C392 338 395 339 398 343C403 348 405 352 405 356L405 360L407 356C409 353 410 341 408 336C407 334 407 334 409 336C412 339 412 337 408 326C406 321 404 315 403 312C402 308 402 305 401 304C401 301 403 302 405 304C408 307 408 306 403 286C394 253 384 236 359 211C350 202 349 201 352 201C354 201 354 201 351 198C341 190 316 187 295 192C277 195 264 195 254 191C247 188 227 173 218 163C217 162 218 162 221 163C228 164 229 164 203 144C202 143 204 143 207 144C209 145 210 145 211 145C212 143 201 134 194 130L188 127L192 126L195 126L191 123C188 122 185 118 183 116C180 114 177 112 175 111C172 111 172 110 175 104C179 96 175 82 165 69C159 61 159 61 156 65C153 69 151 76 150 91C150 108 149 110 146 95C145 89 144 88 136 79C131 73 127 69 126 69C126 69 127 73 127 76C128 82 129 85 133 92C140 106 140 107 134 115C130 119 128 122 127 125C127 130 122 135 110 144L101 151L104 154C109 157 110 157 125 151C132 148 139 146 141 146C148 146 157 158 159 170C159 176 161 177 162 174C163 169 165 173 165 184C167 209 168 212 169 204C170 198 172 199 173 206C174 210 175 214 179 219C182 225 183 227 183 231C183 236 184 239 188 248C195 263 195 262 195 297C195 357 186 421 177 436C175 440 172 442 169 444C161 447 162 450 171 450C177 450 178 450 180 447Z"/></svg>
+  <rect width="1120" height="440" rx="8" fill="url(#grid-dots)" />
+
+  <!-- Eyebrow -->
+  <g transform="translate(48, 48)">
+    <circle cx="5" cy="-4" r="3.5" fill="#E4733A" />
+    <text x="18" y="0" class="mono" font-size="11" font-weight="700" letter-spacing="1.4" fill="#E4733A">nBROWSER / BOUNDED WEB EVIDENCE FOR AI AGENTS</text>
+  </g>
+
+  <!-- Headline -->
+  <text x="48" y="88" class="sans" font-size="28" font-weight="700" fill="#ECE7DE" letter-spacing="-0.5">
+    Read the page. <tspan fill="url(#header-accent)">Keep the evidence.</tspan>
+  </text>
+
+  <!-- Pill Badges -->
+  <g transform="translate(48, 114)">
+    <!-- Badge 1 -->
+    <rect x="0" y="0" width="158" height="26" rx="13" fill="#171513" stroke="#2E2A27" stroke-width="1" />
+    <circle cx="14" cy="13" r="3" fill="#E4733A" />
+    <text x="24" y="17" class="sans" font-size="11" font-weight="600" fill="#ECE7DE">SSRF &amp; DNS Guard</text>
+
+    <!-- Badge 2 -->
+    <rect x="166" y="0" width="194" height="26" rx="13" fill="#171513" stroke="#2E2A27" stroke-width="1" />
+    <circle cx="180" cy="13" r="3" fill="#8FB3B0" />
+    <text x="190" y="17" class="sans" font-size="11" font-weight="600" fill="#ECE7DE">Static + Headless Chromium</text>
+
+    <!-- Badge 3 -->
+    <rect x="368" y="0" width="150" height="26" rx="13" fill="#171513" stroke="#2E2A27" stroke-width="1" />
+    <circle cx="382" cy="13" r="3" fill="#E8A33D" />
+    <text x="392" y="17" class="sans" font-size="11" font-weight="600" fill="#ECE7DE">Origin-Bound Vault</text>
+
+    <!-- Badge 4 -->
+    <rect x="526" y="0" width="94" height="26" rx="13" fill="#171513" stroke="#2E2A27" stroke-width="1" />
+    <circle cx="540" cy="13" r="3" fill="#B5AEA3" />
+    <text x="550" y="17" class="sans" font-size="11" font-weight="600" fill="#ECE7DE">AGPL-3.0</text>
+  </g>
+
+  <!-- Connective Copper Arrows -->
+  <line x1="368" y1="270" x2="394" y2="270" stroke="#E4733A" stroke-width="2" stroke-linecap="round" marker-end="url(#copper-arrow)" />
+  <line x1="722" y1="270" x2="748" y2="270" stroke="#E4733A" stroke-width="2" stroke-linecap="round" marker-end="url(#copper-arrow)" />
+
+  <!-- Card 01 / ADMIT ORIGIN -->
+  <g transform="translate(48, 175)">
+    <rect width="316" height="190" rx="8" fill="#171513" stroke="#2E2A27" stroke-width="1" />
+
+    <!-- Card Header -->
+    <text x="16" y="24" class="mono" font-size="10" font-weight="700" letter-spacing="1" fill="#E4733A">CARD 01 / ADMIT ORIGIN</text>
+    <text x="16" y="40" class="sans" font-size="12" font-weight="600" fill="#ECE7DE">egress_guard origin sandbox</text>
+    <line x1="16" y1="50" x2="300" y2="50" stroke="#2E2A27" stroke-width="1" />
+
+    <!-- Inner Console -->
+    <rect x="14" y="58" width="288" height="118" rx="5" fill="#0F0E0D" stroke="#2E2A27" stroke-width="0.8" />
+
+    <!-- URL Check Bar -->
+    <rect x="22" y="66" width="272" height="20" rx="3" fill="#171513" stroke="#2E2A27" stroke-width="0.8" />
+    <text x="30" y="80" class="mono" font-size="9" fill="#B5AEA3">TARGET: <tspan fill="#ECE7DE">docs.anthropic.com</tspan></text>
+
+    <!-- Rule 1: Metadata IP -->
+    <circle cx="30" cy="100" r="3" fill="#E4733A" />
+    <text x="38" y="103" class="mono" font-size="8.5" fill="#B5AEA3">169.254.169.254 (metadata)</text>
+    <rect x="226" y="93" width="60" height="15" rx="3" fill="#241410" stroke="#E4733A" stroke-width="0.8" />
+    <text x="256" y="104" class="mono" font-size="7.5" font-weight="700" fill="#E4733A" text-anchor="middle">BLOCKED</text>
+
+    <!-- Rule 2: Loopback / Private Subnet -->
+    <circle cx="30" cy="120" r="3" fill="#E4733A" />
+    <text x="38" y="123" class="mono" font-size="8.5" fill="#B5AEA3">127.0.0.1 / 10.0.0.0/8</text>
+    <rect x="226" y="113" width="60" height="15" rx="3" fill="#241410" stroke="#E4733A" stroke-width="0.8" />
+    <text x="256" y="124" class="mono" font-size="7.5" font-weight="700" fill="#E4733A" text-anchor="middle">BLOCKED</text>
+
+    <!-- Rule 3: Verified Public Origin -->
+    <circle cx="30" cy="140" r="3" fill="#8FB3B0" />
+    <text x="38" y="143" class="mono" font-size="8.5" fill="#ECE7DE">104.18.23.42:443 (HTTPS)</text>
+    <rect x="226" y="133" width="60" height="15" rx="3" fill="#132422" stroke="#8FB3B0" stroke-width="0.8" />
+    <text x="256" y="144" class="mono" font-size="7.5" font-weight="700" fill="#8FB3B0" text-anchor="middle">ADMITTED</text>
+
+    <!-- Status Line -->
+    <text x="30" y="164" class="mono" font-size="8" fill="#E8A33D">✓ Verified IP pinned before socket connect</text>
+  </g>
+
+  <!-- Card 02 / EXTRACT OR DRIVE -->
+  <g transform="translate(402, 175)">
+    <rect width="316" height="190" rx="8" fill="#171513" stroke="#2E2A27" stroke-width="1" />
+
+    <!-- Card Header -->
+    <text x="16" y="24" class="mono" font-size="10" font-weight="700" letter-spacing="1" fill="#E4733A">CARD 02 / EXTRACT OR DRIVE</text>
+    <text x="16" y="40" class="sans" font-size="12" font-weight="600" fill="#ECE7DE">dual-engine fetch &amp; render</text>
+    <line x1="16" y1="50" x2="300" y2="50" stroke="#2E2A27" stroke-width="1" />
+
+    <!-- Inner Console -->
+    <rect x="14" y="58" width="288" height="118" rx="5" fill="#0F0E0D" stroke="#2E2A27" stroke-width="0.8" />
+
+    <!-- Seam Selector Tabs -->
+    <rect x="22" y="66" width="132" height="20" rx="3" fill="#132422" stroke="#8FB3B0" stroke-width="0.8" />
+    <text x="88" y="79" class="mono" font-size="8.5" font-weight="600" fill="#8FB3B0" text-anchor="middle">Static Markdown (0.2s)</text>
+
+    <rect x="160" y="66" width="134" height="20" rx="3" fill="#171513" stroke="#2E2A27" stroke-width="0.8" />
+    <text x="227" y="79" class="mono" font-size="8.5" font-weight="600" fill="#B5AEA3" text-anchor="middle">CloakBrowser Driver</text>
+
+    <!-- Execution Trace Box -->
+    <rect x="22" y="92" width="272" height="52" rx="3" fill="#171513" stroke="#2E2A27" stroke-width="0.8" />
+    <text x="30" y="106" class="mono" font-size="8.5" fill="#B5AEA3">&gt; cloak_session.spawn(profile="ephem_4a")</text>
+    <text x="30" y="120" class="mono" font-size="8.5" fill="#ECE7DE">&gt; semantic_view.snapshot({ tree: "ax" })</text>
+    <text x="30" y="134" class="mono" font-size="8.5" fill="#8FB3B0">✓ 42 interactive refs mapped (button, input)</text>
+
+    <!-- Footer Security Note -->
+    <text x="30" y="162" class="mono" font-size="8" fill="#E8A33D">⚡ Ephemeral session: isolated cookies &amp; cache</text>
+  </g>
+
+  <!-- Card 03 / CITE EVIDENCE -->
+  <g transform="translate(756, 175)">
+    <rect width="316" height="190" rx="8" fill="#171513" stroke="#2E2A27" stroke-width="1" />
+
+    <!-- Card Header -->
+    <text x="16" y="24" class="mono" font-size="10" font-weight="700" letter-spacing="1" fill="#E4733A">CARD 03 / CITE EVIDENCE</text>
+    <text x="16" y="40" class="sans" font-size="12" font-weight="600" fill="#ECE7DE">compact Markdown &amp; vault proof</text>
+    <line x1="16" y1="50" x2="300" y2="50" stroke="#2E2A27" stroke-width="1" />
+
+    <!-- Inner Console -->
+    <rect x="14" y="58" width="288" height="118" rx="5" fill="#0F0E0D" stroke="#2E2A27" stroke-width="0.8" />
+
+    <!-- Markdown Output Snippet -->
+    <rect x="22" y="66" width="272" height="42" rx="3" fill="#171513" stroke="#2E2A27" stroke-width="0.8" />
+    <text x="30" y="79" class="mono" font-size="8.5" font-weight="700" fill="#ECE7DE">## Authentication API Reference</text>
+    <text x="30" y="92" class="mono" font-size="8.5" fill="#B5AEA3">Pass API key via `x-api-key` header...</text>
+    <text x="30" y="103" class="mono" font-size="7.5" fill="#8FB3B0">curl -H "x-api-key: $KEY" api.docs...</text>
+
+    <!-- Metrics Row -->
+    <rect x="22" y="114" width="132" height="22" rx="3" fill="#171513" stroke="#2E2A27" stroke-width="0.8" />
+    <text x="28" y="129" class="mono" font-size="8" fill="#B5AEA3">Tokens: <tspan fill="#ECE7DE" font-weight="700">1,420</tspan> <tspan fill="#8FB3B0">(-86%)</tspan></text>
+
+    <rect x="160" y="114" width="134" height="22" rx="3" fill="#171513" stroke="#2E2A27" stroke-width="0.8" />
+    <text x="166" y="129" class="mono" font-size="8" fill="#B5AEA3">Vault: <tspan fill="#E4733A" font-weight="600">sha256:7f9b8c...</tspan></text>
+
+    <!-- Source URL Citation -->
+    <rect x="22" y="142" width="272" height="24" rx="3" fill="#171513" stroke="#2E2A27" stroke-width="0.8" />
+    <text x="30" y="157" class="mono" font-size="8" fill="#E8A33D">Source: docs.anthropic.com/api#auth</text>
+  </g>
+
+  <!-- Footer -->
+  <text x="560" y="412" text-anchor="middle" class="sans" font-size="12" font-weight="500" fill="#B5AEA3">
+    Explicit network admission. Isolated browser profiles. Compact Markdown evidence with source citations.
+  </text>
+</svg>

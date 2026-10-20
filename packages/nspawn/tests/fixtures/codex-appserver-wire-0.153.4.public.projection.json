@@ -1,0 +1,22 @@
+{
+  "derivative": {
+    "name": "codex-appserver-wire-0.153.4.public.ndjson",
+    "sha256": "933da13750439e41d318c3b24ed17c6e87f9d2d6e0d302e016945d4862905625"
+  },
+  "metadata_fields": {
+    "# Binary": "<CLAUDE_BINARY>",
+    "/cwd": "<CAPTURE_CWD>",
+    "/frame/result/thread/gitInfo/branch": "<GIT_BRANCH>",
+    "/frame/result/thread/gitInfo/originUrl": "<GIT_ORIGIN>",
+    "/frame/result/thread/gitInfo/sha": "<GIT_SHA>",
+    "/memory_paths/auto": "<MEMORY_PATH>",
+    "/messaging_socket_path": "<SOCKET_PATH>",
+    "/plugins/*/path": "<PLUGIN_PATH>"
+  },
+  "procedure": "nspawn-wire-public-v1",
+  "schema": 1,
+  "source": {
+    "name": "codex-appserver-wire-0.153.4.ndjson",
+    "sha256": "695fa2a524ee24535fef74a23652228ac2a82d6915e5d547f5c0e07e961c7943"
+  }
+}

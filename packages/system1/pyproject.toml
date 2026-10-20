@@ -1,0 +1,44 @@
+[project]
+license-files = ["LICENSE"]
+license = "AGPL-3.0-only"
+name = "nott-system1"
+version = "0.1.0"
+description = "Stdlib transport for System1 System One typed questions"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.4",
+    "mypy>=2.3.1",
+    "pytest>=8.0.0",
+    "pytest-cov>=7.0.0",
+    "pytest-xdist>=3.6",
+    "mutmut==3.7.0",
+    "nott-database",
+]
+
+[tool.uv.sources]
+nott-database = { workspace = true }
+
+[build-system]
+requires = ["uv_build>=0.12.0,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+
+[tool.ruff]
+target-version = "py314"
+
+[tool.python]
+# Every test owns its files and loopback sockets. They can run in parallel per file.
+xdist = "loadfile"
+
+[tool.mutmut]
+# Stock mutmut 3.7 (campaign mutmut-standard). Each mutant runs only the tests its
+# function's stats run recorded; xdist workers would lose those stats.
+source_paths = ["nott_system1"]
+pytest_add_cli_args = ["-p", "no:xdist"]
+pytest_add_cli_args_test_selection = ["tests"]

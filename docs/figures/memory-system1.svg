@@ -1,0 +1,376 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 540" role="img" aria-labelledby="title desc">
+  <title id="title">nMEMORY: Hybrid Vector Embeddings, System1 (Laya / Jev) &amp; Curator Graph</title>
+  <desc id="desc">Architectural diagram showing nMEMORY hybrid vector embeddings, taint shield, System1 engine batching with order-ensembles, and resident curator with two-axis DoD knowledge graph.</desc>
+
+  <defs>
+    <linearGradient id="bg-grad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0F0E0D"/>
+      <stop offset="100%" stop-color="#141210"/>
+    </linearGradient>
+
+    <linearGradient id="copper-cyan-h" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#E4733A"/>
+      <stop offset="100%" stop-color="#8FB3B0"/>
+    </linearGradient>
+
+    <linearGradient id="cyan-amber-h" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#8FB3B0"/>
+      <stop offset="100%" stop-color="#E8A33D"/>
+    </linearGradient>
+
+    <marker id="arrow-copper" viewBox="0 0 8 8" refX="6" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 6 4 L 0 6.5 z" fill="#E4733A"/>
+    </marker>
+
+    <marker id="arrow-cyan" viewBox="0 0 8 8" refX="6" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 6 4 L 0 6.5 z" fill="#8FB3B0"/>
+    </marker>
+
+    <filter id="subtle-glow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#000000" flood-opacity="0.6"/>
+    </filter>
+  </defs>
+
+  <style>
+    .font-sans { font-family: Arial, sans-serif; }
+    .font-mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; }
+    .title-main { font-size: 18px; font-weight: 700; fill: #ECE7DE; letter-spacing: -0.2px; }
+    .subtitle { font-size: 11px; fill: #B5AEA3; letter-spacing: 0.1px; }
+    .col-header { font-size: 12px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; }
+    .card-title { font-size: 12px; font-weight: 700; fill: #ECE7DE; }
+    .card-sub { font-size: 10px; fill: #B5AEA3; }
+    .badge-txt { font-size: 9.5px; font-weight: 600; }
+    .detail-txt { font-size: 10.5px; fill: #ECE7DE; }
+    .code-txt { font-size: 9.5px; fill: #8FB3B0; }
+    .warn-txt { font-size: 9.5px; fill: #E8A33D; }
+    .brick-txt { font-size: 9.5px; fill: #C4523A; }
+    .flow-label { font-size: 8.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+  </style>
+
+  <!-- Canvas Background -->
+  <rect x="0" y="0" width="1120" height="540" fill="url(#bg-grad)"/>
+
+  <!-- Subtle Blueprint Grid Pattern -->
+  <g opacity="0.04" stroke="#ECE7DE" stroke-width="0.5">
+    <line x1="20" y1="60" x2="1100" y2="60"/>
+    <line x1="20" y1="180" x2="1100" y2="180"/>
+    <line x1="20" y1="300" x2="1100" y2="300"/>
+    <line x1="20" y1="420" x2="1100" y2="420"/>
+    <line x1="375" y1="20" x2="375" y2="520"/>
+    <line x1="745" y1="20" x2="745" y2="520"/>
+  </g>
+
+  <!-- Header Area -->
+  <g transform="translate(24, 18)">
+    <rect x="0" y="0" width="118" height="20" rx="3" fill="#1F1B18" stroke="#E4733A" stroke-width="1"/>
+    <circle cx="10" cy="10" r="3.5" fill="#E4733A"/>
+    <text x="20" y="14" class="font-sans badge-txt" fill="#E4733A">nMEMORY SUBSYSTEM</text>
+
+    <text x="130" y="15" class="font-sans title-main">nMEMORY: Hybrid Vector Embeddings, System1 (Laya / Jev) &amp; Curator Graph</text>
+    <text x="130" y="34" class="font-sans subtitle">Resilient dual-lane retrieval with taint shields, high-throughput probabilistic reasoning, and continuous two-axis DoD verification</text>
+
+    <rect x="944" y="2" width="128" height="24" rx="4" fill="#171513" stroke="#2E2A27" stroke-width="1"/>
+    <text x="954" y="18" class="font-mono code-txt" font-size="9px">ARCH: V3-HYBRID-DOD</text>
+  </g>
+
+  <!-- ========================================================================= -->
+  <!-- COLUMN 1: HYBRID EMBEDDINGS & TAINT SHIELD                               -->
+  <!-- ========================================================================= -->
+  <g transform="translate(24, 66)">
+    <!-- Column Container -->
+    <rect x="0" y="0" width="332" height="454" rx="8" fill="#171513" stroke="#2E2A27" stroke-width="1.5" filter="url(#subtle-glow)"/>
+    <path d="M 0 8 Q 0 0 8 0 L 324 0 Q 332 0 332 8 L 332 36 L 0 36 Z" fill="#1F1B18"/>
+    <line x1="0" y1="36" x2="332" y2="36" stroke="#2E2A27" stroke-width="1"/>
+    <circle cx="16" cy="18" r="4" fill="#E4733A"/>
+    <text x="28" y="22" class="font-sans col-header" fill="#E4733A">1. Hybrid Embeddings &amp; Taint Shield</text>
+
+    <!-- Block 1.1: sqlite-vec Semantic Lane -->
+    <g transform="translate(12, 46)">
+      <rect x="0" y="0" width="308" height="122" rx="5" fill="#11100E" stroke="#2E2A27" stroke-width="1"/>
+      <rect x="0" y="0" width="3" height="122" rx="1.5" fill="#E4733A"/>
+      <text x="12" y="18" class="font-sans card-title">sqlite-vec Semantic Lane</text>
+      <text x="12" y="32" class="font-mono code-txt">cosine similarity · space_fingerprint</text>
+
+      <!-- Pill: Migration status -->
+      <g transform="translate(12, 42)">
+        <rect x="0" y="0" width="284" height="22" rx="3" fill="#1A1816" stroke="#2E2A27" stroke-width="1"/>
+        <text x="8" y="15" class="font-mono" font-size="9px" fill="#ECE7DE">active_space → target_space</text>
+        <text x="210" y="15" class="font-sans badge-txt" fill="#8FB3B0">bg-migration</text>
+      </g>
+
+      <text x="12" y="80" class="font-sans detail-txt">• Async workers consume <tspan class="font-mono code-txt">embedding_jobs</tspan> queue</text>
+      <text x="12" y="96" class="font-sans detail-txt">• Margin Gate: <tspan class="font-mono" fill="#E8A33D">0.083</tspan> cosine margin gate rejects ambiguous ties</text>
+      <text x="12" y="112" class="font-sans card-sub">Pre-filters dense candidate partition before fusion ranking</text>
+    </g>
+
+    <!-- Block 1.2: FTS5 BM25 + Synonym Graph -->
+    <g transform="translate(12, 178)">
+      <rect x="0" y="0" width="308" height="126" rx="5" fill="#11100E" stroke="#2E2A27" stroke-width="1"/>
+      <rect x="0" y="0" width="3" height="126" rx="1.5" fill="#8FB3B0"/>
+      <text x="12" y="18" class="font-sans card-title">FTS5 BM25 + Synonym Graph</text>
+      <text x="12" y="32" class="font-mono code-txt">diacritic folding · exact keyword lane</text>
+
+      <text x="12" y="52" class="font-sans detail-txt">• Expansion via <tspan class="font-mono code-txt">nmemory_synonym_add</tspan> multi-word aliases</text>
+      <text x="12" y="68" class="font-sans detail-txt">• Robust to accents, Portuguese inflections &amp; code tokens</text>
+
+      <!-- Fusion Formula Box -->
+      <g transform="translate(12, 80)">
+        <rect x="0" y="0" width="284" height="36" rx="3" fill="#1A1816" stroke="#2E2A27" stroke-width="1"/>
+        <text x="8" y="15" class="font-sans badge-txt" fill="#8FB3B0">RANKING HYBRID FUSION:</text>
+        <text x="8" y="28" class="font-mono" font-size="9.5px" fill="#ECE7DE">Score = RRF(dense, bm25) * freshness_decay(Δt)</text>
+      </g>
+    </g>
+
+    <!-- Block 1.3: Paraphrase-Hijack Defense -->
+    <g transform="translate(12, 314)">
+      <rect x="0" y="0" width="308" height="128" rx="5" fill="#151110" stroke="#C4523A" stroke-width="1.2"/>
+      <rect x="0" y="0" width="3" height="128" rx="1.5" fill="#C4523A"/>
+      <text x="12" y="18" class="font-sans card-title" fill="#ECE7DE">Paraphrase-Hijack Defense</text>
+      <rect x="236" y="7" width="60" height="15" rx="2.5" fill="#2E1310"/>
+      <text x="242" y="18" class="font-mono brick-txt" font-weight="700">SHIELD</text>
+
+      <text x="12" y="36" class="font-sans detail-txt">• Raw turn stream inspection before memory extraction</text>
+      <text x="12" y="52" class="font-mono code-txt">derived_from raw turn bytes scan</text>
+      <text x="12" y="68" class="font-sans detail-txt">• Detects jailbreak, prompt-leak &amp; adversarial override</text>
+
+      <!-- Danger badge -->
+      <g transform="translate(12, 78)">
+        <rect x="0" y="0" width="284" height="38" rx="3" fill="#241412" stroke="#C4523A" stroke-width="0.8"/>
+        <text x="8" y="16" class="font-sans badge-txt" fill="#C4523A">SECURITY ACTION ON DETECT:</text>
+        <text x="8" y="30" class="font-mono" font-size="9px" fill="#ECE7DE">sets <tspan fill="#C4523A">instruction_taint=true</tspan> → isolates memory</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ========================================================================= -->
+  <!-- COLUMN CONNECTOR 1 -> 2                                                  -->
+  <!-- ========================================================================= -->
+  <g transform="translate(356, 110)">
+    <!-- Top connector -->
+    <path d="M 0 45 L 38 45" stroke="#E4733A" stroke-width="2" stroke-dasharray="3 2" marker-end="url(#arrow-copper)"/>
+    <rect x="3" y="27" width="32" height="14" rx="2" fill="#1F1B18" stroke="#2E2A27" stroke-width="0.5"/>
+    <text x="6" y="37" class="font-mono flow-label" fill="#E4733A">cand</text>
+
+    <!-- Mid connector (Taint-verified inputs) -->
+    <path d="M 0 178 L 38 178" stroke="#8FB3B0" stroke-width="2" marker-end="url(#arrow-cyan)"/>
+    <rect x="-1" y="160" width="40" height="14" rx="2" fill="#141E1C" stroke="#8FB3B0" stroke-width="0.5"/>
+    <text x="3" y="170" class="font-mono flow-label" fill="#8FB3B0">clean</text>
+
+    <!-- Lower bypass/block icon -->
+    <path d="M 0 310 L 38 310" stroke="#C4523A" stroke-width="1.5" stroke-dasharray="2 3"/>
+    <circle cx="19" cy="310" r="5" fill="#2E1310" stroke="#C4523A" stroke-width="1"/>
+    <line x1="16" y1="307" x2="22" y2="313" stroke="#C4523A" stroke-width="1.5"/>
+  </g>
+
+  <!-- ========================================================================= -->
+  <!-- COLUMN 2: SYSTEM1 ENGINE (LAYA / JEV & LOCAL SLM)                        -->
+  <!-- ========================================================================= -->
+  <g transform="translate(394, 66)">
+    <!-- Column Container -->
+    <rect x="0" y="0" width="332" height="454" rx="8" fill="#171513" stroke="#2E2A27" stroke-width="1.5" filter="url(#subtle-glow)"/>
+    <path d="M 0 8 Q 0 0 8 0 L 324 0 Q 332 0 332 8 L 332 36 L 0 36 Z" fill="#18201E"/>
+    <line x1="0" y1="36" x2="332" y2="36" stroke="#2E2A27" stroke-width="1"/>
+    <circle cx="16" cy="18" r="4" fill="#8FB3B0"/>
+    <text x="28" y="22" class="font-sans col-header" fill="#8FB3B0">2. System1 Engine (Laya / Jev &amp; SLM)</text>
+
+    <!-- Block 2.1: Typed Probabilistic Questions -->
+    <g transform="translate(12, 46)">
+      <rect x="0" y="0" width="308" height="122" rx="5" fill="#11100E" stroke="#2E2A27" stroke-width="1"/>
+      <rect x="0" y="0" width="3" height="122" rx="1.5" fill="#8FB3B0"/>
+      <text x="12" y="18" class="font-sans card-title">Typed Probabilistic Questions</text>
+      <text x="12" y="32" class="font-mono code-txt">library: nott-system1 primitives</text>
+
+      <!-- Three Type Badges -->
+      <g transform="translate(12, 42)">
+        <!-- noul -->
+        <rect x="0" y="0" width="88" height="34" rx="3" fill="#1A1816" stroke="#2E2A27" stroke-width="1"/>
+        <text x="6" y="14" class="font-mono code-txt" font-weight="700">noul</text>
+        <text x="6" y="27" class="font-sans card-sub">p ∈ [0..1] float</text>
+
+        <!-- choice -->
+        <rect x="94" y="0" width="96" height="34" rx="3" fill="#1A1816" stroke="#2E2A27" stroke-width="1"/>
+        <text x="100" y="14" class="font-mono code-txt" font-weight="700">choice</text>
+        <text x="100" y="27" class="font-sans card-sub">∑p=1 + escape</text>
+
+        <!-- score -->
+        <rect x="196" y="0" width="88" height="34" rx="3" fill="#1A1816" stroke="#2E2A27" stroke-width="1"/>
+        <text x="202" y="14" class="font-mono code-txt" font-weight="700">score</text>
+        <text x="202" y="27" class="font-sans card-sub">val + confidence</text>
+      </g>
+
+      <text x="12" y="93" class="font-sans detail-txt">• Escape valve option: <tspan class="font-mono" fill="#E8A33D">"nenhuma"</tspan> when below confidence</text>
+      <text x="12" y="109" class="font-sans card-sub">Guarantees well-calibrated epistemic probabilities</text>
+    </g>
+
+    <!-- Block 2.2: High-Throughput Batching -->
+    <g transform="translate(12, 178)">
+      <rect x="0" y="0" width="308" height="126" rx="5" fill="#11100E" stroke="#2E2A27" stroke-width="1"/>
+      <rect x="0" y="0" width="3" height="126" rx="1.5" fill="#E4733A"/>
+      <text x="12" y="18" class="font-sans card-title">High-Throughput Batching</text>
+      <text x="12" y="32" class="font-mono code-txt">tensorized prompt execution</text>
+
+      <g transform="translate(12, 42)">
+        <rect x="0" y="0" width="284" height="26" rx="3" fill="#1C1814" stroke="#E4733A" stroke-width="1"/>
+        <text x="8" y="17" class="font-sans" font-size="10px" font-weight="700" fill="#E4733A">Up to 64 independent questions / call</text>
+      </g>
+
+      <!-- Metrics row -->
+      <g transform="translate(12, 76)">
+        <rect x="0" y="0" width="138" height="40" rx="3" fill="#1A1816" stroke="#2E2A27" stroke-width="1"/>
+        <text x="8" y="16" class="font-mono" font-size="11px" font-weight="700" fill="#8FB3B0">12.2x Cheaper</text>
+        <text x="8" y="30" class="font-sans card-sub">vs individual LLM turns</text>
+
+        <rect x="146" y="0" width="138" height="40" rx="3" fill="#1A1816" stroke="#2E2A27" stroke-width="1"/>
+        <text x="154" y="16" class="font-mono" font-size="11px" font-weight="700" fill="#8FB3B0">10x Faster</text>
+        <text x="154" y="30" class="font-sans card-sub">Zero Bernoulli noisy flips</text>
+      </g>
+    </g>
+
+    <!-- Block 2.3: Dual Transport + Order-Ensemble -->
+    <g transform="translate(12, 314)">
+      <rect x="0" y="0" width="308" height="128" rx="5" fill="#11100E" stroke="#2E2A27" stroke-width="1"/>
+      <rect x="0" y="0" width="3" height="128" rx="1.5" fill="#E8A33D"/>
+      <text x="12" y="18" class="font-sans card-title">Dual Transport + Order-Ensemble</text>
+      <text x="12" y="32" class="font-mono code-txt">strict JSON Schema validation</text>
+
+      <text x="12" y="50" class="font-sans detail-txt">• Route A: <tspan class="font-mono code-txt">/v1/systemone</tspan> (native laya-nott)</text>
+      <text x="12" y="66" class="font-sans detail-txt">• Route B: <tspan class="font-mono code-txt">/v1/chat/completions</tspan> (local loopback SLM)</text>
+
+      <!-- Order Ensemble box -->
+      <g transform="translate(12, 76)">
+        <rect x="0" y="0" width="284" height="42" rx="3" fill="#1C1A14" stroke="#E8A33D" stroke-width="1"/>
+        <text x="8" y="16" class="font-sans badge-txt" fill="#E8A33D">POSITION BIAS DEFENSE:</text>
+        <text x="8" y="28" class="font-sans detail-txt">Forward + reverse order run in parallel</text>
+        <text x="8" y="39" class="font-mono" font-size="8.5px" fill="#ECE7DE">Ordering flip divergence → tags <tspan fill="#E8A33D">nao_decide</tspan></text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ========================================================================= -->
+  <!-- COLUMN CONNECTOR 2 -> 3                                                  -->
+  <!-- ========================================================================= -->
+  <g transform="translate(726, 110)">
+    <!-- Top connector -->
+    <path d="M 0 45 L 38 45" stroke="#8FB3B0" stroke-width="2" marker-end="url(#arrow-cyan)"/>
+    <rect x="3" y="27" width="32" height="14" rx="2" fill="#141E1C" stroke="#2E2A27" stroke-width="0.5"/>
+    <text x="6" y="37" class="font-mono flow-label" fill="#8FB3B0">eval</text>
+
+    <!-- Mid connector (DoD state transitions) -->
+    <path d="M 0 178 L 38 178" stroke="#E8A33D" stroke-width="2" marker-end="url(#arrow-copper)"/>
+    <rect x="3" y="160" width="32" height="14" rx="2" fill="#201C14" stroke="#2E2A27" stroke-width="0.5"/>
+    <text x="6" y="170" class="font-mono flow-label" fill="#E8A33D">gate</text>
+
+    <!-- Lower connector (Evidence links) -->
+    <path d="M 0 310 L 38 310" stroke="#8FB3B0" stroke-width="2" stroke-dasharray="3 2" marker-end="url(#arrow-cyan)"/>
+    <rect x="3" y="292" width="32" height="14" rx="2" fill="#141E1C" stroke="#2E2A27" stroke-width="0.5"/>
+    <text x="6" y="302" class="font-mono flow-label" fill="#8FB3B0">fact</text>
+  </g>
+
+  <!-- ========================================================================= -->
+  <!-- COLUMN 3: RESIDENT CURATOR & TWO-AXIS DOD GRAPH                          -->
+  <!-- ========================================================================= -->
+  <g transform="translate(764, 66)">
+    <!-- Column Container -->
+    <rect x="0" y="0" width="332" height="454" rx="8" fill="#171513" stroke="#2E2A27" stroke-width="1.5" filter="url(#subtle-glow)"/>
+    <path d="M 0 8 Q 0 0 8 0 L 324 0 Q 332 0 332 8 L 332 36 L 0 36 Z" fill="#201D17"/>
+    <line x1="0" y1="36" x2="332" y2="36" stroke="#2E2A27" stroke-width="1"/>
+    <circle cx="16" cy="18" r="4" fill="#E8A33D"/>
+    <text x="28" y="22" class="font-sans col-header" fill="#E8A33D">3. Resident Curator &amp; 2-Axis DoD Graph</text>
+
+    <!-- Block 3.1: Continuous Anchor Verification -->
+    <g transform="translate(12, 46)">
+      <rect x="0" y="0" width="308" height="122" rx="5" fill="#11100E" stroke="#2E2A27" stroke-width="1"/>
+      <rect x="0" y="0" width="3" height="122" rx="1.5" fill="#8FB3B0"/>
+      <text x="12" y="18" class="font-sans card-title">Continuous Anchor Verification</text>
+      <text x="12" y="32" class="font-mono code-txt">verifies actual path:line code excerpts</text>
+
+      <!-- 4 Status Pills Grid -->
+      <g transform="translate(12, 42)">
+        <!-- vale -->
+        <rect x="0" y="0" width="66" height="34" rx="3" fill="#131B18" stroke="#8FB3B0" stroke-width="0.8"/>
+        <text x="6" y="14" class="font-mono" font-size="9px" fill="#8FB3B0">vale</text>
+        <text x="6" y="27" class="font-sans card-sub">holds true</text>
+
+        <!-- por_verificar -->
+        <rect x="71" y="0" width="70" height="34" rx="3" fill="#1C1814" stroke="#E8A33D" stroke-width="0.8"/>
+        <text x="76" y="14" class="font-mono" font-size="8.5px" fill="#E8A33D">movido</text>
+        <text x="76" y="27" class="font-sans card-sub">re-anchor</text>
+
+        <!-- caducou -->
+        <rect x="146" y="0" width="66" height="34" rx="3" fill="#201514" stroke="#C4523A" stroke-width="0.8"/>
+        <text x="151" y="14" class="font-mono" font-size="8.5px" fill="#C4523A">caducou</text>
+        <text x="151" y="27" class="font-sans card-sub">false/stale</text>
+
+        <!-- contradita -->
+        <rect x="217" y="0" width="67" height="34" rx="3" fill="#261413" stroke="#C4523A" stroke-width="0.8"/>
+        <text x="221" y="14" class="font-mono" font-size="8.5px" fill="#C4523A">contradita</text>
+        <text x="221" y="27" class="font-sans card-sub">refuted</text>
+      </g>
+
+      <text x="12" y="94" class="font-sans detail-txt">• Prevents hallucinatory drift as code files mutate</text>
+      <text x="12" y="110" class="font-sans card-sub">Stale excerpts quarantined automatically in nMEMORY</text>
+    </g>
+
+    <!-- Block 3.2: Two-Axis Definition of Done (DoD) -->
+    <g transform="translate(12, 178)">
+      <rect x="0" y="0" width="308" height="126" rx="5" fill="#11100E" stroke="#2E2A27" stroke-width="1"/>
+      <rect x="0" y="0" width="3" height="126" rx="1.5" fill="#E4733A"/>
+      <text x="12" y="18" class="font-sans card-title">Two-Axis Definition of Done (DoD)</text>
+      <text x="12" y="32" class="font-mono code-txt">decoupled governance &amp; observed evidence</text>
+
+      <!-- Axis 1: Authority -->
+      <g transform="translate(12, 42)">
+        <rect x="0" y="0" width="284" height="24" rx="3" fill="#1A1816" stroke="#2E2A27" stroke-width="1"/>
+        <text x="8" y="15" class="font-mono" font-size="9px" fill="#E4733A">Authority:</text>
+        <text x="70" y="15" class="font-mono" font-size="8.5px" fill="#ECE7DE">proposed → accepted → waived</text>
+      </g>
+
+      <!-- Axis 2: Observation -->
+      <g transform="translate(12, 70)">
+        <rect x="0" y="0" width="284" height="24" rx="3" fill="#1A1816" stroke="#2E2A27" stroke-width="1"/>
+        <text x="8" y="15" class="font-mono" font-size="9px" fill="#8FB3B0">Observation:</text>
+        <text x="82" y="15" class="font-mono" font-size="8.5px" fill="#ECE7DE">unmet → met | partial | failed</text>
+      </g>
+
+      <text x="12" y="110" class="font-sans detail-txt">• Reaching <tspan class="font-mono" fill="#8FB3B0">met</tspan> requires non-empty <tspan class="font-mono code-txt">proof_hint</tspan></text>
+      <text x="12" y="122" class="font-sans card-sub">No subjective self-declaration without factual witness</text>
+    </g>
+
+    <!-- Block 3.3: Typed Knowledge Graph -->
+    <g transform="translate(12, 314)">
+      <rect x="0" y="0" width="308" height="128" rx="5" fill="#11100E" stroke="#2E2A27" stroke-width="1"/>
+      <rect x="0" y="0" width="3" height="128" rx="1.5" fill="#E8A33D"/>
+      <text x="12" y="18" class="font-sans card-title">Typed Knowledge Graph</text>
+      <text x="12" y="32" class="font-mono code-txt">relational capsule assertions</text>
+
+      <!-- Edges matrix -->
+      <g transform="translate(12, 44)">
+        <rect x="0" y="0" width="88" height="22" rx="3" fill="#1A1816" stroke="#2E2A27" stroke-width="0.8"/>
+        <text x="6" y="14" class="font-mono code-txt">supersedes</text>
+
+        <rect x="96" y="0" width="76" height="22" rx="3" fill="#1A1816" stroke="#2E2A27" stroke-width="0.8"/>
+        <text x="102" y="14" class="font-mono code-txt">blocks</text>
+
+        <rect x="180" y="0" width="104" height="22" rx="3" fill="#1A1816" stroke="#2E2A27" stroke-width="0.8"/>
+        <text x="186" y="14" class="font-mono code-txt">witnesses</text>
+
+        <rect x="0" y="28" width="88" height="22" rx="3" fill="#1A1816" stroke="#C4523A" stroke-width="0.8"/>
+        <text x="6" y="42" class="font-mono brick-txt">falsifies</text>
+
+        <rect x="96" y="28" width="76" height="22" rx="3" fill="#1A1816" stroke="#E8A33D" stroke-width="0.8"/>
+        <text x="102" y="42" class="font-mono warn-txt">dod_of</text>
+
+        <rect x="180" y="28" width="104" height="22" rx="3" fill="#1A1816" stroke="#2E2A27" stroke-width="0.8"/>
+        <text x="186" y="42" class="font-mono" font-size="9px" fill="#ECE7DE">causal_dag</text>
+      </g>
+
+      <text x="12" y="112" class="font-sans detail-txt">• Graph updates are monotonic, durable &amp; audited</text>
+      <text x="12" y="124" class="font-sans card-sub">Single Source of Truth across multi-agent campaigns</text>
+    </g>
+  </g>
+
+  <!-- Footer / Status Bar Indicator -->
+  <g transform="translate(24, 524)">
+    <text x="0" y="9" class="font-mono" font-size="8.5px" fill="#B5AEA3">nMEMORY SPEC: DUAL-LANE EMBEDDINGS (SQLITE-VEC + FTS5) · SYSTEM1 PROBABILISTIC (NOTT-SYSTEM1) · RESIDENT CURATOR 2-AXIS GRAPH</text>
+  </g>
+</svg>

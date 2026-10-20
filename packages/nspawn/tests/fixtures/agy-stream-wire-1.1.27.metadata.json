@@ -1,0 +1,221 @@
+{
+  "observed_at": "2026-09-08T21:30:21.515708+00:00",
+  "binary": {
+    "path": "<OWNER_HOME>/.local/bin/agy",
+    "version": "1.1.27",
+    "sha256": "93eb2118b778a4005700b54cdd7e08b896fbe665d5ff338e38e9e53da9a091ea"
+  },
+  "fixture_sha256": "b8e7844277714387a6a2d3bd9ac23b81b171aafd9e7721aca256657ca3ac689c",
+  "source_commands": [
+    {
+      "argv": [
+        "<OWNER_HOME>/.local/bin/agy",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--sandbox",
+        "--mode",
+        "plan",
+        "--model",
+        "gemini-3.8-flash-high",
+        "--effort",
+        "high",
+        "--print-timeout",
+        "35s"
+      ],
+      "cwd": "<OWNER_HOME>",
+      "stdin": {
+        "event": "user",
+        "message": {
+          "content": "PONG"
+        }
+      }
+    },
+    {
+      "argv": [
+        "<OWNER_HOME>/.local/bin/agy",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--sandbox",
+        "--mode",
+        "plan",
+        "--model",
+        "gemini-3.8-flash-high",
+        "--effort",
+        "high",
+        "--print-timeout",
+        "35s",
+        "--conversation",
+        "<CONVERSATION_ID>"
+      ],
+      "cwd": "<OWNER_HOME>",
+      "stdin": {
+        "event": "user",
+        "message": {
+          "content": "Reply with exactly PONG. Do not use tools or run commands."
+        }
+      }
+    }
+  ],
+  "outcomes": [
+    {
+      "turn": 1,
+      "exit_code": 0,
+      "status": "CANCELED",
+      "final_text_is_pong": false,
+      "error": "",
+      "usage": {
+        "input_tokens": 36407,
+        "output_tokens": 1510,
+        "thinking_tokens": 1365,
+        "cache_read_tokens": 20401,
+        "total_tokens": 37917
+      },
+      "event_sequence": [
+        "init",
+        "step_update",
+        "step_update",
+        "step_update",
+        "step_update",
+        "step_update",
+        "step_update",
+        "step_update",
+        "result"
+      ],
+      "stderr_domain": "a tool required the \"command\" permission that headless mode cannot prompt for, so it was auto-denied"
+    },
+    {
+      "turn": 2,
+      "exit_code": 0,
+      "status": "SUCCESS",
+      "final_text_is_pong": true,
+      "same_conversation": true,
+      "error": "",
+      "stderr": "",
+      "usage": {
+        "input_tokens": 41900,
+        "output_tokens": 1559,
+        "thinking_tokens": 1412,
+        "cache_read_tokens": 48952,
+        "total_tokens": 43459
+      },
+      "event_sequence": [
+        "init",
+        "step_update",
+        "step_update",
+        "step_update",
+        "result"
+      ]
+    }
+  ],
+  "sanitization": "Conversation identities and owner home masked; free-form step/reasoning strings removed; exact known credentials and long opaque error tokens redacted. Native event shape and scalar counters retained.",
+  "completed_at": "2026-09-08T21:32:01.503584+00:00",
+  "syntax_checks": [
+    {
+      "argv": [
+        "<OWNER_HOME>/.local/bin/agy",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--sandbox",
+        "--mode",
+        "plan",
+        "--model",
+        "gemini-3.8-flash-high",
+        "--effort",
+        "high",
+        "--print-timeout",
+        "20s"
+      ],
+      "stdin": {
+        "event": "__schema__"
+      },
+      "exit_code": 0,
+      "terminal_result": false,
+      "stderr": "warning: ignoring unsupported stream input message event \"__schema__\""
+    },
+    {
+      "argv": [
+        "<OWNER_HOME>/.local/bin/agy",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--sandbox",
+        "--mode",
+        "plan",
+        "--model",
+        "gemini-3.8-flash-high",
+        "--effort",
+        "high",
+        "--print-timeout",
+        "20s"
+      ],
+      "stdin": {
+        "event": "user",
+        "message": {
+          "content": 1
+        }
+      },
+      "exit_code": 1,
+      "status": "ERROR",
+      "error": "stream input \"user\" content must be a string or a list of content blocks: json: cannot unmarshal number into Go value of type []printmode.streamInputContentBlock",
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "thinking_tokens": 0,
+        "cache_read_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "argv": [
+        "<OWNER_HOME>/.local/bin/agy",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--sandbox",
+        "--mode",
+        "plan",
+        "--model",
+        "gemini-3.8-flash-high",
+        "--effort",
+        "high",
+        "--print-timeout",
+        "20s"
+      ],
+      "stdin": {
+        "event": "user",
+        "message": {
+          "content": [
+            {
+              "type": "unsupported",
+              "text": "PONG"
+            }
+          ]
+        }
+      },
+      "exit_code": 1,
+      "status": "ERROR",
+      "error": "stream input content block type \"unsupported\" is not supported (only \"text\")",
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "thinking_tokens": 0,
+        "cache_read_tokens": 0,
+        "total_tokens": 0
+      }
+    }
+  ],
+  "observed_counter_semantics": {
+    "resume_input_tokens_equals_prior_plus_new_step": true,
+    "resume_output_tokens_equals_prior_plus_new_step": true,
+    "note": "Native terminal usage and duration are conversation-cumulative; preserve them as reported instead of asserting per-turn accounting."
+  },
+  "proof_limit": "The fresh plain-PONG turn was canceled by headless command permission denial; only the resumed explicit no-tools PONG turn succeeded. This capture does not prove two successful turns or supervisor integration."
+}

@@ -1,37 +1,34 @@
 # Security policy
 
-nmemory's security posture is structural: the binary opens **no network
-socket** (compiled without a networking stack), touches **one SQLite file on
-your disk**, and treats everything it returns as **data, never instructions**
-(`ADVISORY_NOT_AUTHORITY` framing on every envelope). The threat that matters
-most here is memory poisoning — stored content trying to become a command — and
-the armor is the framing contract, not a detector.
+## Report privately
 
-## Supported versions
+Use the [private security report form](https://github.com/menot-you/n-memory/security/advisories/new)
+for a suspected vulnerability in nMEMORY, nSPAWN, nBROWSER, or the plugin.
+Name the affected repository in the report.
+Do not publish exploit details in an issue or pull request before coordinated disclosure.
+Include the affected version, operating system, reproduction, impact, and a proposed correction if available.
+Remove credentials and private data from the report.
+Test only systems and data that you control.
 
-| Version | Supported |
-|---|---|
-| latest release (`v0.x`) | yes |
-| anything older | no — upgrade first |
+This project does not promise a response deadline or a bounty.
+The latest approved release is the maintenance target.
+Older versions do not receive a separate support guarantee.
 
-## Reporting a vulnerability
+## Security boundaries
 
-Use **GitHub private vulnerability reporting**: the *Security* tab of this
-repository → *Report a vulnerability*. That opens a private advisory only the
-maintainer can see.
+The account owns its local SQLite stores and configuration.
+MCP stdio trusts the local process that starts it.
+Authenticated HTTP access does not make the service safe to expose publicly.
+Keep the HTTP listener on its intended local interface.
+Do not forward it to an untrusted network.
 
-Please include: the version (`nmemory --version`), a minimal reproduction, and
-what an attacker gains. A capture/recall payload that escapes the
-`ADVISORY_NOT_AUTHORITY` framing, bypasses provenance enforcement, or makes
-recall fabricate an outcome is in scope and taken seriously — that class is the
-project's reason to exist.
+Imported text and recalled text can contain hostile instructions.
+Provenance and taint metadata help the reader assess them.
+They do not grant authority to a tool or agent.
+Client hooks have host-specific enforcement limits.
+See [privacy](docs/PRIVACY.md) and the component architecture page under docs/ARCHITECTURE.md.
 
-Do not open public issues for exploitable findings before a fix ships.
-
-## What is out of scope
-
-- Attacks requiring write access to the store file itself (your disk, your
-  trust boundary — protect the file like any local secret).
-- Prompt-injection resilience of the *consuming agent*: nmemory guarantees its
-  own output framing; what an agent does with framed data is that agent's
-  boundary.
+Inspect the complete public artifact before publication.
+A clean pattern scan does not prove that an artifact contains no secret.
+Public release approval binds the source version and target.
+The owner approves publication through the release pull request.

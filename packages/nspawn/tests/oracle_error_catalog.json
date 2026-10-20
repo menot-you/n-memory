@@ -1,0 +1,261 @@
+{
+  "entries": [
+    {
+      "action": "declare [defaults].{claude,codex,grok,agy}_bin in the roster, or set the provider's own bin",
+      "code": 1101,
+      "description": "no <vendor> binary on this host",
+      "meaning": "the vendor lane the roster names has no executable the one-shot can find"
+    },
+    {
+      "action": "run `nott doctor --vendor claude` for what version is expected",
+      "code": 1102,
+      "description": "claude version check failed",
+      "meaning": "the version probe on the claude binary failed before any turn was spent"
+    },
+    {
+      "action": "run `nott doctor`; the doctor names the line and column",
+      "code": 1103,
+      "description": "roster parse failed",
+      "meaning": "the roster at ~/.nott/config.toml could not be parsed"
+    },
+    {
+      "action": "export HOME in the launcher",
+      "code": 1104,
+      "description": "HOME is not set",
+      "meaning": "the door has no place to read the owner roster from"
+    },
+    {
+      "action": "pick a model the account offers, or add the model to the roster",
+      "code": 1105,
+      "description": "model not in account's declared set",
+      "meaning": "the model the caller named is not in the chosen account's models array"
+    },
+    {
+      "action": "refresh the picker; this is emit-half and accept-half disagreeing",
+      "code": 1106,
+      "description": "advertised value refused by the setter",
+      "meaning": "the picker emitted this model, the operator accepted, the door refused"
+    },
+    {
+      "action": "set [defaults].model or pass --model explicitly",
+      "code": 1107,
+      "description": "no default model",
+      "meaning": "the chosen account declares no default and the caller named none"
+    },
+    {
+      "action": "run `nott doctor --vendor <name>`",
+      "code": 1108,
+      "description": "<vendor> version check failed",
+      "meaning": "the version probe on a non-claude vendor binary failed"
+    },
+    {
+      "action": "set --codex-bin, NSPAWN_CODEX_BIN, or [defaults].codex_bin",
+      "code": 1109,
+      "description": "no codex binary resolved",
+      "meaning": "codex was selected for a turn and no codex binary was found"
+    },
+    {
+      "action": "retry",
+      "code": 1111,
+      "description": "session id mint failed",
+      "meaning": "a session id could not be minted before spawn"
+    },
+    {
+      "action": "check disk space and $TMPDIR writability",
+      "code": 1112,
+      "description": "run-private home prep failed",
+      "meaning": "the per-turn home could not be staged"
+    },
+    {
+      "action": "no action; the cancel landed",
+      "code": 1113,
+      "description": "abort requested",
+      "meaning": "the caller cancelled the turn before the vendor answered"
+    },
+    {
+      "action": "inspect the vendor's stderr",
+      "code": 1114,
+      "description": "the turn was aborted",
+      "meaning": "the vendor reported TurnOutcome::Aborted"
+    },
+    {
+      "action": "check the vendor's stderr; if wrapped by nott-organs/<name>-pin, verify the wrapper",
+      "code": 1115,
+      "description": "the vendor died",
+      "meaning": "the vendor process exited non-zero before producing a reply"
+    },
+    {
+      "action": "see the vendor's describe() output",
+      "code": 1116,
+      "description": "vendor spawn refused",
+      "meaning": "the vendor's spawn layer refused before the turn started"
+    },
+    {
+      "action": "capture the full reply bytes; this is vendor-shape drift",
+      "code": 1117,
+      "description": "vendor outcome anomalous",
+      "meaning": "the vendor returned a result that does not match any known good shape"
+    },
+    {
+      "action": "check the vendor's stdout; success with empty reply is a vendor bug",
+      "code": 1118,
+      "description": "empty reply",
+      "meaning": "the vendor returned success but the reply body was empty"
+    },
+    {
+      "action": "update the vendor's exit-code table in cli_oneshot.rs",
+      "code": 1119,
+      "description": "<vendor> exited with an unknown status",
+      "meaning": "the vendor's exit code is outside the known mapping"
+    },
+    {
+      "action": "re-run with verbose logging; check vendor support for the requested output mode",
+      "code": 1120,
+      "description": "no last-message file",
+      "meaning": "the vendor's codex-exec mode did not write its reply file"
+    },
+    {
+      "action": "wait the retry window, or rotate vendor",
+      "code": 1121,
+      "description": "rate limited",
+      "meaning": "the vendor refused on quota"
+    },
+    {
+      "action": "check $TMPDIR and the calling process's write permissions",
+      "code": 2001,
+      "description": "process custody: receipt root not staged",
+      "meaning": "the receipt root could not be staged"
+    },
+    {
+      "action": "check the binary path exists, is executable, and matches the OS architecture",
+      "code": 2002,
+      "description": "spawn failed",
+      "meaning": "the vendor child could not be spawned"
+    },
+    {
+      "action": "retry",
+      "code": 2003,
+      "description": "pipe claim failed",
+      "meaning": "the child was spawned but a pipe could not be claimed"
+    },
+    {
+      "action": "the vendor is hung; check the vendor's stderr",
+      "code": 2004,
+      "description": "termination timeout",
+      "meaning": "the child exceeded the termination deadline"
+    },
+    {
+      "action": "the vendor does not cooperate with the guardian protocol; wrap the vendor or unset the receipt-root fallback",
+      "code": 2005,
+      "description": "vendor exited without clean receipt",
+      "meaning": "the vendor exited but the guardian never saw a clean-receipt file"
+    },
+    {
+      "action": "retry",
+      "code": 2006,
+      "description": "process identity not established",
+      "meaning": "the vendor's PID could not be cross-referenced against the spawned child's identity"
+    },
+    {
+      "action": "the guardian is incompatible with this binary; see nERR-2005",
+      "code": 2007,
+      "description": "process guardian startup failed",
+      "meaning": "the guardian could not bind its startup identity"
+    },
+    {
+      "action": "see nERR-2005",
+      "code": 2008,
+      "description": "startup bound but no clean receipt",
+      "meaning": "the vendor entered cleanup without writing the receipt file"
+    },
+    {
+      "action": "see nERR-2005",
+      "code": 2009,
+      "description": "version-check timeout without clean receipt",
+      "meaning": "a version-check step exceeded its deadline without a clean exit"
+    },
+    {
+      "action": "see nERR-2006",
+      "code": 2010,
+      "description": "process identity not established (legacy)",
+      "meaning": "older form of nERR-2006"
+    },
+    {
+      "action": "run `nott doctor` for the specific failure class",
+      "code": 2011,
+      "description": "process guardian failure",
+      "meaning": "catch-all for guardian failures"
+    },
+    {
+      "action": "the error text is in data; surface it",
+      "code": 3101,
+      "description": "engine answer error",
+      "meaning": "the vendor turn returned an Err reason the door does not know how to render as a chat chunk"
+    },
+    {
+      "action": "editor sent a malformed prompt; this is a transport bug, not a NOTT bug",
+      "code": 3102,
+      "description": "session/prompt needs text or a resource link",
+      "meaning": "the prompt array had no text or resource_link entries"
+    },
+    {
+      "action": "editor should call session/new first",
+      "code": 3103,
+      "description": "session/set_config_option on unknown session",
+      "meaning": "the session id the editor addressed does not match any open session"
+    },
+    {
+      "action": "same; call session/new first",
+      "code": 3104,
+      "description": "session/prompt on unknown session",
+      "meaning": "same as nERR-3103 for prompts"
+    },
+    {
+      "action": "see the underlying nERR-1xxx or nERR-2xxx reason",
+      "code": 3105,
+      "description": "turn failed",
+      "meaning": "the turn returned CliOutcome::Failed(reason)"
+    },
+    {
+      "action": "no action; the cancel landed",
+      "code": 3106,
+      "description": "the turn was cancelled",
+      "meaning": "the turn returned Cancelled or a matching Failed(CANCELLED_TURN)"
+    },
+    {
+      "action": "editor should not cancel a session with no in-flight turn",
+      "code": 3107,
+      "description": "cancel on session with no in-flight turn",
+      "meaning": "cancellation was sent but the editor had no active sender"
+    },
+    {
+      "action": "install the tool, or accept that the doctor cannot evaluate that axis",
+      "code": 4101,
+      "description": "tool not in $PATH",
+      "meaning": "the doctor found no executable for the named tool"
+    },
+    {
+      "action": "chmod 0600 <path> and ensure the file exists",
+      "code": 4102,
+      "description": "credential file not readable",
+      "meaning": "the named token file is missing or 0600-mismatched"
+    },
+    {
+      "action": "edit ~/.nott/config.toml to add the account, or pick a different account",
+      "code": 4103,
+      "description": "account not in roster",
+      "meaning": "the operator named an account the roster does not carry"
+    }
+  ],
+  "oracle_meta": {
+    "crate": "nspawn",
+    "module": "src/error.rs",
+    "unknown_code": 9999
+  },
+  "unknown": {
+    "action": "add the missing variant to mcps/nspawn/src/error.rs and to ERROR-CATALOG.md",
+    "code": 9999,
+    "description": "unknown error",
+    "meaning": "an error escaped without a registered nERR code"
+  }
+}

@@ -1,0 +1,635 @@
+# The organization canon of this repository: one name, one home and one grammar per concept.
+#
+# This file is the ONE declared mapping (plugin/skills/quality/references/organization.md).
+# `tools/organization.py check` measures the tree against it; `rails/organization-debt.txt`
+# holds what does not conform yet, and only shrinks. A second table of names anywhere else
+# is a defect.
+#
+# Derivation per member kind (the `name` is the member's noun):
+#
+#   lib      libs/<name>              distribution nott-<name>     package nott_<name>
+#                                     executable   nott-<name>     variables NOTT_<NAME>_*
+#   mcp      apps/<name>              distribution n<name>         package n<name>
+#            apps/<group>/core        n<group>                     (group core)
+#            apps/<group>/<part>      n<group>-<part>              package n<group>_<part>
+#                                     executable   = distribution  variables NOTT_N<NAME>_*
+#   app      apps/<name>              distribution nott-<name>     package nott_<name>
+#                                     executable   nott-<name>     variables NOTT_<NAME>_*
+#   harness  harness/                 distribution nott-harness    package nott_harness
+#                                     no executable: the CLI (`apps/cli`) is its client
+#                                     variables NOTT_<NOUN>_* for a noun it owns
+#
+# A member has AT MOST ONE executable; further pieces are verbs of it. The product
+# executable `nott` is the one declared exception (see [exception.executable]).
+
+schema = 1
+
+[grammar]
+# Commands read `<executable> <noun> <verb>`. Door operations `<noun>.<verb>`, ACP
+# extensions `_nott/<noun>/<verb>`, MCP tools `<executable>_<noun>_<verb>`, scripts
+# `<folder>/<noun>.<ext> <verb>`. Nouns are singular. Both sets are closed: a new word
+# enters here first, in the same change that uses it.
+nouns = [
+  "act", "alias", "anchor", "app", "batch", "brake", "campaign", "capsule", "changelog",
+  "claim", "console", "content", "context", "coverage", "curator", "database", "design", "digest",
+  "document", "dod", "door", "evidence", "file", "fixture", "gate", "git", "github", "heal",
+  "history", "host", "image", "index", "intent", "issue", "judgment", "json", "key",
+  "kind", "link", "manifest", "mcp", "network", "node", "outcome", "page", "phase", "pr", "preference",
+  "portal", "program", "project", "proposal", "provider", "quality", "queue", "quota", "rail",
+  "receipt", "record", "ref", "region", "relation", "result", "review", "route", "run",
+  "scenario", "schema", "screen", "script", "sector", "session", "site", "site-preview", "state", "synonym", "tab",
+  "target", "telemetry", "text", "tick", "token", "tool", "transcript", "tree", "turn", "usage",
+  "window", "workflow",
+  "vault", "vector", "web", "work", "worktree", "body", "diff", "acp", "relay", "proxy",
+  "credential", "embedding", "server", "journal", "broker", "graph", "scorecard",
+  "progress", "security", "router", "model", "gateway", "tag", "release", "lease",
+  "stream", "dispatch", "staffing", "learning", "harvest", "cron", "preflight", "personal",
+  "conductor", "plan", "test", "floor", "mutation", "property", "lane", "suite", "case",
+  "hook", "plugin", "env", "unit", "secret", "arena", "organization", "supervisor",
+  "artifact", "audit", "principal", "admission", "job", "fleet", "pilot", "generation",
+  "synthesis", "notice", "sidecar", "statusline", "cloud", "voice", "tui", "smoke",
+  "question", "scratch", "thread", "external", "skill", "watch", "board",
+  "account", "build", "signing", "group", "bundle", "certificate", "profile",
+  "rule",
+]
+verbs = [
+  "add", "answer", "assert", "audit", "bind", "bootstrap", "build", "call", "cancel",
+  "capture", "check", "choose", "clear", "close", "collect", "compact", "compare",
+  "commit", "consolidate", "crawl", "create", "crop", "deny", "deploy", "describe", "detect", "diff", "discover",
+  "download", "drain", "drop", "estimate", "export", "extract", "find", "finish", "fold",
+  "freeze", "generate", "harden", "import", "ingest", "install", "interact", "judge",
+  "knock", "list", "locate", "login", "map", "mark", "match", "measure", "merge", "monitor",
+  "navigate", "off", "on", "open", "pin", "ping", "place", "purge", "query", "reanchor", "rebase",
+  "record", "redact", "register", "remove", "render", "replay", "rerun", "research",
+  "restart", "resume", "retrieve", "review", "rollback", "run", "save", "scrape", "score", "search", "send",
+  "serve", "set", "show", "snapshot", "start", "step", "stop", "submit", "summarize",
+  "switch", "test", "touch", "upload", "verify", "wait", "warm", "watch", "classify",
+  "relate", "seal", "probe", "persist", "backfill", "sweep", "gc", "sync", "prune",
+  "migrate", "admit", "acquire", "release", "authorize", "challenge", "take", "renew", "ack", "move",
+  "continue", "wall", "reconcile", "scan", "write",
+]
+
+[exception.executable]
+nott = "the product's name: the CLI is `nott`, not `nott-cli`"
+
+# Historical reads: read-only code that interprets data or trees older than a rename.
+# Listed one file at a time; a historical read never writes an old name.
+[exception.historical_read]
+"mcps/nspawn/tests/test_native_session_registry.py" = "runs the immutable installed v8 release, which only carries the package nott_spawn; writes no old name"
+"tools/fixture/benchmark_driver.py" = "drives the frozen experiment judge (a tree older than the check renames), which reads NOTT_CHECK_*; the environment it hands that judge is spelled as the judge reads it"
+"apps/cli/tests/test_commands.py" = "spells retired commands (dogfood, heartbeat, tui ...) only to assert the CLI refuses them as unknown; runs and writes none"
+"apps/cli/tests/test_pr_check.py" = "spells the retired check script only to assert it is gone and that the launcher refuses its name as a verb; runs and writes none"
+"mcps/nbrowser/nbrowser/renamed.py" = "the old name of the variable nBROWSER reads, spelled once so a set old name is refused by name"
+"tools/env/renamed.sh" = "the old names of the variables the tools' shell entry points read, spelled once so a set old name is refused by name"
+"apps/cli/nott_cli/panel/renamed.py" = "the old names of the variables the harness CLI reads, spelled once so a set old name is refused by name"
+"mcps/nspawn/nspawn/renamed.py" = "the old name of the door socket variable nSPAWN reads, spelled once so a set old name is refused by name"
+"mcps/nmemory/nmemory/renamed.py" = "the old names of the variables nMEMORY reads, spelled once so a set old name is refused by name"
+"evals/nmemory/nmemory_evals/renamed.py" = "the old names of the variables the nMEMORY evals read, spelled once so a set old name is refused by name"
+"libs/system1/nott_system1/renamed.py" = "the old names of the System1 variables (TypeSafe and Jev before the self-hosted Laya), read by the transport and its callers (nMEMORY, nSPAWN, nBROWSER, the D18 gate), spelled once so a set old name is refused by name"
+"plugin/hooks/renamed.py" = "the old names of the System1 variables the Python hooks read, spelled once so a set old name is named on stderr and never read"
+"plugin/hooks/renamed.sh" = "the old names of the variables the shell hooks read, spelled once so a set old name is named on stderr and never read"
+"plugin/scripts/env/renamed.py" = "the old name of the MCP directory variable the plugin packager reads, spelled once so a set old name is refused by name"
+"mcps/nspawn/tests/fixtures/claude-stream-wire-2.1.250.ndjson" = "a Claude stream recorded before the rename; its init frame lists the tools that session had"
+"mcps/nspawn/tests/fixtures/claude-stream-wire-2.1.251.ndjson" = "a Claude stream recorded before the rename; its init frame lists the tools that session had"
+"evals/nmemory/nmemory_evals/e1_gold_set.json" = "owner statements recorded on 2026-08-31 as spoken, before the rename; the gold set scores recall against them"
+"mcps/nmemory/nmemory/audit_actions.py" = "the action names the journal records: a data contract independent of tool names, sealed in the hash chain and imported back from exports (memory_purge already recorded memory_forget); writes no tool name"
+"mcps/nmemory/tests/test_retired_tool_names.py" = "spells the retired nmemory tool names only to assert the server answers them as unknown; writes none"
+"mcps/nmemory/tests/fixtures/w1-ledger-row.txt" = "a ledger row recorded on 2026-08-29, byte for byte; the dedup score is measured against its words"
+"evals/nmemory/longmemeval/full-results.json" = "a LongMemEval run recorded before the rename; the numbers it reports are that run's"
+"evals/nmemory/longmemeval/full.vector.openai.phased-results.json" = "a LongMemEval run recorded before the rename; the numbers it reports are that run's"
+"evals/nmemory/longmemeval/pilot-results.json" = "a LongMemEval run recorded before the rename; the numbers it reports are that run's"
+"evals/nmemory/longmemeval/pilot.fused-results.json" = "a LongMemEval run recorded before the rename; the numbers it reports are that run's"
+"evals/nmemory/longmemeval/pilot.vector-results.json" = "a LongMemEval run recorded before the rename; the numbers it reports are that run's"
+"evals/nmemory/nmemory_evals/capture/stream-09.jsonl" = "a session transcript recorded before the rename, the capture gold set's input; rewriting it edits the evidence"
+
+# Records: data captured or run on a date, read as they were; one by one, never by glob.
+"evals/nmemory/nmemory_evals/capture/stream-01.jsonl" = "a Claude Code session captured as nMEMORY eval input; its bytes are the record being scored"
+"evals/nmemory/nmemory_evals/capture/stream-02.jsonl" = "a Claude Code session captured as nMEMORY eval input; its bytes are the record being scored"
+"evals/nmemory/nmemory_evals/capture/stream-03.jsonl" = "a Claude Code session captured as nMEMORY eval input; its bytes are the record being scored"
+"evals/nmemory/nmemory_evals/capture/stream-04.jsonl" = "a Claude Code session captured as nMEMORY eval input; its bytes are the record being scored"
+"evals/nmemory/nmemory_evals/capture/stream-05.jsonl" = "a Claude Code session captured as nMEMORY eval input; its bytes are the record being scored"
+"evals/nmemory/nmemory_evals/capture/stream-06.jsonl" = "a Claude Code session captured as nMEMORY eval input; its bytes are the record being scored"
+"evals/nmemory/nmemory_evals/capture/stream-07.jsonl" = "a Claude Code session captured as nMEMORY eval input; its bytes are the record being scored"
+"evals/nmemory/nmemory_evals/capture_gold_set.json" = "gold labels quoting the captured sessions verbatim; a label that is not the captured text scores nothing"
+# Foreign variables: owned by another program, spelled as that program requires.
+"lanes/PLAN.md" = "the repository plan as written before the script canon; its gate rows record the commands of that date"
+"docs/diagrams/README.md" = "indexes diagrams verified against past commits; each entry names what that commit ran"
+"plugin/evals/native/r2-what-are-you-waiting-for/case.yaml" = "its prompt replays a recorded session transcript verbatim; the eval grades that record"
+"plugin/evals/native/r4-still-running-after-an-hour/case.yaml" = "its prompt replays a recorded session transcript verbatim; the eval grades that record"
+"plugin/evals/native/r3-name-what-to-decide/fixture.sh" = "plants the recorded state of PR #418 verbatim as the eval's fixture"
+"plugin/evals/native/r3-name-what-to-decide/case.yaml" = "its prompt replays the recorded session over PR #418 verbatim, which ran the retired check script; the eval grades that record"
+"tools/fixture/test_baseline_reproduction.py" = "runs the observed judge built from 8e167c6, whose python gate is tools/pygreen.sh"
+"tools/fixture/test_baseline_warm.py" = "runs the observed judge built from 8e167c6, whose python gate is tools/pygreen.sh"
+"tools/fixture/setup.sh" = "provisions the frozen experiment host whose judge predates the script canon; its sudoers lines name that judge"
+"tools/fixture/diagnose_fanout.py" = "observes the frozen experiment tree, whose python gate is tools/pygreen.sh"
+"tools/fixture/build-benchmark.sh" = "builds the image from a consumer that may predate the script canon; such a consumer keeps its identity planner at the old path"
+"tools/fixture/build-u5.sh" = "builds the image from a commit that may predate the script canon; such a commit keeps its identity planner at the old path"
+"mcps/nbrowser/tests/test_packaging_distribution.py" = "spells the retired relay program only to assert the package no longer ships it"
+"apps/cli/tests/test_layers.py" = "spells the retired packages only to assert an import of them is refused"
+"harness/tests/domain/test_package.py" = "spells the pre-E5 harness packages only to assert they are gone"
+"plugin/evals/native/r2-what-are-you-waiting-for/fixture.sh" = "plants the recorded test-gates log verbatim beside the transcript its case replays"
+"plugin/evals/native/r4-still-running-after-an-hour/fixture.sh" = "plants the recorded test-gates log verbatim beside the transcript its case replays"
+"docs/design/harness/m2.html" = "shows the diff proposed at dd00626c, as it was, against the file paths of that commit"
+"plugin/tests/test_package_remaining.py" = "its historical-tree case replays a build whose MCP config named the member of its own commit"
+"plugin/tests/CONTRACTS.tsv" = "the contract registry keeps each retired contract under the file name it had"
+"plugin/tests/fixtures/NOTT_SYSTEM_PROMPT.v2.0.txt" = "the immutable pre-rename law that behavioral tests replay verbatim"
+"plugin/tests/fixtures/final-state/voice/english.jsonl" = "scrubbed recorded replies used as voice vectors; their old tool names stay verbatim"
+"plugin/tests/fixtures/final-state/voice/recall.jsonl" = "scrubbed recorded replies used as recall vectors; their old tool names stay verbatim"
+"plugin/tests/fixtures/final-state/voice/specificity.jsonl" = "scrubbed recorded replies used as specificity vectors; their old tool names stay verbatim"
+"mcps/nmemory/tests/fixtures/language_vectors.jsonl" = "recorded language-classification vectors; their old tool names are input data"
+"mcps/nmemory/docs/setup-catalog.json" = "pins the upstream toolkit-setup component inventory (agent-browser.dogfood); its component list is SHA-256 verified"
+"mcps/nspawn/docs/setup-catalog.json" = "pins the upstream toolkit-setup component inventory (agent-browser.dogfood); its component list is SHA-256 verified"
+"mcps/nbrowser/docs/setup-catalog.json" = "pins the upstream toolkit-setup component inventory (agent-browser.dogfood); its component list is SHA-256 verified"
+"mcps/napple/docs/setup-catalog.json" = "pins the upstream toolkit-setup component inventory (agent-browser.dogfood); its component list is SHA-256 verified"
+"plugin/docs/setup-catalog.json" = "pins the upstream toolkit-setup component inventory (agent-browser.dogfood); its component list is SHA-256 verified"
+[env]
+# Owners of `NOTT_<OWNER>_<NAME>` beyond the members (whose tokens derive: NOTT_JOURNAL_,
+# NOTT_NMEMORY_, NOTT_HARNESS_... ). A harness noun owns the variables of that concept.
+owners = [
+  "ACP", "ALERT", "APP", "BODY", "BRAKE", "CAMPAIGN", "DATABASE", "DOOR", "EVAL", "GITHUB",
+  "HOST", "INTENT", "LEDGER", "MCP", "MEMORY", "NODE", "ORGANIZATION", "PLUGIN", "PR", "PRINCIPAL",
+  "SCENARIO", "SITE_PREVIEW", "SPILL", "STATE", "TEST", "FIXTURE", "WEB", "WORKFLOW",
+]
+foreign_prefixes = [
+  "ANTHROPIC_", "CLAUDE_", "CODEX_", "OPENAI_", "GEMINI_", "GOOGLE_", "ZAI_", "OPENROUTER_",
+  "GITHUB_", "GH_", "GIT_", "PG", "XDG_", "UV_", "PYTEST_", "PYTHON", "VIRTUAL_ENV",
+  "SUDO_", "LC_", "OTEL_", "SSH_", "TAILSCALE_", "SOPS_", "AGE_", "OLLAMA_", "NPM_",
+  "NODE_", "HOMEBREW_", "DOCKER_", "SYSTEMD_", "INVOCATION_ID", "JOURNAL_STREAM",
+  "TMUX", "ZELLIJ", "TERM", "COLUMNS", "LINES", "NO_COLOR", "FORCE_COLOR", "CI",
+  "RUNNER_", "ACTIONS_", "SLACK_", "TRACEPARENT", "MINIMAX_", "DEEPSEEK_", "QWEN_",
+  "PROMPT_TOOLKIT_",
+]
+foreign_names = [
+  "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TZ", "LANG", "PWD", "HOSTNAME",
+  "EDITOR", "VISUAL", "DISPLAY", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "BASH_ENV", "ENV",
+  "SHELLOPTS", "IFS", "UID", "EUID", "CREDENTIALS_DIRECTORY", "DBUS_SESSION_BUS_ADDRESS",
+  "RUNTIME_DIRECTORY", "STATE_DIRECTORY", "LISTEN_FDS", "LISTEN_PID", "NOTIFY_SOCKET",
+  "WAYLAND_DISPLAY", "MANPAGER", "PAGER", "BROWSER", "COLORTERM", "SUDO_USER",
+]
+
+
+
+# `<dir>/<member>.sqlite3`. Only tests, and parents that rewrite a child's HOME, set it.
+# `retired_env` are the database variables that retire with PostgreSQL, the D5 spellings
+# included; each also gets `""` in [map.env] in the campaign that removes its last spelling.
+# Rail P (`tools/rail/postgres.sh`) refuses all of these in any persistent setter.
+[database]
+variable = "NOTT_DATABASE_DIR"
+retired_env = [
+  "NOTT_NMEMORY_DATABASE_URL", "NOTT_NSPAWN_DATABASE_URL", "NOTT_DATABASE_URL",
+  "NOTT_DATABASE_TAG", "NOTT_DATABASE_ALLOW_REMOTE", "NOTT_LEDGER_URL",
+  "NJOURNAL_DATABASE_URL", "NBROKER_DATABASE_URL", "NMEMORY_ALLOW_PROD",
+  "NLEARNING_DATABASE_URL", "NLIMIT_TEST_DATABASE_URL",
+  "NOTT_JOURNAL_DATABASE_URL", "NOTT_BROKER_DATABASE_URL", "NOTT_NMEMORY_ALLOW_PROD",
+  "NOTT_NMEMORY_TEST_DATABASE_URL", "NOTT_GRAPH_DATABASE_URL", "NOTT_NMEMORY_EVALS_DATABASE_URL",
+  "NOTT_NSHIP_DATABASE_URL", "NOTT_NVISION_DATABASE_URL", "NOTT_NDEV_DATABASE_URL",
+  "NOTT_NDEV_TEST_DATABASE_URL", "NOTT_NDEV_DB", "NOTT_NMEMORY_LANE_DB_MAX_AGE",
+  "NOTT_NMEMORY_DDL_LOCK_TIMEOUT_MS",
+  "NGRAPH_DATABASE_URL", "NSHIP_DATABASE_URL", "NVISION_DATABASE_URL", "NDEV_DATABASE_URL",
+  "NDEV_TEST_DATABASE_URL", "NDEV_DB", "NMEMORY_TEST_DATABASE_URL", "NMEMORY_EVAL_DATABASE_URL",
+  "NMEMORY_DATABASE_URL", "NMEMORY_DDL_LOCK_TIMEOUT_MS", "NMEMORY_LANE_DB_MAX_AGE",
+]
+
+# ---------------------------------------------------------------------------------------
+# Members. `path` is where the member lives after this campaign; `from` is where it lives
+# before the move, when different. `executable = false` for a member with none.
+# ---------------------------------------------------------------------------------------
+
+[member."libs/database"]
+kind = "lib"
+name = "database"
+executable = false
+
+[member."libs/netdoor"]
+kind = "lib"
+name = "netdoor"
+executable = false
+
+[member."libs/socket"]
+kind = "lib"
+name = "socket"
+executable = false
+
+[member."libs/spine"]
+kind = "lib"
+name = "spine"
+executable = false
+
+[member."libs/system1"]
+kind = "lib"
+name = "system1"
+executable = false
+
+[member."mcps/nbrowser"]
+kind = "mcp"
+name = "browser"
+executable = true
+
+[member."mcps/nmemory"]
+kind = "mcp"
+name = "memory"
+executable = true
+
+[member."evals/nmemory"]
+kind = "mcp"
+name = "memory-evals"
+executable = true
+
+[member."mcps/nspawn"]
+kind = "mcp"
+name = "spawn"
+executable = true
+
+[member."mcps/napple"]
+kind = "mcp"
+name = "apple"
+executable = true
+
+[member."harness"]
+kind = "harness"
+name = "harness"
+executable = false
+from = ["apps/harness/acp", "apps/harness/conductor", "apps/harness/core"]
+
+[member."apps/cli"]
+kind = "app"
+name = "cli"
+executable = "nott"
+from = ["apps/harness/cli", "apps/nott", "apps/harness/tui"]
+
+# Members that leave the tree in this campaign. The guard refuses them while they exist.
+[retired]
+"apps/nott" = "split into apps/harness/{gate,body,cli} (phase C)"
+"apps/acp" = "moved to apps/harness/acp (phase C7)"
+"apps/harness/tui" = "folded into the CLI panel (phase C6)"
+"apps/harness-ui" = "the web bench, retired (phase B)"
+"apps/harness/acp" = "folded into harness/ as nott_harness.acp (E5)"
+"apps/harness/cli" = "moved to apps/cli (E5)"
+"apps/harness/conductor" = "folded into harness/ (E5)"
+"apps/harness/core" = "folded into harness/ (E5)"
+"apps/harness/apple" = "moved to apps/apple (E5 part 2)"
+"apps/harness/scenarios" = "moved to apps/apple/scenarios (E5 part 2)"
+
+# Directories outside the uv workspace that the guard knows about.
+[outside_workspace]
+"apps/apple" = "the NOTT macOS app (Swift, xcodegen) and their acceptance scenarios (data)"
+"apps/landing" = "the public landing page (static HTML, CSS and JavaScript, no build)"
+
+# ---------------------------------------------------------------------------------------
+# Old-to-new maps. A key is a name that must disappear; its value is the name that replaces
+# it (or a list, when one old concept splits). `""` means the thing is removed.
+# An old spelling here, or in [retired], stays forbidden: a stale reader would misread it
+# without a sound. tools/organization.py decides which recorded old spellings it measures
+# and where. Read it before you reuse one. To reuse one exact spelling for a new meaning,
+# first remove its entry and check that no reader of the old meaning remains.
+# ---------------------------------------------------------------------------------------
+
+[map.distribution]
+"nott-acp" = "nott-harness"
+"docs-graph-generator" = "nott-docs-graph"
+"gateway-slack" = "nott-gateway-slack"
+"nott-conductor" = "nott-harness"
+"nott-cron" = "nott-harness-cron"
+"nott-dispatch" = "nott-harness-dispatch"
+"harness-harvest" = "nott-harness-harvest"
+"nott-intent" = "nott-harness-intent"
+"nott-learning" = "nott-harness-learning"
+"harness-personal" = "nott-harness-personal"
+"nott-preflight" = "nott-harness-preflight"
+"nott-tui" = ""
+"nott-harness-acp" = "nott-harness"
+"nott-harness-cli" = "nott-cli"
+"nott-harness-conductor" = "nott-harness"
+"nott-harness-core" = "nott-harness"
+"nott" = ["nott-harness-gate", "nott-harness-body", "nott-cli"]
+"model-router" = "nott-router"
+"nott-spawn" = "nspawn"
+"nott-typesafe" = "nott-system1"
+
+[map.package]
+"nott_acp" = "nott_harness.acp"
+"docs_graph_generator" = "nott_docs_graph"
+"gateway_slack" = "nott_gateway_slack"
+"harness_campaigns" = "nott_harness_campaigns"
+"nott_conductor" = "nott_harness"
+"harness_core" = "nott_harness"
+"nott_cron" = "nott_harness_cron"
+"nott_dispatch" = "nott_harness_dispatch"
+"harness_harvest" = "nott_harness_harvest"
+"nott_intent" = "nott_harness_intent"
+"nott_learning" = "nott_harness_learning"
+"harness_personal" = "nott_harness_personal"
+"nott_preflight" = "nott_harness_preflight"
+"harness_staffing" = "nott_harness_staffing"
+"nott_tui" = ""
+"nott_harness_acp" = "nott_harness.acp"
+"nott_harness_cli" = "nott_cli"
+"nott_harness_conductor" = "nott_harness"
+"nott_harness_core" = "nott_harness"
+"quality" = "nott_quality"
+"readback" = "nott_readback"
+"security" = "nott_security"
+"model_router" = "nott_router"
+"nott_spawn" = "nspawn"
+"nott_typesafe" = "nott_system1"
+"nott" = ["nott_harness_gate", "nott_harness_body", "nott_cli"]
+
+[map.executable]
+"nott-acp" = "nott acp serve"
+"nbrowser-relay" = ""
+"nott-campaign" = "nott-harness"
+"dogfood" = ""
+"nott-cron" = "nott-harness-cron"
+"nott-preflight" = "nott-harness-preflight"
+"pygreen" = "tools/gate.sh run python"
+"nott-battery" = "tools/gate.sh run delta"
+"nott-check" = "nott pr check"
+"nott-quality-scorecard" = "nott-quality"
+"nott-readback-progress" = "nott-readback"
+"model-router" = "nott-router"
+"nott-security-scan" = "nott-security"
+"nship-record-vectors" = "nship vector record"
+"nship-seal-work-unit" = "nship work seal"
+"nott-spawn" = "nspawn"
+"nspawn-refresh-proxy-probe" = ""
+"nspawn-credential-persist-probe" = ""
+"nbrowser-broker" = ""
+"njournal" = ""
+"qmeter" = "tools/scorecard.py"
+"deploy-manifest" = "tools/body/manifest.py authorize"
+"body-test-identities" = "tools/body/identity.py"
+
+# Identities of data already stored, kept under the name they were written with. Gate
+# receipts and stage manifests on disk carry these schema ids and every reader matches the
+# bytes: renaming one orphans each record that carries it. The next version takes the
+# current name (`nott.python.<kind>.v2`) instead of renaming this one.
+[exception.stored_identity]
+"nott.pygreen.member.v1" = "the per-member receipt the python gate writes and compare.py reads back"
+"nott.pygreen.spans.v1" = "the run's span profile, sealed in the cache and read by its readers"
+"nott.pygreen.stage.v1" = "the per-stage report the cache validates before it reuses a stage"
+"nott.pygreen.stages.v1" = "the stage manifest the cache and compare.py validate before reuse"
+
+# Reads of a renamed variable that go around the reader's `env()`: each names where the
+# refusal happens instead. Declared one by one, never by glob.
+[exception.env_bypass]
+"tools/fixture/benchmark_runtime.py" = "launched by tools/fixture/pool-start.sh on the fixture VM with an explicit environment"
+"tools/fixture/pool_witness.py" = "launched by tools/fixture/pool-start.sh on the fixture VM with an explicit environment"
+"tools/fixture/u5_witness.py" = "launched by tools/fixture/pool-start.sh on the fixture VM with an explicit environment"
+
+# Every variable renamed by this campaign. `""` retires it (its only readers are gone or
+# were fences for a contract that no longer exists).
+# Names that only look like variables are not here: GATE_ROOT is a Python constant read
+# from NOTT_BODY_GATE_ROOT, GATE_QUEUE a panel section, and GATE_PYTHON, GATE_PACKAGE,
+# GATE_SOURCE and SCORECARD_ONLY are shell locals tools/gate/test.sh and a contract set
+# themselves (SCORECARD_ONLY is ignored from the environment on purpose).
+[map.env]
+"MAIN_GREEN_GH_BIN" = "NOTT_NHEALER_GH_BIN"
+"MAIN_GREEN_HEALING_LABEL" = "NOTT_NHEALER_HEALING_LABEL"
+"MAIN_GREEN_OWNER" = "NOTT_NHEALER_OWNER"
+"MAIN_GREEN_RED_LABEL" = "NOTT_NHEALER_RED_LABEL"
+"MAIN_GREEN_REPO" = "NOTT_NHEALER_REPO"
+"MAIN_GREEN_REPO_ROOT" = "NOTT_NHEALER_REPO_ROOT"
+"MAIN_GREEN_STATE" = "NOTT_NHEALER_STATE"
+"MAIN_GREEN_SYSTEMCTL_BIN" = "NOTT_NHEALER_SYSTEMCTL_BIN"
+"MAIN_GREEN_TIMER_STALE_SECS" = "NOTT_NHEALER_TIMER_STALE_SECS"
+"MAIN_GREEN_TIMER_UNIT" = "NOTT_NHEALER_TIMER_UNIT"
+"MAIN_GREEN_WORKTREE_ROOT" = "NOTT_NHEALER_WORKTREE_ROOT"
+"NBROKER_DATABASE_URL" = ""
+"NBROWSER_CHROME_BIN" = "NOTT_NBROWSER_CHROME_BIN"
+"NBROWSER_DRIVE_KEYS" = "NOTT_NBROWSER_DRIVE_KEYS"
+"NBROWSER_LEAK_PROBE" = "NOTT_NBROWSER_LEAK_PROBE"
+"NDEPLOY_CADDY_BIN" = ""
+"NDEPLOY_DATABASE_URL" = ""
+"NDEPLOY_EDGE_CONFIG" = ""
+"NDEPLOY_HOST" = ""
+"NDEPLOY_ROOTS" = ""
+"NDEPLOY_SOCKET" = ""
+"NDESK_SLACK_API_BASE_URL" = "NOTT_GATEWAY_SLACK_API_BASE_URL"
+"NDESK_SLACK_APP_TOKEN" = "NOTT_GATEWAY_SLACK_APP_TOKEN"
+"NDESK_SLACK_BOT_TOKEN" = "NOTT_GATEWAY_SLACK_BOT_TOKEN"
+"NDESK_SLACK_CAMPAIGN_STORE" = "NOTT_GATEWAY_SLACK_CAMPAIGN_STORE"
+"NDESK_SLACK_CONFIG_FILE" = "NOTT_GATEWAY_SLACK_CONFIG_FILE"
+"NDESK_SLACK_GATE_INBOX" = "NOTT_GATEWAY_SLACK_GATE_INBOX"
+"NDESK_SLACK_JOURNAL_DOOR" = "NOTT_GATEWAY_SLACK_JOURNAL_DOOR"
+"NDESK_SLACK_JOURNAL_STREAM" = "NOTT_GATEWAY_SLACK_JOURNAL_STREAM"
+"NDESK_SLACK_MAX_IN_FLIGHT_TURNS" = "NOTT_GATEWAY_SLACK_MAX_IN_FLIGHT_TURNS"
+"NDESK_SLACK_MEMORY_PROJECTION" = "NOTT_GATEWAY_SLACK_MEMORY_PROJECTION"
+"NDESK_SLACK_OWNER_ID" = "NOTT_GATEWAY_SLACK_OWNER_ID"
+"NDESK_SLACK_RECEIPTS_DIR" = "NOTT_GATEWAY_SLACK_RECEIPTS_DIR"
+"NDESK_SLACK_RESOLVE_SOCKET_URL" = "NOTT_GATEWAY_SLACK_RESOLVE_SOCKET_URL"
+"NDESK_SLACK_SOCKET_URL" = "NOTT_GATEWAY_SLACK_SOCKET_URL"
+"NDEV_CADDY_BIN" = "NOTT_NDEV_CADDY_BIN"
+"NDEV_DATABASE_URL" = ""
+"NDEV_DB" = ""
+"NDEV_EDGE_CONFIG" = "NOTT_NDEV_EDGE_CONFIG"
+"NDEV_HOST" = "NOTT_NDEV_HOST"
+"NDEV_ROOTS" = "NOTT_NDEV_ROOTS"
+"NDEV_SOCKET" = "NOTT_NDEV_SOCKET"
+"NDEV_TEST_DATABASE_URL" = ""
+"NGRAPH_DATABASE_URL" = ""
+"NJOURNAL_DATABASE_URL" = ""
+"NMEDIA_BACKEND" = "NOTT_NMEDIA_BACKEND"
+"NMEMORY_ALLOW_PROD" = ""
+"NMEMORY_ANCHOR_ROOT" = "NOTT_NMEMORY_ANCHOR_ROOT"
+"NMEMORY_BENCH_SEED" = "NOTT_NMEMORY_BENCH_SEED"
+"NMEMORY_BIN" = "NOTT_NMEMORY_BIN"
+"NMEMORY_CODEGRAPH_BIN" = "NOTT_NMEMORY_CODEGRAPH_BIN"
+"NMEMORY_DATABASE_URL" = ""
+"NMEMORY_DDL_LOCK_TIMEOUT_MS" = ""
+"NMEMORY_EVAL_DATABASE_URL" = ""
+"NMEMORY_EVAL_REUSE" = "NOTT_NMEMORY_EVALS_REUSE"
+"NMEMORY_EVAL_RUN_ID" = "NOTT_NMEMORY_EVALS_RUN_ID"
+"NMEMORY_HMAC_KEY" = "NOTT_NMEMORY_HMAC_KEY"
+"NMEMORY_HMAC_KEY_FILE" = "NOTT_NMEMORY_HMAC_KEY_FILE"
+"NMEMORY_JBCONTEXT_BIN" = "NOTT_NMEMORY_JBCONTEXT_BIN"
+"NMEMORY_JBCONTEXT_ENABLED" = "NOTT_NMEMORY_JBCONTEXT_ENABLED"
+"NMEMORY_LANE_DB_MAX_AGE" = ""
+"NMEMORY_ORACLE_BIN" = ""
+"NMEMORY_ORACLE_TEST_DATABASE_URL" = ""
+"NMEMORY_PASSWORD" = "NOTT_NMEMORY_PASSWORD"
+"NMEMORY_PROJECT" = "NOTT_NMEMORY_PROJECT"
+"NMEMORY_TEST_DATABASE_URL" = ""
+"NMEMORY_VAULT" = ""
+"NOTT_BASELINE_BUILDER" = "NOTT_GATE_BASELINE_BUILDER"
+"NOTT_BASELINE_REPORT_DIR" = "NOTT_GATE_BASELINE_REPORT_DIR"
+"NOTT_BENCH_DIST" = ""
+"NOTT_BENCH_HORIZON_H" = ""
+"NOTT_BENCH_HOSTS" = ""
+"NOTT_BENCH_PORT" = ""
+"NOTT_BENCH_REPO" = ""
+"NOTT_BENCH_STALL_MIN" = ""
+"NOTT_CHECK_BASE" = "NOTT_PR_CHECK_BASE"
+"NOTT_CHECK_BASE_REF" = "NOTT_PR_CHECK_BASE_REF"
+"NOTT_CHECK_BASE_SCORECARD" = "NOTT_PR_CHECK_BASE_SCORECARD"
+"NOTT_CHECK_HEAD" = "NOTT_PR_CHECK_HEAD"
+"NOTT_CHECK_MEMBERS_MERGED" = "NOTT_PR_CHECK_MEMBERS_MERGED"
+"NOTT_CHECK_REPO" = "NOTT_PR_CHECK_REPO"
+"NOTT_CHECK_REPO_ROOT" = "NOTT_PR_CHECK_REPO_ROOT"
+"NOTT_CHECK_SELFTEST" = "NOTT_PR_CHECK_SELFTEST"
+"NOTT_CHECK_WORKTREE" = "NOTT_PR_CHECK_WORKTREE"
+"NOTT_COVERAGE_CACHE_DIR" = "NOTT_QUALITY_COVERAGE_CACHE_DIR"
+"NOTT_COVERAGE_CACHE_PATH" = "NOTT_QUALITY_COVERAGE_CACHE_PATH"
+"NOTT_COVERAGE_NO_CACHE" = "NOTT_QUALITY_COVERAGE_NO_CACHE"
+"NOTT_DOOR" = "NOTT_DOOR_SOCKET"
+"NOTT_HARNESS" = "NOTT_NMEMORY_HARNESS"
+"NOTT_JEV_AUDIT" = "NOTT_SYSTEM1_AUDIT"
+"NOTT_JEV_DRIFT" = "NOTT_SYSTEM1_DRIFT"
+"NOTT_JEV_TIMEOUT" = "NOTT_SYSTEM1_TIMEOUT"
+"NOTT_LAW_CACHE" = "NOTT_PLUGIN_LAW_CACHE"
+"NOTT_MCPS_DIR" = "NOTT_MCP_DIR"
+"NOTT_MODEL" = "NOTT_NMEMORY_MODEL"
+"NOTT_MON_ALERT_CERT_HOSTNAMES" = "NOTT_ALERT_CERT_HOSTNAMES"
+"NOTT_MON_ALERT_DISK_PATH" = "NOTT_ALERT_DISK_PATH"
+"NOTT_MON_ALERT_HISTORY_DIR" = "NOTT_ALERT_HISTORY_DIR"
+"NOTT_MON_ALERT_OTLP_URL" = "NOTT_ALERT_OTLP_URL"
+"NOTT_MON_ALERT_WEBHOOK_HOST" = "NOTT_ALERT_WEBHOOK_HOST"
+"NOTT_MON_ALERT_WEBHOOK_PORT" = "NOTT_ALERT_WEBHOOK_PORT"
+"NOTT_MUTATION_WORKERS" = "NOTT_QUALITY_MUTATION_WORKERS"
+"NOTT_NBROWSER_JEV" = "NOTT_NBROWSER_SYSTEM1"
+"NOTT_NMEMORY_JEV" = "NOTT_NMEMORY_SYSTEM1"
+"NOTT_PROJECT_ID" = "NOTT_CONDUCTOR_PROJECT_ID"
+"NOTT_PYGREEN_BASE" = "NOTT_GATE_BASE"
+"NOTT_PYGREEN_CANDIDATE" = "NOTT_GATE_CANDIDATE"
+"NOTT_PYGREEN_CPUS" = "NOTT_GATE_CPUS"
+"NOTT_PYGREEN_JOBS" = "NOTT_GATE_JOBS"
+"NOTT_PYGREEN_LOG_DIR" = "NOTT_GATE_LOG_DIR"
+"NOTT_PYGREEN_MYPY_STORE" = "NOTT_GATE_MYPY_STORE"
+"NOTT_PYGREEN_PATH" = "NOTT_GATE_PATH"
+"NOTT_PYGREEN_TAG" = "NOTT_GATE_TAG"
+"NOTT_REPO_ROOT" = "NOTT_GATE_REPO_ROOT"
+"NOTT_SESSION_ID" = "NOTT_NMEMORY_SESSION_ID"
+"NOTT_SLOT_MAX_LOAD" = ""
+"NOTT_SLOT_SKIP" = ""
+"NOTT_SWEEP_COVERAGE_DIR" = "NOTT_QUALITY_SWEEP_COVERAGE_DIR"
+"NOTT_SWEEP_COVERAGE_PATH" = "NOTT_QUALITY_SWEEP_COVERAGE_PATH"
+"NOTT_TYPESAFE_API_KEY" = "NOTT_SYSTEM1_API_KEY"
+"NOTT_TYPESAFE_ENDPOINT" = "NOTT_SYSTEM1_ENDPOINT"
+"NOTT_TYPESAFE_MODEL" = "NOTT_SYSTEM1_MODEL"
+"NSECRETS_VAULT" = "NOTT_NSECRETS_VAULT"
+"NSHIP_DATABASE_URL" = ""
+"NSPAWN_TEST_MARKER" = "NOTT_NSPAWN_TEST_MARKER"
+"NVISION_ALLOWED_ROOT" = "NOTT_NVISION_ALLOWED_ROOT"
+"NVISION_DATABASE_URL" = ""
+"NVISION_FIXTURE_ROOT" = "NOTT_NVISION_FIXTURE_ROOT"
+"NVISION_STORE_KEY_HEX" = "NOTT_NVISION_STORE_KEY_HEX"
+"NVISION_STORE_ROOT" = "NOTT_NVISION_STORE_ROOT"
+"PYNOTT_CHANGED_LINES_MUTATION" = "NOTT_QUALITY_CHANGED_LINES_MUTATION"
+"PYNOTT_MAX_MUTANTS_PER_FILE" = "NOTT_QUALITY_MAX_MUTANTS_PER_FILE"
+"PYNOTT_MAX_TOTAL_MUTANTS" = "NOTT_QUALITY_MAX_TOTAL_MUTANTS"
+"TYPESAFE_AI_API_KEY" = ""
+"TYPESAFE_ENDPOINT" = ""
+"TYPESAFE_MODEL" = ""
+
+# Every MCP tool the repository registers, old name to new (inventory 2026-09-23, 129 tools
+# on 9 servers). New names are `<executable>_<noun>_<verb>`; the full client name
+# `mcp__plugin_nott_<server>__<tool>` stays within 64 characters.
+[map.mcp_tool]
+"nott_status" = "nott_gate_show"
+"nspawn_execute" = "nspawn_run_start"
+"nspawn_review" = "nspawn_review_start"
+"nspawn_batch" = "nspawn_batch_start"
+"nspawn_compact" = "nspawn_transcript_compact"
+"nspawn_status" = ["nspawn_run_list", "nspawn_run_show"]
+"nspawn_result" = "nspawn_result_show"
+"nspawn_transcript" = "nspawn_transcript_show"
+"nspawn_close" = "nspawn_run_close"
+"nspawn_ping" = "nspawn_route_ping"
+"nspawn_quota" = "nspawn_quota_show"
+"nspawn_noul" = "nspawn_judgment_estimate"
+"nspawn_choice" = "nspawn_judgment_choose"
+"nspawn_score" = "nspawn_judgment_score"
+"nspawn_providers" = "nspawn_provider_list"
+"memory_alias" = "nmemory_synonym_add"
+"memory_bootstrap" = "nmemory_project_bootstrap"
+"memory_classify" = "nmemory_kind_classify"
+"memory_consolidate" = "nmemory_capsule_consolidate"
+"memory_context" = "nmemory_context_show"
+"memory_coverage" = "nmemory_coverage_show"
+"memory_digest" = "nmemory_digest_show"
+"memory_dod" = "nmemory_dod_set"
+"memory_export" = "nmemory_capsule_export"
+"memory_extract" = "nmemory_turn_extract"
+"memory_get" = "nmemory_capsule_show"
+"memory_import" = "nmemory_capsule_import"
+"memory_index" = "nmemory_index_build"
+"memory_ingest" = "nmemory_capsule_ingest"
+"memory_list" = "nmemory_capsule_list"
+"memory_outcome" = "nmemory_outcome_record"
+"memory_pin" = "nmemory_capsule_pin"
+"memory_purge" = "nmemory_capsule_purge"
+"memory_reanchor" = "nmemory_capsule_reanchor"
+"memory_relate" = "nmemory_relation_add"
+"memory_retrieve" = "nmemory_capsule_retrieve"
+"memory_review" = "nmemory_proposal_review"
+"memory_compact" = "nmemory_transcript_compact"
+"memory_session_finish" = "nmemory_session_finish"
+"memory_session_start" = "nmemory_session_start"
+"memory_forget" = ""
+"nbrowser_snapshot" = "nbrowser_page_snapshot"
+"nbrowser_extract" = "nbrowser_page_extract"
+"nbrowser_scrape" = "nbrowser_page_scrape"
+"nbrowser_crawl" = "nbrowser_site_crawl"
+"nbrowser_map" = ""
+"nbrowser_jq" = ""
+"nbrowser_interact" = "nbrowser_page_interact"
+"nbrowser_run" = ""
+"nbrowser_assert" = ""
+"nbrowser_tokens" = "nbrowser_token_extract"
+"nbrowser_diff" = ""
+"nbrowser_audit" = ""
+"nbrowser_console" = "nbrowser_console_show"
+"nbrowser_network" = "nbrowser_network_show"
+"nbrowser_capture" = "nbrowser_page_capture"
+"nbrowser_session_get" = "nbrowser_session_show"
+"nbrowser_tabs_list" = "nbrowser_tab_list"
+"nbrowser_tabs_open" = ""
+"nbrowser_tabs_switch" = ""
+"nbrowser_tabs_close" = ""
+"nbrowser_wait" = ""
+"nbrowser_touch" = ""
+"nbrowser_readback" = ""
+"nbrowser_navigate" = "nbrowser_page_navigate"
+"nbrowser_download" = ""
+"nbrowser_content_get" = "nbrowser_content_show"
+"nbrowser_upload" = ""
+"nbrowser_github" = ""
+"nbrowser_fixture_marker" = ""
+"nbrowser:search" = "nbrowser_web_search"
+"nbrowser:usage" = ""
+"nbrowser:research" = ""
+"nbrowser:monitor" = ""
+"ship_bind" = "nship_work_bind"
+"ship_run" = "nship_work_run"
+"ship_agent_gate" = "nship_gate_run"
+"ship_self_heal" = "nship_heal_run"
+"ship_pr" = "nship_pr_open"
+"ship_status" = "nship_work_show"
+"ship_review" = "nship_review_run"
+"ship_rerun" = "nship_work_rerun"
+"ship_merge" = "nship_pr_merge"
+"ship_record" = "nship_record_add"
+"healer_cancel_claim" = "nhealer_claim_cancel"
+"healer_inspect_claim" = "nhealer_claim_show"
+"healer_list_history" = "nhealer_history_list"
+"healer_status" = "nhealer_state_show"
+"healer_telemetry" = "nhealer_telemetry_show"
+"healer_trigger_tick" = "nhealer_tick_run"
+"vision_capture" = "nvision_screen_capture"
+"vision_click_coords" = "nvision_target_locate"
+"vision_crop" = "nvision_image_crop"
+"vision_describe" = "nvision_image_describe"
+"vision_diff" = "nvision_tree_diff"
+"vision_find" = "nvision_region_find"
+"vision_get" = "nvision_image_show"
+"vision_ingest" = "nvision_image_ingest"
+"vision_ingest_ref" = "nvision_ref_ingest"
+"vision_list" = "nvision_image_list"
+"vision_provider" = "nvision_provider_send"
+"vision_redact" = "nvision_image_redact"
+"vision_region" = "nvision_region_show"
+"vision_render" = "nvision_tree_render"
+"vision_search" = "nvision_text_search"
+"vision_similar" = "nvision_image_match"
+"vision_summary" = "nvision_tree_summarize"
+"vision_text" = "nvision_text_show"
+"vision_tree" = "nvision_tree_show"

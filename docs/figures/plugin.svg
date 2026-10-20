@@ -1,0 +1,148 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 440" role="img" aria-labelledby="title desc">
+  <title id="title">NOTT Plugin - Closed-loop engineering team for AI clients</title>
+  <desc id="desc">Hero banner for the NOTT Plugin showcasing direct and plan, execute and prove, and review and ship workflows.</desc>
+
+  <defs>
+    <style>
+      .mono { font-family: ui-monospace, 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', monospace; }
+      .sans { font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+    </style>
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#141210" />
+      <stop offset="100%" stop-color="#0F0E0D" />
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#E4733A" />
+    </marker>
+  </defs>
+
+  <!-- Background Canvas -->
+  <rect x="0" y="0" width="1120" height="440" rx="8" fill="url(#bg-grad)" stroke="#2E2A27" stroke-width="1.5" />
+
+  <!-- Eyebrow -->
+  <text x="40" y="52" fill="#E4733A" font-size="11" font-weight="700" letter-spacing="1.8" class="mono">NOTT PLUGIN / CLOSED-LOOP ENGINEERING TEAM FOR AI CLIENTS</text>
+
+  <!-- Headline -->
+  <text x="40" y="92" fill="#ECE7DE" font-size="30" font-weight="700" letter-spacing="-0.5" class="sans">Direction becomes a checked result.</text>
+
+  <!-- Pill Badges -->
+  <!-- Badge 1: Claude Code · Codex · AGY -->
+  <rect x="40" y="118" width="186" height="26" rx="13" fill="#171513" stroke="#2E2A27" stroke-width="1" />
+  <circle cx="53" cy="131" r="3.5" fill="#8FB3B0" />
+  <text x="64" y="135" fill="#ECE7DE" font-size="11.5" font-weight="500" class="sans">Claude Code · Codex · AGY</text>
+
+  <!-- Badge 2: 18 Workflow Skills -->
+  <rect x="234" y="118" width="138" height="26" rx="13" fill="#171513" stroke="#2E2A27" stroke-width="1" />
+  <circle cx="247" cy="131" r="3.5" fill="#E4733A" />
+  <text x="258" y="135" fill="#B5AEA3" font-size="11.5" font-weight="500" class="sans">18 Workflow Skills</text>
+
+  <!-- Badge 3: Native Event Hooks -->
+  <rect x="380" y="118" width="140" height="26" rx="13" fill="#171513" stroke="#2E2A27" stroke-width="1" />
+  <circle cx="393" cy="131" r="3.5" fill="#E8A33D" />
+  <text x="404" y="135" fill="#B5AEA3" font-size="11.5" font-weight="500" class="sans">Native Event Hooks</text>
+
+  <!-- Badge 4: AGPL-3.0 -->
+  <rect x="528" y="118" width="82" height="26" rx="13" fill="#171513" stroke="#2E2A27" stroke-width="1" />
+  <text x="569" y="135" text-anchor="middle" fill="#B5AEA3" font-size="11.5" font-weight="600" class="mono">AGPL-3.0</text>
+
+  <!-- Connecting Arrows Between Cards -->
+  <path d="M 364 270 L 392 270" stroke="#E4733A" stroke-width="2" stroke-linecap="round" marker-end="url(#arrow)" fill="none" />
+  <path d="M 724 270 L 752 270" stroke="#E4733A" stroke-width="2" stroke-linecap="round" marker-end="url(#arrow)" fill="none" />
+
+  <!-- CARD 01: DIRECT & PLAN -->
+  <g id="card-01">
+    <rect x="40" y="175" width="320" height="190" rx="8" fill="#171513" stroke="#2E2A27" stroke-width="1.5" />
+    <path d="M 40 175 h 320" stroke="#E4733A" stroke-width="2" />
+    <text x="56" y="202" fill="#E4733A" font-size="11" font-weight="700" class="mono">01</text>
+    <text x="80" y="202" fill="#ECE7DE" font-size="13" font-weight="700" letter-spacing="0.5" class="sans">DIRECT &amp; PLAN</text>
+
+    <!-- Item 1: Grounded Recall in nMEMORY -->
+    <g transform="translate(56, 218)">
+      <rect x="0" y="0" width="70" height="20" rx="4" fill="#0F0E0D" stroke="#8FB3B0" stroke-width="1" />
+<svg x="1005" y="28" width="65" height="84" viewBox="101 62 309 387"><path fill="#E4733A" fill-rule="evenodd" d="M180 447C182 445 184 441 188 422C191 409 194 398 196 394C199 387 199 387 199 376C198 366 199 358 204 322C207 299 209 278 209 276C209 270 205 260 202 257C198 254 200 253 205 255C216 261 225 321 225 392C225 414 225 429 224 432C223 438 219 443 216 443C215 443 210 448 210 449C210 450 213 450 217 450L224 450L226 446C229 442 229 441 230 427C231 419 232 409 233 405C234 398 234 396 233 385C231 374 231 366 232 324C233 277 233 276 231 270C230 267 229 262 229 260L228 255L236 253C240 251 249 247 257 243C277 232 289 230 295 238C299 243 299 247 296 260C291 278 291 281 304 314C320 355 320 358 305 413C299 435 297 440 292 441C289 442 284 447 284 449C284 450 286 450 291 450C302 450 302 449 309 422C315 399 324 369 328 362C331 356 331 353 326 344C319 329 315 302 319 288C321 278 321 278 325 286C327 289 336 301 344 312C372 347 377 359 383 403C387 434 387 440 379 443C377 444 374 445 373 447L372 450L379 450C388 450 389 449 391 444C393 440 393 438 390 413C389 399 388 380 387 370L387 352L382 348C365 330 349 291 350 271C351 266 351 261 352 261C353 259 356 239 356 235C355 229 356 230 358 236C359 241 359 246 358 263C357 285 358 290 360 282L361 278L362 282C362 285 363 291 363 295C363 302 363 302 365 301C368 301 368 301 368 307C370 316 376 330 376 323C376 319 378 321 380 327C382 331 383 333 384 333C384 332 387 334 389 337C392 342 394 343 393 340C392 338 395 339 398 343C403 348 405 352 405 356L405 360L407 356C409 353 410 341 408 336C407 334 407 334 409 336C412 339 412 337 408 326C406 321 404 315 403 312C402 308 402 305 401 304C401 301 403 302 405 304C408 307 408 306 403 286C394 253 384 236 359 211C350 202 349 201 352 201C354 201 354 201 351 198C341 190 316 187 295 192C277 195 264 195 254 191C247 188 227 173 218 163C217 162 218 162 221 163C228 164 229 164 203 144C202 143 204 143 207 144C209 145 210 145 211 145C212 143 201 134 194 130L188 127L192 126L195 126L191 123C188 122 185 118 183 116C180 114 177 112 175 111C172 111 172 110 175 104C179 96 175 82 165 69C159 61 159 61 156 65C153 69 151 76 150 91C150 108 149 110 146 95C145 89 144 88 136 79C131 73 127 69 126 69C126 69 127 73 127 76C128 82 129 85 133 92C140 106 140 107 134 115C130 119 128 122 127 125C127 130 122 135 110 144L101 151L104 154C109 157 110 157 125 151C132 148 139 146 141 146C148 146 157 158 159 170C159 176 161 177 162 174C163 169 165 173 165 184C167 209 168 212 169 204C170 198 172 199 173 206C174 210 175 214 179 219C182 225 183 227 183 231C183 236 184 239 188 248C195 263 195 262 195 297C195 357 186 421 177 436C175 440 172 442 169 444C161 447 162 450 171 450C177 450 178 450 180 447Z"/></svg>
+      <text x="35" y="14" text-anchor="middle" fill="#8FB3B0" font-size="10" font-weight="600" class="mono">nMEMORY</text>
+      <text x="78" y="14" fill="#ECE7DE" font-size="11" font-weight="500" class="sans">Grounded recall from capsule graph</text>
+    </g>
+
+    <!-- Item 2: Brainstorm -->
+    <g transform="translate(56, 252)">
+      <rect x="0" y="0" width="82" height="20" rx="4" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1" />
+      <text x="41" y="14" text-anchor="middle" fill="#B5AEA3" font-size="9.5" font-weight="600" class="mono">BRAINSTORM</text>
+      <text x="90" y="14" fill="#ECE7DE" font-size="11" font-weight="500" class="sans">Settle technical forks on evidence</text>
+    </g>
+
+    <!-- Item 3: Plan Review Loop -->
+    <g transform="translate(56, 286)">
+      <rect x="0" y="0" width="288" height="64" rx="6" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1" />
+      <text x="12" y="20" fill="#E8A33D" font-size="10" font-weight="700" class="mono">PLAN ⇄ REVIEW LOOP</text>
+      <text x="12" y="38" fill="#B5AEA3" font-size="11" class="sans">Independently reviewed before code touches.</text>
+      <text x="12" y="52" fill="#8FB3B0" font-size="10" class="mono">Loops until review holds cleanly</text>
+    </g>
+  </g>
+
+  <!-- CARD 02: EXECUTE & PROVE -->
+  <g id="card-02">
+    <rect x="400" y="175" width="320" height="190" rx="8" fill="#171513" stroke="#2E2A27" stroke-width="1.5" />
+    <path d="M 400 175 h 320" stroke="#8FB3B0" stroke-width="2" />
+    <text x="416" y="202" fill="#8FB3B0" font-size="11" font-weight="700" class="mono">02</text>
+    <text x="440" y="202" fill="#ECE7DE" font-size="13" font-weight="700" letter-spacing="0.5" class="sans">EXECUTE &amp; PROVE</text>
+
+    <!-- Item 1: RED regression test first -->
+    <g transform="translate(416, 218)">
+      <rect x="0" y="0" width="68" height="20" rx="4" fill="#241412" stroke="#E4733A" stroke-width="1" />
+      <text x="34" y="14" text-anchor="middle" fill="#E4733A" font-size="10" font-weight="700" class="mono">RED TEST</text>
+      <text x="76" y="14" fill="#ECE7DE" font-size="11" font-weight="500" class="sans">First edit: regression test observed red</text>
+    </g>
+
+    <!-- Item 2: GREEN implementation -->
+    <g transform="translate(416, 252)">
+      <rect x="0" y="0" width="68" height="20" rx="4" fill="#12201D" stroke="#8FB3B0" stroke-width="1" />
+      <text x="34" y="14" text-anchor="middle" fill="#8FB3B0" font-size="10" font-weight="700" class="mono">GREEN</text>
+      <text x="76" y="14" fill="#ECE7DE" font-size="11" font-weight="500" class="sans">Bounded fix to satisfy contract</text>
+    </g>
+
+    <!-- Item 3: Parallel Fanout via nSPAWN -->
+    <g transform="translate(416, 286)">
+      <rect x="0" y="0" width="288" height="64" rx="6" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1" />
+      <text x="12" y="20" fill="#E4733A" font-size="10" font-weight="700" class="mono">PARALLEL FANOUT / nSPAWN</text>
+      <text x="12" y="38" fill="#B5AEA3" font-size="11" class="sans">Dispatches ready independent units concurrently.</text>
+      <text x="12" y="52" fill="#ECE7DE" font-size="10" class="mono">Opus judgment + Haiku throughput</text>
+    </g>
+  </g>
+
+  <!-- CARD 03: REVIEW & SHIP -->
+  <g id="card-03">
+    <rect x="760" y="175" width="320" height="190" rx="8" fill="#171513" stroke="#2E2A27" stroke-width="1.5" />
+    <path d="M 760 175 h 320" stroke="#E8A33D" stroke-width="2" />
+    <text x="776" y="202" fill="#E8A33D" font-size="11" font-weight="700" class="mono">03</text>
+    <text x="800" y="202" fill="#ECE7DE" font-size="13" font-weight="700" letter-spacing="0.5" class="sans">REVIEW &amp; SHIP</text>
+
+    <!-- Item 1: Witness Review on frozen snapshot -->
+    <g transform="translate(776, 218)">
+      <rect x="0" y="0" width="64" height="20" rx="4" fill="#0F0E0D" stroke="#8FB3B0" stroke-width="1" />
+      <text x="32" y="14" text-anchor="middle" fill="#8FB3B0" font-size="10" font-weight="600" class="mono">WITNESS</text>
+      <text x="72" y="14" fill="#ECE7DE" font-size="11" font-weight="500" class="sans">Independent review on frozen snapshot</text>
+    </g>
+
+    <!-- Item 2: Verified consumer readback -->
+    <g transform="translate(776, 252)">
+      <rect x="0" y="0" width="76" height="20" rx="4" fill="#0F0E0D" stroke="#E8A33D" stroke-width="1" />
+      <text x="38" y="14" text-anchor="middle" fill="#E8A33D" font-size="9.5" font-weight="600" class="mono">READBACK</text>
+      <text x="84" y="14" fill="#ECE7DE" font-size="11" font-weight="500" class="sans">Verified live at actual consumer</text>
+    </g>
+
+    <!-- Item 3: Closed Delivery -->
+    <g transform="translate(776, 286)">
+      <rect x="0" y="0" width="288" height="64" rx="6" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1" />
+      <text x="12" y="20" fill="#8FB3B0" font-size="10" font-weight="700" class="mono">CLOSED-LOOP DELIVERY</text>
+      <text x="12" y="38" fill="#B5AEA3" font-size="11" class="sans">Gate checks passed and pull request merged.</text>
+      <text x="12" y="52" fill="#E8A33D" font-size="10" class="mono">DELIVERED: nothing left open</text>
+    </g>
+  </g>
+
+  <!-- Footer Divider Line -->
+  <line x1="40" y1="388" x2="1080" y2="388" stroke="#2E2A27" stroke-width="1" />
+
+  <!-- Footer Text -->
+  <text x="40" y="408" fill="#B5AEA3" font-size="12" font-weight="400" class="sans">One engineering law and 18 routes projected into native Claude Code, Codex, and AGY client views.</text>
+</svg>

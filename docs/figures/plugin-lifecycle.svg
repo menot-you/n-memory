@@ -1,0 +1,430 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 540" role="img" aria-labelledby="title desc">
+  <title id="title">NOTT Plugin: 17 Task Routes, System1 Hooks &amp; Multi-Client Views</title>
+  <desc id="desc">Architectural diagram displaying NOTT Plugin engineering law, 17 on-demand routes, System1 hooks, closed-loop change lifecycle, and native multi-client views with behavioral ablation suite.</desc>
+
+  <defs>
+    <marker id="arrow-copper" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M 1 1 L 7 4 L 1 7 Z" fill="#E4733A" />
+    </marker>
+    <marker id="arrow-cyan" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M 1 1 L 7 4 L 1 7 Z" fill="#8FB3B0" />
+    </marker>
+    <marker id="arrow-amber" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+      <path d="M 1 1 L 5 3 L 1 5 Z" fill="#E8A33D" />
+    </marker>
+    <marker id="arrow-brick" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+      <path d="M 1 1 L 5 3 L 1 5 Z" fill="#C4523A" />
+    </marker>
+    <filter id="card-shadow" x="-4%" y="-2%" width="108%" height="106%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000000" flood-opacity="0.45" />
+    </filter>
+  </defs>
+
+  <!-- Background Canvas -->
+  <rect width="1120" height="540" fill="#0F0E0D" />
+
+  <!-- Grid Accents -->
+  <g opacity="0.15" stroke="#2E2A27" stroke-width="1">
+    <line x1="28" y1="68" x2="1092" y2="68" />
+    <line x1="28" y1="524" x2="1092" y2="524" />
+  </g>
+
+  <!-- Header Section -->
+  <g transform="translate(28, 22)">
+    <!-- Brand / Status Pill -->
+    <rect x="0" y="2" width="86" height="18" rx="9" fill="#1F1B18" stroke="#E4733A" stroke-width="1" />
+    <circle cx="9" cy="11" r="3.5" fill="#E4733A" />
+    <text x="18" y="14" font-family="monospace" font-size="9" font-weight="bold" fill="#ECE7DE" letter-spacing="0.5">NOTT v2.2</text>
+
+    <!-- Main Title &amp; Subtitle -->
+    <text x="98" y="17" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="#ECE7DE" letter-spacing="0.2">NOTT Plugin: 17 Task Routes, System1 Hooks &amp; Multi-Client Views</text>
+    <text x="98" y="35" font-family="monospace" font-size="10" fill="#8FB3B0" letter-spacing="0.8">CONTRACT SPEC • CLOSED-LOOP LIFECYCLE • CROSS-CLIENT NATIVE VIEWS • D18 GATE</text>
+
+    <!-- Right Header Indicator -->
+    <rect x="914" y="5" width="150" height="24" rx="4" fill="#171513" stroke="#2E2A27" stroke-width="1" />
+    <text x="926" y="21" font-family="monospace" font-size="9.5" fill="#B5AEA3">STABLE ARCHITECTURE</text>
+    <circle cx="1050" cy="17" r="4" fill="#8FB3B0" />
+  </g>
+
+  <!-- ========================================================================================== -->
+  <!-- COLUMN 1: ENGINEERING LAW, 17 ROUTES &amp; SYSTEM1 HOOKS -->
+  <!-- ========================================================================================== -->
+  <g transform="translate(28, 76)">
+    <!-- Column Outer Card -->
+    <rect width="340" height="442" rx="8" fill="#171513" stroke="#2E2A27" stroke-width="1.2" filter="url(#card-shadow)" />
+    
+    <!-- Column Header -->
+    <rect x="1" y="1" width="338" height="42" rx="7" fill="#1C1A17" />
+    <line x1="1" y1="43" x2="339" y2="43" stroke="#2E2A27" stroke-width="1" />
+    <rect x="14" y="10" width="22" height="22" rx="4" fill="#25211D" stroke="#E4733A" stroke-width="1" />
+    <text x="21" y="25" font-family="monospace" font-size="11" font-weight="bold" fill="#E4733A">01</text>
+    <text x="44" y="20" font-family="monospace" font-size="9" font-weight="bold" fill="#E4733A" letter-spacing="0.5">BEHAVIORAL LAW &amp; DISPATCH</text>
+    <text x="44" y="33" font-family="Arial, sans-serif" font-size="11" font-weight="bold" fill="#ECE7DE">ENGINEERING LAW &amp; SYSTEM1</text>
+
+    <!-- Sub-card 1.1: 20 KB Behavioral Contract (NOTT.md) -->
+    <g transform="translate(12, 52)">
+      <rect width="316" height="102" rx="6" fill="#121110" stroke="#282421" stroke-width="1" />
+      <rect x="8" y="8" width="168" height="17" rx="3" fill="#221D1A" />
+      <text x="13" y="20" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="#E4733A">20 KB Behavioral Contract</text>
+      <text x="144" y="20" font-family="monospace" font-size="9" fill="#B5AEA3">(NOTT.md)</text>
+      
+      <text x="10" y="40" font-family="Arial, sans-serif" font-size="9.5" fill="#ECE7DE">• Devil's advocate premise testing &amp; risk exposure</text>
+      <text x="10" y="55" font-family="Arial, sans-serif" font-size="9.5" fill="#ECE7DE">• D18 four-valued verdicts:</text>
+      
+      <!-- D18 verdict badges -->
+      <g transform="translate(142, 44)">
+        <rect x="0" y="0" width="34" height="14" rx="2" fill="#1A2422" stroke="#8FB3B0" stroke-width="0.8" />
+        <text x="4" y="10" font-family="monospace" font-size="8" fill="#8FB3B0">0:SAT</text>
+        <rect x="38" y="0" width="38" height="14" rx="2" fill="#281A18" stroke="#C4523A" stroke-width="0.8" />
+        <text x="42" y="10" font-family="monospace" font-size="8" fill="#C4523A">1:FAIL</text>
+        <rect x="80" y="0" width="38" height="14" rx="2" fill="#262118" stroke="#E8A33D" stroke-width="0.8" />
+        <text x="84" y="10" font-family="monospace" font-size="8" fill="#E8A33D">2:REF</text>
+        <rect x="122" y="0" width="42" height="14" rx="2" fill="#221D1A" stroke="#B5AEA3" stroke-width="0.8" />
+        <text x="126" y="10" font-family="monospace" font-size="8" fill="#B5AEA3">3:FIND</text>
+      </g>
+
+      <text x="10" y="73" font-family="Arial, sans-serif" font-size="9.5" fill="#ECE7DE">• Base Fanout:</text>
+      <text x="80" y="73" font-family="monospace" font-size="9.5" fill="#8FB3B0">Opus (judge)</text>
+      <text x="156" y="73" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">+</text>
+      <text x="166" y="73" font-family="monospace" font-size="9.5" fill="#E8A33D">Haiku (parallel fast)</text>
+      
+      <rect x="8" y="82" width="300" height="14" rx="2" fill="#191715" />
+      <text x="12" y="93" font-family="monospace" font-size="8.5" fill="#B5AEA3">Hierarchy: Standing Grant → Safe Execution → Readback</text>
+    </g>
+
+    <!-- Sub-card 1.2: 17 On-Demand Task Routes -->
+    <g transform="translate(12, 162)">
+      <rect width="316" height="142" rx="6" fill="#121110" stroke="#282421" stroke-width="1" />
+      <text x="10" y="18" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="#8FB3B0">17 On-Demand Task Routes</text>
+      <text x="156" y="18" font-family="monospace" font-size="8.5" fill="#B5AEA3">(Precedence-ordered catalog)</text>
+
+      <!-- Grid of 18 routes (17 core + upscale) -->
+      <!-- Row 1 -->
+      <g transform="translate(8, 26)">
+        <rect x="0" y="0" width="56" height="18" rx="3" fill="#1A1816" stroke="#2E2A27" />
+        <text x="6" y="12" font-family="monospace" font-size="8" fill="#E4733A">security</text>
+        <rect x="60" y="0" width="58" height="18" rx="3" fill="#1A1816" stroke="#2E2A27" />
+        <text x="66" y="12" font-family="monospace" font-size="8" fill="#ECE7DE">readback</text>
+        <rect x="122" y="0" width="58" height="18" rx="3" fill="#1A1816" stroke="#2E2A27" />
+        <text x="128" y="12" font-family="monospace" font-size="8" fill="#ECE7DE">feedback</text>
+        <rect x="184" y="0" width="54" height="18" rx="3" fill="#1A1816" stroke="#2E2A27" />
+        <text x="193" y="12" font-family="monospace" font-size="8" fill="#C4523A">debug</text>
+        <rect x="242" y="0" width="58" height="18" rx="3" fill="#1A1816" stroke="#2E2A27" />
+        <text x="249" y="12" font-family="monospace" font-size="8" fill="#8FB3B0">quality</text>
+      </g>
+      <!-- Row 2 -->
+      <g transform="translate(8, 48)">
+        <rect x="0" y="0" width="70" height="18" rx="3" fill="#1A1816" stroke="#2E2A27" />
+        <text x="5" y="12" font-family="monospace" font-size="8" fill="#ECE7DE">brainstorm</text>
+        <rect x="74" y="0" width="52" height="18" rx="3" fill="#1A1816" stroke="#2E2A27" />
+        <text x="82" y="12" font-family="monospace" font-size="8" fill="#ECE7DE">ratify</text>
+        <rect x="130" y="0" width="46" height="18" rx="3" fill="#1A1816" stroke="#2E2A27" />
+        <text x="140" y="12" font-family="monospace" font-size="8" fill="#E8A33D">plan</text>
+        <rect x="180" y="0" width="54" height="18" rx="3" fill="#1A1816" stroke="#2E2A27" />
+        <text x="188" y="12" font-family="monospace" font-size="8" fill="#ECE7DE">fanout</text>
+        <rect x="238" y="0" width="62" height="18" rx="3" fill="#1A1816" stroke="#2E2A27" />
+        <text x="246" y="12" font-family="monospace" font-size="8" fill="#E4733A">execute</text>
+      </g>
+      <!-- Row 3 -->
+      <g transform="translate(8, 70)">
+        <rect x="0" y="0" width="54" height="18" rx="3" fill="#1A1816" stroke="#2E2A27" />
+        <text x="8" y="12" font-family="monospace" font-size="8" fill="#8FB3B0">review</text>
+        <rect x="58" y="0" width="58" height="18" rx="3" fill="#1A1816" stroke="#2E2A27" />
+        <text x="64" y="12" font-family="monospace" font-size="8" fill="#ECE7DE">release</text>
+        <rect x="120" y="0" width="46" height="18" rx="3" fill="#1A1816" stroke="#2E2A27" />
+        <text x="131" y="12" font-family="monospace" font-size="8" fill="#ECE7DE">ship</text>
+        <rect x="170" y="0" width="68" height="18" rx="3" fill="#1A1816" stroke="#2E2A27" />
+        <text x="175" y="12" font-family="monospace" font-size="8" fill="#ECE7DE">reconcile</text>
+        <rect x="242" y="0" width="58" height="18" rx="3" fill="#1A1816" stroke="#2E2A27" />
+        <text x="248" y="12" font-family="monospace" font-size="8" fill="#ECE7DE">handoff</text>
+      </g>
+      <!-- Row 4 -->
+      <g transform="translate(8, 92)">
+        <rect x="0" y="0" width="48" height="18" rx="3" fill="#1A1816" stroke="#2E2A27" />
+        <text x="11" y="12" font-family="monospace" font-size="8" fill="#ECE7DE">goal</text>
+        <rect x="52" y="0" width="52" height="18" rx="3" fill="#1A1816" stroke="#2E2A27" />
+        <text x="60" y="12" font-family="monospace" font-size="8" fill="#ECE7DE">board</text>
+        <rect x="108" y="0" width="64" height="18" rx="3" fill="#1A1816" stroke="#2E2A27" />
+        <text x="115" y="12" font-family="monospace" font-size="8" fill="#8FB3B0">upscale</text>
+        <rect x="176" y="0" width="124" height="18" rx="3" fill="#191715" />
+        <text x="181" y="12" font-family="monospace" font-size="7.5" fill="#B5AEA3">Lazy load: on-demand</text>
+      </g>
+
+      <rect x="8" y="118" width="300" height="16" rx="2" fill="#191715" />
+      <text x="12" y="130" font-family="Arial, sans-serif" font-size="8.5" fill="#B5AEA3">Rule: Load before action; body bytes cost session context</text>
+    </g>
+
+    <!-- Sub-card 1.3: Live System1 &amp; Guard Hooks -->
+    <g transform="translate(12, 312)">
+      <rect width="316" height="118" rx="6" fill="#121110" stroke="#282421" stroke-width="1" />
+      <text x="10" y="16" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="#E8A33D">Live System1 &amp; Guard Hooks</text>
+      <text x="175" y="16" font-family="monospace" font-size="8.5" fill="#B5AEA3">(Mechanical enforcement)</text>
+
+      <g transform="translate(10, 26)">
+        <text x="0" y="11" font-family="monospace" font-size="8.5" font-weight="bold" fill="#8FB3B0">system1-suggest.py</text>
+        <text x="0" y="23" font-family="Arial, sans-serif" font-size="8" fill="#B5AEA3">Route and prompt upscale suggestions</text>
+
+        <text x="0" y="41" font-family="monospace" font-size="8.5" font-weight="bold" fill="#C4523A">red-first.sh</text>
+        <text x="70" y="41" font-family="monospace" font-size="8" fill="#B5AEA3">|</text>
+        <text x="78" y="41" font-family="monospace" font-size="8.5" font-weight="bold" fill="#C4523A">law-contract.sh</text>
+        <text x="0" y="53" font-family="Arial, sans-serif" font-size="8" fill="#B5AEA3">Guards test RED before implementation edit allowed</text>
+
+        <text x="0" y="71" font-family="monospace" font-size="8.5" font-weight="bold" fill="#E4733A">nmemory-capture-gate.py</text>
+        <text x="135" y="71" font-family="monospace" font-size="8" fill="#B5AEA3">|</text>
+        <text x="143" y="71" font-family="monospace" font-size="8.5" font-weight="bold" fill="#E4733A">final-state.sh</text>
+        <text x="0" y="83" font-family="Arial, sans-serif" font-size="8" fill="#B5AEA3">Enforces durable state line &amp; memory graph sync</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- Connective Arrow: Column 1 to Column 2 -->
+  <g transform="translate(372, 290)">
+    <line x1="0" y1="0" x2="14" y2="0" stroke="#E4733A" stroke-width="2.5" marker-end="url(#arrow-copper)" />
+  </g>
+
+  <!-- ========================================================================================== -->
+  <!-- COLUMN 2: CLOSED-LOOP CHANGE SEQUENCE -->
+  <!-- ========================================================================================== -->
+  <g transform="translate(390, 76)">
+    <!-- Column Outer Card -->
+    <rect width="340" height="442" rx="8" fill="#171513" stroke="#2E2A27" stroke-width="1.2" filter="url(#card-shadow)" />
+    
+    <!-- Column Header -->
+    <rect x="1" y="1" width="338" height="42" rx="7" fill="#1C1A17" />
+    <line x1="1" y1="43" x2="339" y2="43" stroke="#2E2A27" stroke-width="1" />
+    <rect x="14" y="10" width="22" height="22" rx="4" fill="#25211D" stroke="#8FB3B0" stroke-width="1" />
+    <text x="20" y="25" font-family="monospace" font-size="11" font-weight="bold" fill="#8FB3B0">02</text>
+    <text x="44" y="20" font-family="monospace" font-size="9" font-weight="bold" fill="#8FB3B0" letter-spacing="0.5">ORDER OF WORK (2026-09-19)</text>
+    <text x="44" y="33" font-family="Arial, sans-serif" font-size="11" font-weight="bold" fill="#ECE7DE">CLOSED-LOOP CHANGE SEQUENCE</text>
+
+    <!-- Sub-card 2.1: Plan &amp; Review Loop -->
+    <g transform="translate(12, 52)">
+      <rect width="316" height="98" rx="6" fill="#121110" stroke="#282421" stroke-width="1" />
+      <text x="10" y="17" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="#8FB3B0">Plan &amp; Review Loop</text>
+      <text x="116" y="17" font-family="monospace" font-size="8.5" fill="#B5AEA3">(Pre-Execution Gate)</text>
+
+      <!-- Flowchart Boxes -->
+      <g transform="translate(6, 28)">
+        <!-- BRAINSTORM -->
+        <rect x="0" y="0" width="68" height="24" rx="3" fill="#1C1A17" stroke="#2E2A27" />
+        <text x="4" y="15" font-family="monospace" font-size="7.5" font-weight="bold" fill="#ECE7DE">BRAINSTORM</text>
+
+        <!-- Arrow -->
+        <line x1="70" y1="12" x2="80" y2="12" stroke="#8FB3B0" stroke-width="1.5" marker-end="url(#arrow-cyan)" />
+
+        <!-- PLAN -->
+        <rect x="85" y="0" width="48" height="24" rx="3" fill="#201C19" stroke="#E8A33D" />
+        <text x="96" y="15" font-family="monospace" font-size="8" font-weight="bold" fill="#E8A33D">PLAN</text>
+
+        <!-- Bi-directional Loop arrow -->
+        <path d="M 134 7 L 148 7" stroke="#E8A33D" stroke-width="1.5" />
+        <path d="M 148 17 L 134 17" stroke="#E8A33D" stroke-width="1.5" />
+        <text x="137" y="14" font-family="monospace" font-size="8" fill="#E8A33D">⇄</text>
+
+        <!-- PLAN REVIEW -->
+        <rect x="151" y="0" width="76" height="24" rx="3" fill="#201C19" stroke="#E8A33D" />
+        <text x="156" y="15" font-family="monospace" font-size="7.5" font-weight="bold" fill="#E8A33D">PLAN REVIEW</text>
+
+        <!-- Arrow -->
+        <line x1="229" y1="12" x2="239" y2="12" stroke="#8FB3B0" stroke-width="1.5" marker-end="url(#arrow-cyan)" />
+
+        <!-- APPROVAL -->
+        <rect x="244" y="0" width="60" height="24" rx="3" fill="#1A2422" stroke="#8FB3B0" />
+        <text x="249" y="15" font-family="monospace" font-size="7.5" font-weight="bold" fill="#8FB3B0">APPROVAL</text>
+      </g>
+
+      <g transform="translate(10, 68)">
+        <text x="0" y="10" font-family="Arial, sans-serif" font-size="8.5" fill="#ECE7DE">• Loop is the point: review holding is prerequisite to execution</text>
+        <text x="0" y="22" font-family="Arial, sans-serif" font-size="8.5" fill="#B5AEA3">• Owner accepts direction/DoD; NOTT settles technical method</text>
+      </g>
+    </g>
+
+    <!-- Sub-card 2.2: RED-First Execution -->
+    <g transform="translate(12, 158)">
+      <rect width="316" height="142" rx="6" fill="#121110" stroke="#282421" stroke-width="1" />
+      <text x="10" y="17" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="#C4523A">RED-First Execution Pipeline</text>
+      <text x="162" y="17" font-family="monospace" font-size="8.5" fill="#B5AEA3">(Law-enforced sequence)</text>
+
+      <!-- Step 1 &amp; 2 Execution Chain -->
+      <g transform="translate(8, 26)">
+        <!-- Test RED box -->
+        <rect x="0" y="0" width="138" height="34" rx="4" fill="#251614" stroke="#C4523A" stroke-width="1" />
+        <text x="8" y="14" font-family="monospace" font-size="8" font-weight="bold" fill="#C4523A">1. REGRESSION TEST</text>
+        <text x="8" y="27" font-family="Arial, sans-serif" font-size="8" fill="#ECE7DE">Observed RED before edits</text>
+
+        <!-- Arrow -->
+        <line x1="140" y1="17" x2="158" y2="17" stroke="#E4733A" stroke-width="1.5" marker-end="url(#arrow-copper)" />
+
+        <!-- Fix GREEN box -->
+        <rect x="162" y="0" width="138" height="34" rx="4" fill="#172220" stroke="#8FB3B0" stroke-width="1" />
+        <text x="170" y="14" font-family="monospace" font-size="8" font-weight="bold" fill="#8FB3B0">2. IMPLEMENT FIX</text>
+        <text x="170" y="27" font-family="Arial, sans-serif" font-size="8" fill="#ECE7DE">Observed GREEN proof</text>
+      </g>
+
+      <!-- Post-Fix Gates -->
+      <g transform="translate(8, 68)">
+        <text x="2" y="10" font-family="monospace" font-size="8" font-weight="bold" fill="#E8A33D">POST-FIX VALIDATION PIPELINE:</text>
+        
+        <g transform="translate(0, 16)">
+          <rect x="0" y="0" width="94" height="22" rx="3" fill="#1C1A17" stroke="#2E2A27" />
+          <text x="4" y="14" font-family="monospace" font-size="7" font-weight="bold" fill="#ECE7DE">INTENT VALIDATION</text>
+
+          <line x1="96" y1="11" x2="104" y2="11" stroke="#8FB3B0" stroke-width="1.5" marker-end="url(#arrow-cyan)" />
+
+          <rect x="108" y="0" width="88" height="22" rx="3" fill="#1C1A17" stroke="#2E2A27" />
+          <text x="122" y="14" font-family="monospace" font-size="7.5" font-weight="bold" fill="#ECE7DE">QUALITY</text>
+
+          <line x1="198" y1="11" x2="206" y2="11" stroke="#8FB3B0" stroke-width="1.5" marker-end="url(#arrow-cyan)" />
+
+          <rect x="210" y="0" width="90" height="22" rx="3" fill="#1C1A17" stroke="#2E2A27" />
+          <text x="228" y="14" font-family="monospace" font-size="7.5" font-weight="bold" fill="#ECE7DE">CLEANING</text>
+        </g>
+      </g>
+
+      <rect x="8" y="116" width="300" height="18" rx="2" fill="#191715" />
+      <text x="12" y="129" font-family="Arial, sans-serif" font-size="8" fill="#B5AEA3">Cleaning removes obsolete code before gate measures; no leftover debt</text>
+    </g>
+
+    <!-- Sub-card 2.3: Dual-Axis Witness Review -->
+    <g transform="translate(12, 308)">
+      <rect width="316" height="122" rx="6" fill="#121110" stroke="#282421" stroke-width="1" />
+      <text x="10" y="16" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="#E4733A">Dual-Axis Witness Review &amp; Gate</text>
+      <text x="188" y="16" font-family="monospace" font-size="8.5" fill="#B5AEA3">(nSPAWN)</text>
+
+      <!-- 4 Witness reviewer pills -->
+      <g transform="translate(8, 25)">
+        <rect x="0" y="0" width="144" height="20" rx="3" fill="#1C1A17" stroke="#2E2A27" />
+        <circle cx="8" cy="10" r="3" fill="#8FB3B0" />
+        <text x="16" y="13" font-family="monospace" font-size="8" fill="#ECE7DE">python-reviewer</text>
+
+        <rect x="150" y="0" width="150" height="20" rx="3" fill="#1C1A17" stroke="#2E2A27" />
+        <circle cx="158" cy="10" r="3" fill="#E4733A" />
+        <text x="166" y="13" font-family="monospace" font-size="8" fill="#ECE7DE">security-reviewer</text>
+
+        <rect x="0" y="24" width="144" height="20" rx="3" fill="#1C1A17" stroke="#2E2A27" />
+        <circle cx="8" cy="34" r="3" fill="#C4523A" />
+        <text x="16" y="37" font-family="monospace" font-size="8" fill="#ECE7DE">silent-failure-hunter</text>
+
+        <rect x="150" y="24" width="150" height="20" rx="3" fill="#1C1A17" stroke="#2E2A27" />
+        <circle cx="158" cy="34" r="3" fill="#E8A33D" />
+        <text x="166" y="37" font-family="monospace" font-size="8" fill="#ECE7DE">pr-test-analyzer</text>
+      </g>
+
+      <!-- Aggregation Rule -->
+      <g transform="translate(8, 76)">
+        <rect x="0" y="0" width="300" height="38" rx="3" fill="#171513" stroke="#2E2A27" stroke-dasharray="3,2" />
+        <text x="8" y="14" font-family="monospace" font-size="8.5" font-weight="bold" fill="#E8A33D">D18 VERDICT AGGREGATION: 1 &gt; 2 &gt; 3 &gt; 0</text>
+        <text x="8" y="28" font-family="Arial, sans-serif" font-size="8" fill="#B5AEA3">Candidate proof admits integration; installed proof closes delivery.</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- Connective Arrow: Column 2 to Column 3 -->
+  <g transform="translate(734, 290)">
+    <line x1="0" y1="0" x2="14" y2="0" stroke="#8FB3B0" stroke-width="2.5" marker-end="url(#arrow-cyan)" />
+  </g>
+
+  <!-- ========================================================================================== -->
+  <!-- COLUMN 3: NATIVE CLIENT VIEWS &amp; ABLATION SUITE -->
+  <!-- ========================================================================================== -->
+  <g transform="translate(752, 76)">
+    <!-- Column Outer Card -->
+    <rect width="340" height="442" rx="8" fill="#171513" stroke="#2E2A27" stroke-width="1.2" filter="url(#card-shadow)" />
+    
+    <!-- Column Header -->
+    <rect x="1" y="1" width="338" height="42" rx="7" fill="#1C1A17" />
+    <line x1="1" y1="43" x2="339" y2="43" stroke="#2E2A27" stroke-width="1" />
+    <rect x="14" y="10" width="22" height="22" rx="4" fill="#25211D" stroke="#E8A33D" stroke-width="1" />
+    <text x="20" y="25" font-family="monospace" font-size="11" font-weight="bold" fill="#E8A33D">03</text>
+    <text x="44" y="20" font-family="monospace" font-size="9" font-weight="bold" fill="#E8A33D" letter-spacing="0.5">COMPILATION &amp; VALIDATION</text>
+    <text x="44" y="33" font-family="Arial, sans-serif" font-size="11" font-weight="bold" fill="#ECE7DE">NATIVE CLIENT VIEWS &amp; ABLATION</text>
+
+    <!-- Sub-card 3.1: Three Native Client Bundles -->
+    <g transform="translate(12, 52)">
+      <rect width="316" height="102" rx="6" fill="#121110" stroke="#282421" stroke-width="1" />
+      <text x="10" y="17" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="#E8A33D">Three Native Client Bundles</text>
+      
+      <rect x="10" y="26" width="168" height="17" rx="3" fill="#1F1B18" stroke="#38322D" stroke-width="0.8" />
+      <text x="16" y="38" font-family="monospace" font-size="8.5" fill="#E4733A">scripts/plugin.py build</text>
+
+      <!-- 3 Target Bundles -->
+      <g transform="translate(8, 50)">
+        <rect x="0" y="0" width="94" height="24" rx="3" fill="#1C1A17" stroke="#2E2A27" />
+        <text x="8" y="15" font-family="monospace" font-size="8" font-weight="bold" fill="#ECE7DE">Claude Code</text>
+
+        <rect x="102" y="0" width="94" height="24" rx="3" fill="#1C1A17" stroke="#2E2A27" />
+        <text x="126" y="15" font-family="monospace" font-size="8" font-weight="bold" fill="#ECE7DE">Codex</text>
+
+        <rect x="204" y="0" width="96" height="24" rx="3" fill="#1C1A17" stroke="#2E2A27" />
+        <text x="238" y="15" font-family="monospace" font-size="8" font-weight="bold" fill="#8FB3B0">AGY</text>
+      </g>
+
+      <text x="10" y="90" font-family="Arial, sans-serif" font-size="8.5" fill="#B5AEA3">• Compiles SHA-256 verified custom views from canonical canon</text>
+    </g>
+
+    <!-- Sub-card 3.2: With-Without Behavioral Ablation -->
+    <g transform="translate(12, 162)">
+      <rect width="316" height="138" rx="6" fill="#121110" stroke="#282421" stroke-width="1" />
+      <text x="10" y="17" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="#C4523A">With-Without Behavioral Ablation</text>
+
+      <rect x="10" y="26" width="280" height="17" rx="3" fill="#201514" stroke="#3D2420" stroke-width="0.8" />
+      <text x="15" y="38" font-family="monospace" font-size="7.5" fill="#C4523A">claude plugin eval --ablation with-without</text>
+
+      <!-- Comparison visual -->
+      <g transform="translate(10, 50)">
+        <!-- Without Box -->
+        <rect x="0" y="0" width="296" height="28" rx="3" fill="#1F1514" stroke="#C4523A" stroke-width="0.8" />
+        <text x="8" y="13" font-family="monospace" font-size="8" font-weight="bold" fill="#C4523A">WITHOUT PLUGIN: ❌ 100% BEHAVIORAL FAIL</text>
+        <text x="8" y="23" font-family="Arial, sans-serif" font-size="7.5" fill="#B5AEA3">Improvises runners, premature implementation, no test proof</text>
+
+        <!-- With Box -->
+        <rect x="0" y="32" width="296" height="28" rx="3" fill="#141E1C" stroke="#8FB3B0" stroke-width="0.8" />
+        <text x="8" y="45" font-family="monospace" font-size="8" font-weight="bold" fill="#8FB3B0">WITH PLUGIN:    ✓ STRICT COMPLIANCE PASS</text>
+        <text x="8" y="55" font-family="Arial, sans-serif" font-size="7.5" fill="#ECE7DE">Observed RED-first, D18 verdicts, independent reviewers</text>
+      </g>
+
+      <text x="10" y="126" font-family="Arial, sans-serif" font-size="8" fill="#B5AEA3">Strict counterfactual proof: plugin directly causes compliance</text>
+    </g>
+
+    <!-- Sub-card 3.3: Receipt-Bound Install &amp; Rollback -->
+    <g transform="translate(12, 308)">
+      <rect width="316" height="122" rx="6" fill="#121110" stroke="#282421" stroke-width="1" />
+      <text x="10" y="16" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="#8FB3B0">Receipt-Bound Install &amp; Rollback</text>
+
+      <g transform="translate(10, 24)">
+        <rect x="0" y="0" width="140" height="18" rx="3" fill="#1A1816" stroke="#2E2A27" />
+        <text x="6" y="12" font-family="monospace" font-size="8" fill="#8FB3B0">scripts/plugin.py install</text>
+
+        <rect x="150" y="0" width="146" height="18" rx="3" fill="#1A1816" stroke="#2E2A27" />
+        <text x="156" y="12" font-family="monospace" font-size="8" fill="#E8A33D">scripts/plugin.py rollback</text>
+      </g>
+
+      <g transform="translate(10, 52)">
+        <text x="0" y="10" font-family="Arial, sans-serif" font-size="8.5" fill="#ECE7DE">• Preserves unrelated client configs atomically</text>
+        <text x="0" y="23" font-family="Arial, sans-serif" font-size="8.5" fill="#ECE7DE">• Verifies nMEMORY bootstrap receipts before activate</text>
+        <text x="0" y="36" font-family="Arial, sans-serif" font-size="8.5" fill="#ECE7DE">• Zero-footprint rollback restores original byte state</text>
+      </g>
+
+      <rect x="8" y="98" width="300" height="16" rx="2" fill="#191715" />
+      <text x="12" y="110" font-family="monospace" font-size="8" fill="#B5AEA3">Receipt proof: SHA-256 manifest + live readback</text>
+    </g>
+  </g>
+
+  <!-- Bottom Legend / Status Bar -->
+  <g transform="translate(28, 526)">
+    <text x="0" y="6" font-family="monospace" font-size="8" fill="#B5AEA3">SYSTEM PALETTE: </text>
+    <rect x="85" y="-1" width="8" height="8" rx="1" fill="#E4733A" />
+    <text x="96" y="6" font-family="monospace" font-size="8" fill="#B5AEA3">Copper (Contract/Law)</text>
+
+    <rect x="235" y="-1" width="8" height="8" rx="1" fill="#8FB3B0" />
+    <text x="246" y="6" font-family="monospace" font-size="8" fill="#B5AEA3">Cyan (Sequence/Satisfied)</text>
+
+    <rect x="405" y="-1" width="8" height="8" rx="1" fill="#E8A33D" />
+    <text x="416" y="6" font-family="monospace" font-size="8" fill="#B5AEA3">Amber (Routes/Warning)</text>
+
+    <rect x="560" y="-1" width="8" height="8" rx="1" fill="#C4523A" />
+    <text x="571" y="6" font-family="monospace" font-size="8" fill="#B5AEA3">Brick (RED-First/Failure)</text>
+
+    <text x="890" y="6" font-family="monospace" font-size="8" fill="#8FB3B0">VIEWBOX 1120x540 • ZERO DEPENDENCY</text>
+  </g>
+</svg>

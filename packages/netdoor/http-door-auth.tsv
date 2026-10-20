@@ -1,0 +1,25 @@
+# http-door-auth.tsv — the admission table for the HTTP bearer gate (`admit`).
+#
+# THE LAW: every request is refused before ANY byte reaches the handler
+# unless the `Authorization: Bearer <key>` header carries a value that
+# `ApiKey::matches` answers true against the file the door was started with.
+# The 401 lands with `WWW-Authenticate: Bearer` and the handler is NEVER
+# invoked. This table is what `tests/test_conformance_http_door.py` drives
+# through `admit` in front of an ASGI app.
+#
+# Columns, tab-separated:
+#   id        stable case name
+#   header    the request's Authorization header line, verbatim, empty for none
+#   status    the status line the door answers (zero MCP / rmcp bytes in reply)
+#   auth      `yes` if `WWW-Authenticate: Bearer` is in the reply, else `no`
+#   handler   `reached` if the app ran, else `not-reached` (THE assertion:
+#             every refused row is `not-reached`)
+id	header	status	auth	handler
+missing		401	yes	not-reached
+basic-scheme	Basic dXNlcjpwYXNz	401	yes	not-reached
+malformed-bearer	Bearer	401	yes	not-reached
+lowercase-scheme	bearer right-key	401	yes	not-reached
+wrong-key	Bearer clearly-not-the-key	401	yes	not-reached
+empty-value	Bearer 	401	yes	not-reached
+right-key	Bearer conformance-key	200	no	reached
+right-key-get	Bearer conformance-key	200	no	reached

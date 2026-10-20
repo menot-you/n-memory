@@ -1,0 +1,94 @@
+# ~/.nott/spawn.toml — the provider roster nSPAWN dispatches through.
+#
+# Seeded by install.sh only when the file is absent; it never overwrites one.
+# The loader is mcps/nspawn/nspawn/owner_roster.py; `NOTT_NSPAWN_ROSTER`
+# names a different file when you want one.
+#
+# No credential is written here. A provider points at a secrets directory and
+# nSPAWN reads the account files it finds there; if the directory is empty the
+# provider simply has no accounts, which is a state it reports rather than
+# guesses around.
+
+[defaults]
+model = "opus"
+effort = "high"
+# Prepended to every provider's own args. $PLUGIN expands to the plugin root.
+args = [
+  "--plugin-dir", "$PLUGIN",
+  "--append-system-prompt-file", "$PLUGIN/NOTT.md",
+]
+
+[bins]
+# Absolute path to each client. `command -v claude` tells you yours.
+claude = "/usr/local/bin/claude"
+
+[[provider]]
+name = "claude"
+kind = "claude"
+# The picker never selects these accounts, including explicit requests.
+excluded_accounts = []
+# One file per account in here. Nothing is created for you.
+secrets = "~/.nott/secrets/claude"
+models = ["opus", "sonnet", "haiku"]
+# Family aliases: Claude Code resolves each to its current model, so a release
+# needs no edit here. The fast lane: what a `fast` class below runs on.
+model_fast = "haiku"
+efforts = ["low", "medium", "high", "xhigh", "max"]
+default = true
+
+# Optional Claude account directory. HOME stays unchanged.
+# [provider.accounts.work]
+# home = "~/.claude-work" # CLAUDE_CONFIG_DIR for unconfined runs and non-SDK routes.
+# Accounts without home retain the inherited Claude configuration directory.
+# Caged runs and SDK nodes retain their private configuration directories.
+
+# Optional, host-specific: Qwen on Colab G4 VMs, through the colab-llm@N
+# proxies. The first request wakes a VM and an idle hour stops it.
+# `named_only`: only a caller that names "colab" gets it. `fill_first`: the
+# second VM wakes only when the first has all 4 slots in use. `quota_source`
+# shows the compute units and their age in `nspawn quota show colab`, as
+# stored by the nspawn-quota-record timer.
+# [[provider]]
+# name = "colab"
+# kind = "claude"
+# model = "qwen3.8-flash-next"
+# named_only = true
+# fill_first = true
+# quota_source = "colab"
+#
+# [provider.env]
+# CLAUDE_CODE_ATTRIBUTION_HEADER = "0"
+# ENABLE_TOOL_SEARCH = "false"
+#
+# [provider.accounts.colab-1]
+# base_url = "http://127.0.0.1:18090"
+# capacity = 4
+# bootstrap = ["systemctl", "--user", "start", "colab-llm@1"]
+#
+# [provider.accounts.colab-2]
+# base_url = "http://127.0.0.1:18092"
+# capacity = 4
+# bootstrap = ["systemctl", "--user", "start", "colab-llm@2"]
+
+# How much each kind of work buys (mcps/nspawn/nspawn/owner_roster.py,
+# ClassPolicy). Off by default: a declared table makes every classed dispatch
+# ask the `[system1]` classifier and caps each class's effort, so declare every
+# class you dispatch. The method is the strong model plus the fast one:
+# experiments, probes and sweeps that have an oracle are dispatched as
+# `mechanical_fanout`, and `fast = true` runs them on each route's `model_fast`.
+# A table that declares any class must declare `unclassified`, the fail-closed floor.
+# [classes]
+# unclassified      = { effort = "low", ceiling = "medium" }
+# mechanical_fanout = { effort = "low", ceiling = "medium", fast = true }
+# deterministic     = { effort = "low", ceiling = "low", fast = true }
+
+# The classifier those classes ask takes its route from ~/.nott/.env
+# (NOTT_SYSTEM1_* and NOTT_SYSTEM1_EXECUTION_CLASS_*; see templates/nott/env).
+# This table keeps the rest. The key is never here.
+# [system1]
+# timeout_seconds = 120.0
+
+# The body's door, which admits writable dispatches. There is no default:
+# with neither this nor NOTT_DOOR_SOCKET, a writer is refused (DoorNotConfigured).
+# [body]
+

@@ -1,0 +1,182 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 520" role="img" aria-labelledby="title desc">
+  <title id="title">nMEMORY: Dual-Lane Retrieval and Honest Outcomes</title>
+  <desc id="desc">Architectural flow diagram showing nMEMORY ingestion with audit trail, SQLite dual-lane indexing, RRF ranking with margin gates, and three deterministic honest outcomes.</desc>
+
+  <defs>
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0F0E0D"/>
+      <stop offset="100%" stop-color="#141210"/>
+    </linearGradient>
+
+    <marker id="arrow-copper" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 1 2 L 7 5 L 1 8 z" fill="#E4733A"/>
+    </marker>
+
+    <marker id="arrow-cyan" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 1 2 L 7 5 L 1 8 z" fill="#8FB3B0"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1120" height="520" fill="url(#bg-grad)"/>
+
+  <!-- Top Header -->
+  <text x="32" y="38" font-family="Arial, sans-serif" font-size="19" font-weight="bold" fill="#ECE7DE" letter-spacing="0.5">nMEMORY: Dual-Lane Retrieval and Honest Outcomes</text>
+  <text x="32" y="58" font-family="Arial, sans-serif" font-size="12" fill="#B5AEA3">Tamper-Evident Provenance, Hybrid FTS5 &amp; Vector Indexing, and Calibration Gates</text>
+
+  <!-- Status / Architecture Tag -->
+  <rect x="948" y="24" width="140" height="24" rx="4" fill="#171513" stroke="#2E2A27"/>
+  <circle cx="962" cy="36" r="4" fill="#8FB3B0"/>
+  <text x="974" y="40" font-family="'SF Mono', Menlo, Consolas, monospace" font-size="10.5" fill="#8FB3B0" letter-spacing="0.5">DETERMINISTIC</text>
+
+  <!-- ==================== COLUMN 1: INGEST & AUDIT ==================== -->
+  <rect x="32" y="78" width="244" height="416" rx="8" fill="#141210" stroke="#2E2A27"/>
+  <rect x="32" y="78" width="244" height="38" rx="8" fill="#171513" stroke="#2E2A27"/>
+  <rect x="44" y="91" width="18" height="13" rx="3" fill="#E4733A"/>
+  <text x="53" y="101" font-family="Arial, sans-serif" font-size="9" font-weight="bold" fill="#0F0E0D" text-anchor="middle">1</text>
+  <text x="70" y="102" font-family="Arial, sans-serif" font-size="12.5" font-weight="bold" fill="#ECE7DE" letter-spacing="0.4">INGEST &amp; AUDIT</text>
+
+  <!-- Card 1.1: Provenance -->
+  <rect x="42" y="126" width="224" height="106" rx="6" fill="#171513" stroke="#2E2A27"/>
+  <text x="54" y="146" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#ECE7DE">Mandatory Provenance</text>
+  <rect x="54" y="156" width="200" height="22" rx="4" fill="#0F0E0D" stroke="#2E2A27"/>
+  <text x="60" y="171" font-family="'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="#8FB3B0">source + anchor + kind</text>
+  <text x="54" y="196" font-family="Arial, sans-serif" font-size="10.5" fill="#B5AEA3">No orphan capsules. Every record</text>
+  <text x="54" y="211" font-family="Arial, sans-serif" font-size="10.5" fill="#B5AEA3">binds to an immutable source origin.</text>
+
+  <!-- Card 1.2: Audit Journal -->
+  <rect x="42" y="242" width="224" height="106" rx="6" fill="#171513" stroke="#2E2A27"/>
+  <text x="54" y="262" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#ECE7DE">SHA-256 Audit Journal</text>
+  <rect x="54" y="272" width="200" height="22" rx="4" fill="#0F0E0D" stroke="#2E2A27"/>
+  <text x="60" y="287" font-family="'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="#E4733A">sha256(prev_hash + entry)</text>
+  <text x="54" y="312" font-family="Arial, sans-serif" font-size="10.5" fill="#B5AEA3">Hash-chained append journal</text>
+  <text x="54" y="327" font-family="Arial, sans-serif" font-size="10.5" fill="#B5AEA3">guarantees verifiable sequence.</text>
+
+  <!-- Card 1.3: Supersession Edge -->
+  <rect x="42" y="358" width="224" height="122" rx="6" fill="#171513" stroke="#2E2A27"/>
+  <text x="54" y="378" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#ECE7DE">Supersession Edge</text>
+  <rect x="54" y="388" width="200" height="22" rx="4" fill="#0F0E0D" stroke="#2E2A27"/>
+  <text x="60" y="403" font-family="'SF Mono', Menlo, Consolas, monospace" font-size="9.5" fill="#C4523A">capsule_new &#x2192; supersedes</text>
+  <text x="54" y="428" font-family="Arial, sans-serif" font-size="10.5" fill="#B5AEA3">New decisions obsolete prior nodes</text>
+  <text x="54" y="443" font-family="Arial, sans-serif" font-size="10.5" fill="#B5AEA3">atomically. Stale choices cannot</text>
+  <text x="54" y="458" font-family="Arial, sans-serif" font-size="10.5" fill="#B5AEA3">be resurrected by rank drift.</text>
+
+  <!-- Connector: 1 -> 2 -->
+  <path d="M 276 179 L 298 179" stroke="#8FB3B0" stroke-width="1.8" stroke-dasharray="3,2" marker-end="url(#arrow-cyan)"/>
+  <path d="M 276 295 L 298 295" stroke="#E4733A" stroke-width="1.8" marker-end="url(#arrow-copper)"/>
+  <path d="M 276 419 L 298 419" stroke="#E4733A" stroke-width="1.8" marker-end="url(#arrow-copper)"/>
+
+  <!-- ==================== COLUMN 2: DUAL-LANE INDEX (SQLite) ==================== -->
+  <rect x="304" y="78" width="244" height="416" rx="8" fill="#141210" stroke="#2E2A27"/>
+  <rect x="304" y="78" width="244" height="38" rx="8" fill="#171513" stroke="#2E2A27"/>
+  <rect x="316" y="91" width="18" height="13" rx="3" fill="#E4733A"/>
+  <text x="325" y="101" font-family="Arial, sans-serif" font-size="9" font-weight="bold" fill="#0F0E0D" text-anchor="middle">2</text>
+  <text x="342" y="102" font-family="Arial, sans-serif" font-size="12.5" font-weight="bold" fill="#ECE7DE" letter-spacing="0.4">DUAL-LANE INDEX (SQLite)</text>
+
+  <!-- Card 2.1: Lexical Lane -->
+  <rect x="314" y="126" width="224" height="106" rx="6" fill="#171513" stroke="#2E2A27"/>
+  <text x="326" y="146" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#ECE7DE">Lexical Lane (FTS5)</text>
+  <rect x="326" y="156" width="200" height="22" rx="4" fill="#0F0E0D" stroke="#2E2A27"/>
+  <text x="332" y="171" font-family="'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="#8FB3B0">FTS5 BM25 match syntax</text>
+  <text x="326" y="196" font-family="Arial, sans-serif" font-size="10.5" fill="#B5AEA3">Exact tokens, code identifiers,</text>
+  <text x="326" y="211" font-family="Arial, sans-serif" font-size="10.5" fill="#B5AEA3">and curated domain synonyms.</text>
+
+  <!-- Card 2.2: Semantic Lane -->
+  <rect x="314" y="242" width="224" height="106" rx="6" fill="#171513" stroke="#2E2A27"/>
+  <text x="326" y="262" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#ECE7DE">Semantic Lane (sqlite-vec)</text>
+  <rect x="326" y="272" width="200" height="22" rx="4" fill="#0F0E0D" stroke="#2E2A27"/>
+  <text x="332" y="287" font-family="'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="#8FB3B0">vec_distance_cosine()</text>
+  <text x="326" y="312" font-family="Arial, sans-serif" font-size="10.5" fill="#B5AEA3">Dense semantic similarity space</text>
+  <text x="326" y="327" font-family="Arial, sans-serif" font-size="10.5" fill="#B5AEA3">capturing paraphrase &amp; intent.</text>
+
+  <!-- Card 2.3: Scope Fences -->
+  <rect x="314" y="358" width="224" height="122" rx="6" fill="#171513" stroke="#2E2A27"/>
+  <text x="326" y="378" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#ECE7DE">Scope Isolation Fences</text>
+  <rect x="326" y="388" width="200" height="42" rx="4" fill="#0F0E0D" stroke="#2E2A27"/>
+  <text x="332" y="402" font-family="'SF Mono', Menlo, Consolas, monospace" font-size="9" fill="#E4733A">WHERE project_id  = :pid</text>
+  <text x="332" y="414" font-family="'SF Mono', Menlo, Consolas, monospace" font-size="9" fill="#E4733A">  AND session_id  = :sid</text>
+  <text x="332" y="426" font-family="'SF Mono', Menlo, Consolas, monospace" font-size="9" fill="#E4733A">  AND time_window &lt;= :max_t</text>
+  <text x="326" y="449" font-family="Arial, sans-serif" font-size="10.5" fill="#B5AEA3">Pre-filtering blocks cross-project</text>
+  <text x="326" y="464" font-family="Arial, sans-serif" font-size="10.5" fill="#B5AEA3">and stale session contamination.</text>
+
+  <!-- Connector: 2 -> 3 -->
+  <path d="M 548 179 L 570 179" stroke="#8FB3B0" stroke-width="1.8" marker-end="url(#arrow-cyan)"/>
+  <path d="M 548 295 L 570 295" stroke="#8FB3B0" stroke-width="1.8" marker-end="url(#arrow-cyan)"/>
+  <path d="M 548 419 L 570 419" stroke="#E4733A" stroke-width="1.8" marker-end="url(#arrow-copper)"/>
+
+  <!-- ==================== COLUMN 3: RRF RANKING & GATES ==================== -->
+  <rect x="576" y="78" width="244" height="416" rx="8" fill="#141210" stroke="#2E2A27"/>
+  <rect x="576" y="78" width="244" height="38" rx="8" fill="#171513" stroke="#2E2A27"/>
+  <rect x="588" y="91" width="18" height="13" rx="3" fill="#E4733A"/>
+  <text x="597" y="101" font-family="Arial, sans-serif" font-size="9" font-weight="bold" fill="#0F0E0D" text-anchor="middle">3</text>
+  <text x="614" y="102" font-family="Arial, sans-serif" font-size="12.5" font-weight="bold" fill="#ECE7DE" letter-spacing="0.4">RRF RANKING &amp; GATES</text>
+
+  <!-- Card 3.1: RRF & Decay -->
+  <rect x="586" y="126" width="224" height="106" rx="6" fill="#171513" stroke="#2E2A27"/>
+  <text x="598" y="146" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#ECE7DE">Hybrid Fusion &amp; Decay</text>
+  <rect x="598" y="156" width="200" height="22" rx="4" fill="#0F0E0D" stroke="#2E2A27"/>
+  <text x="604" y="171" font-family="'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="#ECE7DE">RRF(k=60) * decay(dt)</text>
+  <text x="598" y="196" font-family="Arial, sans-serif" font-size="10.5" fill="#B5AEA3">Combines lexical &amp; vector ranks.</text>
+  <text x="598" y="211" font-family="Arial, sans-serif" font-size="10.5" fill="#B5AEA3">Freshness discount penalizes age.</text>
+
+  <!-- Card 3.2: Cosine Margin Gate -->
+  <rect x="586" y="242" width="224" height="106" rx="6" fill="#171513" stroke="#2E2A27"/>
+  <text x="598" y="262" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#ECE7DE">Cosine Margin Gate</text>
+  <rect x="598" y="272" width="200" height="22" rx="4" fill="#0F0E0D" stroke="#2E2A27"/>
+  <text x="604" y="287" font-family="'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="#E8A33D">margin &gt; 0.083 threshold</text>
+  <text x="598" y="312" font-family="Arial, sans-serif" font-size="10.5" fill="#B5AEA3">Enforces separation from noise.</text>
+  <text x="598" y="327" font-family="Arial, sans-serif" font-size="10.5" fill="#B5AEA3">Rejects ambiguous low-margin hits.</text>
+
+  <!-- Card 3.3: Lifecycle Fences -->
+  <rect x="586" y="358" width="224" height="122" rx="6" fill="#171513" stroke="#2E2A27"/>
+  <text x="598" y="378" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#ECE7DE">Lifecycle Fences</text>
+  <g transform="translate(598, 388)">
+    <rect x="0" y="0" width="58" height="20" rx="3" fill="#0F0E0D" stroke="#C4523A"/>
+    <text x="29" y="14" font-family="'SF Mono', Menlo, Consolas, monospace" font-size="8.5" fill="#C4523A" text-anchor="middle">staged</text>
+    <rect x="66" y="0" width="58" height="20" rx="3" fill="#0F0E0D" stroke="#E8A33D"/>
+    <text x="95" y="14" font-family="'SF Mono', Menlo, Consolas, monospace" font-size="8.5" fill="#E8A33D" text-anchor="middle">lapsed</text>
+    <rect x="132" y="0" width="58" height="20" rx="3" fill="#0F0E0D" stroke="#B5AEA3"/>
+    <text x="161" y="14" font-family="'SF Mono', Menlo, Consolas, monospace" font-size="8.5" fill="#B5AEA3" text-anchor="middle">unread</text>
+  </g>
+  <text x="598" y="428" font-family="Arial, sans-serif" font-size="10.5" fill="#B5AEA3">Uncommitted, expired, or unread</text>
+  <text x="598" y="443" font-family="Arial, sans-serif" font-size="10.5" fill="#B5AEA3">capsules are filtered before delivery</text>
+  <text x="598" y="458" font-family="Arial, sans-serif" font-size="10.5" fill="#B5AEA3">to prevent speculative execution.</text>
+
+  <!-- Connector: 3 -> 4 -->
+  <path d="M 820 179 L 842 179" stroke="#8FB3B0" stroke-width="1.8" marker-end="url(#arrow-cyan)"/>
+  <path d="M 820 295 L 842 295" stroke="#E8A33D" stroke-width="1.8" marker-end="url(#arrow-copper)"/>
+  <path d="M 820 419 L 842 419" stroke="#B5AEA3" stroke-width="1.8" stroke-dasharray="3,2" marker-end="url(#arrow-copper)"/>
+
+  <!-- ==================== COLUMN 4: THREE HONEST OUTCOMES ==================== -->
+  <rect x="848" y="78" width="244" height="416" rx="8" fill="#141210" stroke="#2E2A27"/>
+  <rect x="848" y="78" width="244" height="38" rx="8" fill="#171513" stroke="#2E2A27"/>
+  <rect x="860" y="91" width="18" height="13" rx="3" fill="#8FB3B0"/>
+  <text x="869" y="101" font-family="Arial, sans-serif" font-size="9" font-weight="bold" fill="#0F0E0D" text-anchor="middle">4</text>
+  <text x="886" y="102" font-family="Arial, sans-serif" font-size="12.5" font-weight="bold" fill="#ECE7DE" letter-spacing="0.4">THREE HONEST OUTCOMES</text>
+
+  <!-- Outcome 1: Grounded -->
+  <rect x="858" y="126" width="224" height="106" rx="6" fill="#171513" stroke="#8FB3B0" stroke-width="1.2"/>
+  <rect x="870" y="138" width="84" height="18" rx="3" fill="#8FB3B0"/>
+  <text x="912" y="151" font-family="Arial, sans-serif" font-size="9" font-weight="bold" fill="#0F0E0D" text-anchor="middle">GROUNDED</text>
+  <text x="870" y="174" font-family="'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="#8FB3B0">capsules + provenance</text>
+  <text x="870" y="196" font-family="Arial, sans-serif" font-size="10.5" fill="#ECE7DE">Verified factual recall.</text>
+  <text x="870" y="211" font-family="Arial, sans-serif" font-size="10.5" fill="#B5AEA3">Delivered with anchor &amp; audit proof.</text>
+
+  <!-- Outcome 2: Missing Evidence -->
+  <rect x="858" y="242" width="224" height="106" rx="6" fill="#171513" stroke="#E8A33D" stroke-width="1.2"/>
+  <rect x="870" y="254" width="124" height="18" rx="3" fill="#E8A33D"/>
+  <text x="932" y="267" font-family="Arial, sans-serif" font-size="9" font-weight="bold" fill="#0F0E0D" text-anchor="middle">MISSING EVIDENCE</text>
+  <text x="870" y="290" font-family="'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="#E8A33D">matched but fenced</text>
+  <text x="870" y="312" font-family="Arial, sans-serif" font-size="10.5" fill="#ECE7DE">Excluded by margin or fence.</text>
+  <text x="870" y="327" font-family="Arial, sans-serif" font-size="10.5" fill="#B5AEA3">Reports why evidence was withheld.</text>
+
+  <!-- Outcome 3: Abstain -->
+  <rect x="858" y="358" width="224" height="122" rx="6" fill="#171513" stroke="#B5AEA3" stroke-width="1.2"/>
+  <rect x="870" y="370" width="70" height="18" rx="3" fill="#B5AEA3"/>
+  <text x="905" y="383" font-family="Arial, sans-serif" font-size="9" font-weight="bold" fill="#0F0E0D" text-anchor="middle">ABSTAIN</text>
+  <text x="870" y="406" font-family="'SF Mono', Menlo, Consolas, monospace" font-size="10" fill="#B5AEA3">zero matches found</text>
+  <text x="870" y="428" font-family="Arial, sans-serif" font-size="10.5" fill="#ECE7DE">Deterministic silence.</text>
+  <text x="870" y="443" font-family="Arial, sans-serif" font-size="10.5" fill="#B5AEA3">Never fabricates or hallucinates</text>
+  <text x="870" y="458" font-family="Arial, sans-serif" font-size="10.5" fill="#B5AEA3">when valid evidence is absent.</text>
+
+</svg>

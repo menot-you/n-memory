@@ -1,0 +1,4 @@
+{"dir": "out", "frame": {"jsonrpc": "2.0", "id": 3, "method": "session/prompt", "params": {"sessionId": "01a13327-bcb7-7053-80b7-4d9b5c87aeb0", "prompt": [{"type": "text", "text": "Say hello."}]}}}
+{"dir": "in", "frame": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "01a13327-bcb7-7053-80b7-4d9b5c87aeb0", "update": {"sessionUpdate": "session_info_update", "_meta": {"codex": {"threadStatus": {"type": "active", "activeFlags": []}}}}}}}
+{"dir": "in", "frame": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "01a13327-bcb7-7053-80b7-4d9b5c87aeb0", "update": {"sessionUpdate": "session_info_update", "_meta": {"codex": {"threadStatus": {"type": "systemError"}}}}}}}
+{"dir": "in", "frame": {"jsonrpc": "2.0", "id": 3, "error": {"code": -32000, "message": "Authentication required"}}}

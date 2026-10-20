@@ -1,0 +1,119 @@
+{
+  "version": "0.153.4",
+  "binary_path": "<OWNER_HOME>/.codex-main/packages/standalone/releases/0.153.4-x86_64-unknown-linux-musl/bin/codex",
+  "binary_sha256": "56ef98ab4032d317ab26e9b5e5a175650717351edb16ed9cde0cb6d1734d62da",
+  "schema_sha256": "e8284c5cb8157554a3dd1e035aadbd4325aea501af56887e9c2e12eb1b9b9448",
+  "schema_file": "codex_app_server_protocol.schemas.json",
+  "schema_command": [
+    "codex",
+    "app-server",
+    "generate-json-schema",
+    "--out",
+    "<SCHEMA_DIR>"
+  ],
+  "fixture_sha256": "695fa2a524ee24535fef74a23652228ac2a82d6915e5d547f5c0e07e961c7943",
+  "command": [
+    "<OWNER_HOME>/.codex-main/packages/standalone/releases/0.153.4-x86_64-unknown-linux-musl/bin/codex",
+    "-c",
+    "cli_auth_credentials_store=\"file\"",
+    "app-server",
+    "--listen",
+    "stdio://"
+  ],
+  "model": "gpt-5.6-luna",
+  "effort": "low",
+  "read_only": true,
+  "credentials": "Existing owner account auth.json through read_owner_credential; SecretNeedles before any raw protocol persistence; no credential copies",
+  "accounts": [
+    "<OWNER_HOME>/.codex-main",
+    "<OWNER_HOME>/.codex-me"
+  ],
+  "shared_sqlite_home": "<OWNER_HOME>/.codex",
+  "sanitizer": "SecretNeedles redacts decoded values; deterministic UUID/item-id/home/cwd masks; only RPC responses, outbound requests, agentMessage completions, usage and terminal notifications retained; reasoning content omitted",
+  "outcomes": [
+    {
+      "account": "account-1",
+      "stage": "start",
+      "status": "completed",
+      "text": "PONG",
+      "expected": "PONG",
+      "matched": true,
+      "thread_id": "<ID-1>",
+      "same_thread": true,
+      "turn_id": "<ID-2>",
+      "usage": {
+        "totalTokens": 26461,
+        "inputTokens": 26438,
+        "outputTokens": 23,
+        "cachedInputTokens": 9984,
+        "reasoningOutputTokens": 15
+      },
+      "process_exit": 0,
+      "terminated_by_driver": false,
+      "elapsed_seconds": 6.703
+    },
+    {
+      "account": "account-1",
+      "stage": "resume",
+      "status": "completed",
+      "text": "NATIVE-ACCOUNT-1-MAPLE",
+      "expected": "NATIVE-ACCOUNT-1-MAPLE",
+      "matched": true,
+      "thread_id": "<ID-1>",
+      "same_thread": true,
+      "turn_id": "<ID-6>",
+      "usage": {
+        "totalTokens": 27911,
+        "inputTokens": 27898,
+        "outputTokens": 13,
+        "cachedInputTokens": 25344,
+        "reasoningOutputTokens": 0
+      },
+      "process_exit": 0,
+      "terminated_by_driver": false,
+      "elapsed_seconds": 4.544
+    },
+    {
+      "account": "account-2",
+      "stage": "start",
+      "status": "completed",
+      "text": "PONG",
+      "expected": "PONG",
+      "matched": true,
+      "thread_id": "<ID-8>",
+      "same_thread": true,
+      "turn_id": "<ID-9>",
+      "usage": {
+        "totalTokens": 26325,
+        "inputTokens": 26289,
+        "outputTokens": 36,
+        "cachedInputTokens": 21248,
+        "reasoningOutputTokens": 28
+      },
+      "process_exit": 0,
+      "terminated_by_driver": false,
+      "elapsed_seconds": 4.314
+    },
+    {
+      "account": "account-2",
+      "stage": "resume",
+      "status": "completed",
+      "text": "NATIVE-ACCOUNT-2-MAPLE",
+      "expected": "NATIVE-ACCOUNT-2-MAPLE",
+      "matched": true,
+      "thread_id": "<ID-8>",
+      "same_thread": true,
+      "turn_id": "<ID-13>",
+      "usage": {
+        "totalTokens": 27775,
+        "inputTokens": 27762,
+        "outputTokens": 13,
+        "cachedInputTokens": 25344,
+        "reasoningOutputTokens": 0
+      },
+      "process_exit": 0,
+      "terminated_by_driver": false,
+      "elapsed_seconds": 4.522
+    }
+  ]
+}

@@ -1,0 +1,177 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 440" role="img" aria-labelledby="title desc">
+  <title id="title">nSPAWN - Multi-Provider Native Agent Supervisor Hero Banner</title>
+  <desc id="desc">Hero banner for nSPAWN illustrating three lifecycle stages: Admit, Supervise, and Recover with native vendor clients, ProcessIdentity custody, and credential-redacted transcripts.</desc>
+
+  <defs>
+    <!-- Card and subtle surface gradients -->
+    <linearGradient id="cardGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#1B1815" />
+      <stop offset="100%" stop-color="#141210" />
+    </linearGradient>
+    <linearGradient id="accentBar" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#E4733A" />
+      <stop offset="50%" stop-color="#8FB3B0" />
+      <stop offset="100%" stop-color="#E8A33D" />
+    </linearGradient>
+  </defs>
+
+  <style>
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .sans { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  </style>
+
+  <!-- Background Canvas (rx="8") -->
+  <rect width="1120" height="440" rx="8" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1"/>
+<svg x="1005" y="28" width="65" height="84" viewBox="101 62 309 387"><path fill="#E4733A" fill-rule="evenodd" d="M180 447C182 445 184 441 188 422C191 409 194 398 196 394C199 387 199 387 199 376C198 366 199 358 204 322C207 299 209 278 209 276C209 270 205 260 202 257C198 254 200 253 205 255C216 261 225 321 225 392C225 414 225 429 224 432C223 438 219 443 216 443C215 443 210 448 210 449C210 450 213 450 217 450L224 450L226 446C229 442 229 441 230 427C231 419 232 409 233 405C234 398 234 396 233 385C231 374 231 366 232 324C233 277 233 276 231 270C230 267 229 262 229 260L228 255L236 253C240 251 249 247 257 243C277 232 289 230 295 238C299 243 299 247 296 260C291 278 291 281 304 314C320 355 320 358 305 413C299 435 297 440 292 441C289 442 284 447 284 449C284 450 286 450 291 450C302 450 302 449 309 422C315 399 324 369 328 362C331 356 331 353 326 344C319 329 315 302 319 288C321 278 321 278 325 286C327 289 336 301 344 312C372 347 377 359 383 403C387 434 387 440 379 443C377 444 374 445 373 447L372 450L379 450C388 450 389 449 391 444C393 440 393 438 390 413C389 399 388 380 387 370L387 352L382 348C365 330 349 291 350 271C351 266 351 261 352 261C353 259 356 239 356 235C355 229 356 230 358 236C359 241 359 246 358 263C357 285 358 290 360 282L361 278L362 282C362 285 363 291 363 295C363 302 363 302 365 301C368 301 368 301 368 307C370 316 376 330 376 323C376 319 378 321 380 327C382 331 383 333 384 333C384 332 387 334 389 337C392 342 394 343 393 340C392 338 395 339 398 343C403 348 405 352 405 356L405 360L407 356C409 353 410 341 408 336C407 334 407 334 409 336C412 339 412 337 408 326C406 321 404 315 403 312C402 308 402 305 401 304C401 301 403 302 405 304C408 307 408 306 403 286C394 253 384 236 359 211C350 202 349 201 352 201C354 201 354 201 351 198C341 190 316 187 295 192C277 195 264 195 254 191C247 188 227 173 218 163C217 162 218 162 221 163C228 164 229 164 203 144C202 143 204 143 207 144C209 145 210 145 211 145C212 143 201 134 194 130L188 127L192 126L195 126L191 123C188 122 185 118 183 116C180 114 177 112 175 111C172 111 172 110 175 104C179 96 175 82 165 69C159 61 159 61 156 65C153 69 151 76 150 91C150 108 149 110 146 95C145 89 144 88 136 79C131 73 127 69 126 69C126 69 127 73 127 76C128 82 129 85 133 92C140 106 140 107 134 115C130 119 128 122 127 125C127 130 122 135 110 144L101 151L104 154C109 157 110 157 125 151C132 148 139 146 141 146C148 146 157 158 159 170C159 176 161 177 162 174C163 169 165 173 165 184C167 209 168 212 169 204C170 198 172 199 173 206C174 210 175 214 179 219C182 225 183 227 183 231C183 236 184 239 188 248C195 263 195 262 195 297C195 357 186 421 177 436C175 440 172 442 169 444C161 447 162 450 171 450C177 450 178 450 180 447Z"/></svg>
+
+  <!-- Subtle Top Decorative Grid Lines (excluding brand mark area x=990..1080, y=20..120) -->
+  <line x1="40" y1="16" x2="960" y2="16" stroke="#1E1C1A" stroke-width="1"/>
+  <line x1="40" y1="165" x2="1080" y2="165" stroke="#1E1C1A" stroke-width="1"/>
+  <line x1="40" y1="385" x2="1080" y2="385" stroke="#1E1C1A" stroke-width="1"/>
+
+  <!-- Eyebrow -->
+  <g transform="translate(40, 40)">
+    <rect x="0" y="-11" width="8" height="8" rx="2" fill="#E4733A"/>
+    <text x="18" y="-3" class="mono" font-size="11" font-weight="700" letter-spacing="0.12em" fill="#E4733A">nSPAWN / MULTI-PROVIDER NATIVE AGENT SUPERVISOR</text>
+  </g>
+
+  <!-- Headline -->
+  <text x="40" y="86" class="sans" font-size="32" font-weight="700" fill="#ECE7DE" letter-spacing="-0.02em">Start a session. Read its result.</text>
+
+  <!-- Pill Badges -->
+  <g transform="translate(40, 114)">
+    <!-- Pill 1: Claude Code · Codex · AGY -->
+    <rect x="0" y="0" width="188" height="26" rx="13" fill="#171513" stroke="#2E2A27" stroke-width="1"/>
+    <circle cx="14" cy="13" r="3.5" fill="#E4733A"/>
+    <text x="26" y="17" class="mono" font-size="11" font-weight="500" fill="#ECE7DE">Claude Code · Codex · AGY</text>
+
+    <!-- Pill 2: Caged Read-Only &amp; One-Writer -->
+    <rect x="196" y="0" width="222" height="26" rx="13" fill="#171513" stroke="#2E2A27" stroke-width="1"/>
+    <circle cx="210" cy="13" r="3.5" fill="#8FB3B0"/>
+    <text x="222" y="17" class="mono" font-size="11" font-weight="500" fill="#ECE7DE">Caged Read-Only &amp; One-Writer</text>
+
+    <!-- Pill 3: Quota Failover -->
+    <rect x="426" y="0" width="124" height="26" rx="13" fill="#171513" stroke="#2E2A27" stroke-width="1"/>
+    <circle cx="440" cy="13" r="3.5" fill="#E8A33D"/>
+    <text x="452" y="17" class="mono" font-size="11" font-weight="500" fill="#ECE7DE">Quota Failover</text>
+
+    <!-- Pill 4: AGPL-3.0 -->
+    <rect x="558" y="0" width="86" height="26" rx="13" fill="#171513" stroke="#2E2A27" stroke-width="1"/>
+    <circle cx="572" cy="13" r="3.5" fill="#B5AEA3"/>
+    <text x="584" y="17" class="mono" font-size="11" font-weight="500" fill="#ECE7DE">AGPL-3.0</text>
+  </g>
+
+  <!-- ==================== THREE RICH INTERACTIVE CARDS ==================== -->
+
+  <!-- CARD 01 / ADMIT (x=40..356, y=175..365) -->
+  <g id="card-admit" transform="translate(40, 175)">
+    <!-- Card Container -->
+    <rect width="316" height="190" rx="8" fill="url(#cardGrad)" stroke="#2E2A27" stroke-width="1"/>
+    <rect width="316" height="3" rx="1" fill="#E4733A"/>
+
+    <!-- Header -->
+    <text x="16" y="27" class="mono" font-size="11" font-weight="700" fill="#E4733A">01</text>
+    <text x="36" y="27" class="sans" font-size="13" font-weight="700" letter-spacing="0.04em" fill="#ECE7DE">ADMIT</text>
+    <rect x="230" y="13" width="70" height="18" rx="4" fill="#241914" stroke="#422417" stroke-width="1"/>
+    <text x="265" y="25" class="mono" font-size="9" font-weight="600" text-anchor="middle" fill="#E4733A">INGESTION</text>
+
+    <line x1="16" y1="40" x2="300" y2="40" stroke="#221F1C" stroke-width="1"/>
+
+    <!-- Entrypoints Row -->
+    <rect x="16" y="49" width="284" height="26" rx="4" fill="#11100E" stroke="#25211E" stroke-width="1"/>
+    <text x="26" y="66" class="mono" font-size="10.5" font-weight="600" fill="#8FB3B0">run_start <tspan fill="#4A443E">|</tspan> review_start</text>
+
+    <!-- Class Routing Row -->
+    <rect x="16" y="81" width="284" height="28" rx="4" fill="#151311" stroke="#221F1C" stroke-width="1"/>
+    <text x="26" y="99" class="mono" font-size="10" fill="#B5AEA3">route: <tspan fill="#ECE7DE">class:opus</tspan> <tspan fill="#4A443E">→</tspan> <tspan fill="#B5AEA3">fallback:codex</tspan></text>
+
+    <!-- Effort Ceiling & Idempotency Key -->
+    <rect x="16" y="115" width="284" height="30" rx="4" fill="#151311" stroke="#221F1C" stroke-width="1"/>
+    <text x="26" y="133" class="mono" font-size="9.5" fill="#B5AEA3">effort: <tspan fill="#E8A33D">ceiling:high</tspan> · <tspan fill="#ECE7DE">idempotency_key</tspan></text>
+
+    <!-- Footer Status inside Card 1 -->
+    <rect x="16" y="151" width="284" height="24" rx="4" fill="#1A1410" stroke="#382216" stroke-width="1"/>
+    <circle cx="28" cy="163" r="3" fill="#E4733A"/>
+    <text x="38" y="166" class="mono" font-size="9" fill="#E4733A">dispatch:ready · claim:pending</text>
+  </g>
+
+  <!-- Copper Connector 1 (Card 01 -> Card 02) -->
+  <g transform="translate(356, 270)">
+    <line x1="8" y1="0" x2="34" y2="0" stroke="#E4733A" stroke-width="2" stroke-linecap="round"/>
+    <polygon points="32,-4 38,0 32,4" fill="#E4733A"/>
+  </g>
+
+  <!-- CARD 02 / SUPERVISE (x=402..718, y=175..365) -->
+  <g id="card-supervise" transform="translate(402, 175)">
+    <!-- Card Container -->
+    <rect width="316" height="190" rx="8" fill="url(#cardGrad)" stroke="#2E2A27" stroke-width="1"/>
+    <rect width="316" height="3" rx="1" fill="#8FB3B0"/>
+
+    <!-- Header -->
+    <text x="16" y="27" class="mono" font-size="11" font-weight="700" fill="#8FB3B0">02</text>
+    <text x="36" y="27" class="sans" font-size="13" font-weight="700" letter-spacing="0.04em" fill="#ECE7DE">SUPERVISE</text>
+    <rect x="238" y="13" width="62" height="18" rx="4" fill="#131F1E" stroke="#1D3A37" stroke-width="1"/>
+    <text x="269" y="25" class="mono" font-size="9" font-weight="600" text-anchor="middle" fill="#8FB3B0">RUNTIME</text>
+
+    <line x1="16" y1="40" x2="300" y2="40" stroke="#221F1C" stroke-width="1"/>
+
+    <!-- Isolated Process Custody -->
+    <rect x="16" y="49" width="284" height="34" rx="4" fill="#11100E" stroke="#25211E" stroke-width="1"/>
+    <text x="26" y="64" class="mono" font-size="10" font-weight="600" fill="#8FB3B0">isolated process custody</text>
+    <text x="26" y="76" class="mono" font-size="9" fill="#B5AEA3">ProcessIdentity · caged pid · uid jail</text>
+
+    <!-- Native Account Rotation -->
+    <rect x="16" y="89" width="284" height="34" rx="4" fill="#151311" stroke="#221F1C" stroke-width="1"/>
+    <text x="26" y="104" class="mono" font-size="10" font-weight="600" fill="#E8A33D">native account rotation</text>
+    <text x="26" y="116" class="mono" font-size="9" fill="#B5AEA3">lease tokens · no proxy · quota failover</text>
+
+    <!-- Worktree Claim Fencing -->
+    <rect x="16" y="129" width="284" height="46" rx="4" fill="#131A19" stroke="#1E302E" stroke-width="1"/>
+    <text x="26" y="145" class="mono" font-size="10" font-weight="600" fill="#ECE7DE">worktree claim fencing</text>
+    <circle cx="28" cy="161" r="3" fill="#8FB3B0"/>
+    <text x="38" y="164" class="mono" font-size="9" fill="#8FB3B0">caged read-only &amp; one-writer fence</text>
+  </g>
+
+  <!-- Copper Connector 2 (Card 02 -> Card 03) -->
+  <g transform="translate(718, 270)">
+    <line x1="8" y1="0" x2="34" y2="0" stroke="#E4733A" stroke-width="2" stroke-linecap="round"/>
+    <polygon points="32,-4 38,0 32,4" fill="#E4733A"/>
+  </g>
+
+  <!-- CARD 03 / RECOVER (x=764..1080, y=175..365) -->
+  <g id="card-recover" transform="translate(764, 175)">
+    <!-- Card Container -->
+    <rect width="316" height="190" rx="8" fill="url(#cardGrad)" stroke="#2E2A27" stroke-width="1"/>
+    <rect width="316" height="3" rx="1" fill="#E8A33D"/>
+
+    <!-- Header -->
+    <text x="16" y="27" class="mono" font-size="11" font-weight="700" fill="#E8A33D">03</text>
+    <text x="36" y="27" class="sans" font-size="13" font-weight="700" letter-spacing="0.04em" fill="#ECE7DE">RECOVER</text>
+    <rect x="242" y="13" width="58" height="18" rx="4" fill="#241F14" stroke="#423617" stroke-width="1"/>
+    <text x="271" y="25" class="mono" font-size="9" font-weight="600" text-anchor="middle" fill="#E8A33D">OUTPUT</text>
+
+    <line x1="16" y1="40" x2="300" y2="40" stroke="#221F1C" stroke-width="1"/>
+
+    <!-- Result Entrypoint -->
+    <rect x="16" y="49" width="284" height="26" rx="4" fill="#11100E" stroke="#25211E" stroke-width="1"/>
+    <text x="26" y="66" class="mono" font-size="10.5" font-weight="600" fill="#E8A33D">nspawn_result_show</text>
+
+    <!-- Terminal Phase Row -->
+    <rect x="16" y="81" width="284" height="28" rx="4" fill="#151311" stroke="#221F1C" stroke-width="1"/>
+    <text x="26" y="99" class="mono" font-size="10" fill="#B5AEA3">phase: <tspan fill="#8FB3B0" font-weight="600">COMPLETED</tspan> <tspan fill="#4A443E">·</tspan> exit: <tspan fill="#ECE7DE">0</tspan></text>
+
+    <!-- Redacted Transcript Row -->
+    <rect x="16" y="115" width="284" height="30" rx="4" fill="#151311" stroke="#221F1C" stroke-width="1"/>
+    <text x="26" y="133" class="mono" font-size="9.5" fill="#B5AEA3">transcript: <tspan fill="#ECE7DE">redacted</tspan> <tspan fill="#8FB3B0">[credentials scrubbed]</tspan></text>
+
+    <!-- Resumable thread_id Row -->
+    <rect x="16" y="151" width="284" height="24" rx="4" fill="#211C14" stroke="#3D3017" stroke-width="1"/>
+    <circle cx="28" cy="163" r="3" fill="#E8A33D"/>
+    <text x="38" y="166" class="mono" font-size="9" fill="#E8A33D">thread_id: <tspan fill="#ECE7DE">resumable:01jc9...f4</tspan></text>
+  </g>
+
+  <!-- ==================== FOOTER ==================== -->
+  <text x="560" y="408" class="mono" font-size="11" text-anchor="middle" letter-spacing="0.02em" fill="#B5AEA3">
+    <tspan fill="#ECE7DE">Native vendor clients without a proxy.</tspan> ProcessIdentity custody. <tspan fill="#ECE7DE">Credential-redacted transcripts.</tspan>
+  </text>
+</svg>

@@ -1,0 +1,8 @@
+{
+  "component": "nmemory",
+  "distribution": "source",
+  "repository": "menot-you/n-memory",
+  "schema": 2,
+  "source_commit": "0e56176bffc14121c74ea2f82bfbe4b943240b9c",
+  "version": "v0.101.1"
+}

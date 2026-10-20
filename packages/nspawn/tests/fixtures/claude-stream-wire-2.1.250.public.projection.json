@@ -1,0 +1,22 @@
+{
+  "derivative": {
+    "name": "claude-stream-wire-2.1.250.public.ndjson",
+    "sha256": "6f08d7ae314cbfa1b5243e8507648e73cb13e1f106eb502a31623e8338731607"
+  },
+  "metadata_fields": {
+    "# Binary": "<CLAUDE_BINARY>",
+    "/cwd": "<CAPTURE_CWD>",
+    "/frame/result/thread/gitInfo/branch": "<GIT_BRANCH>",
+    "/frame/result/thread/gitInfo/originUrl": "<GIT_ORIGIN>",
+    "/frame/result/thread/gitInfo/sha": "<GIT_SHA>",
+    "/memory_paths/auto": "<MEMORY_PATH>",
+    "/messaging_socket_path": "<SOCKET_PATH>",
+    "/plugins/*/path": "<PLUGIN_PATH>"
+  },
+  "procedure": "nspawn-wire-public-v1",
+  "schema": 1,
+  "source": {
+    "name": "claude-stream-wire-2.1.250.ndjson",
+    "sha256": "059e8714d544eca8141fbfbeb81d29b7a6416bc1c3b8f33249de390056b10a71"
+  }
+}

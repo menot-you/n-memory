@@ -1,4 +1,0 @@
-# The toolchain this crate is built and tested with.
-[toolchain]
-channel = "1.96.1"
-components = ["rustfmt", "clippy"]

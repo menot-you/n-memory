@@ -1,0 +1,124 @@
+{
+  "profile": {
+    "version": 1,
+    "node_id": "node-1",
+    "activation_id": "activation-1",
+    "route_ref": "account-a@subscription",
+    "cwd": "/project",
+    "scope": {
+      "read": [
+        "/project"
+      ],
+      "write": [],
+      "audit": true,
+      "permission_ceiling": "read-only",
+      "network": [],
+      "administrative": [
+        "/private/conversation"
+      ]
+    },
+    "runtime": {
+      "launcher": {
+        "path": "/runtime/bin",
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "node": {
+        "path": "/runtime/bin",
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "consumer": {
+        "path": "/runtime/bin",
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sdk": {
+        "path": "/runtime/bin",
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "native": {
+        "path": "/runtime/bin",
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sdk_package": {
+        "path": "/runtime/bin",
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "files": [
+        {
+          "path": "/runtime/bin",
+          "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    "constructor": {
+      "model": "opus-5-5",
+      "effort": "max",
+      "permission_mode": "default",
+      "system_prompt": "Admitted project contract",
+      "tools": [],
+      "skills": [],
+      "setting_sources": [
+        "project"
+      ],
+      "limits": {},
+      "options": {}
+    },
+    "configuration": [
+      {
+        "path": "/project/.claude/settings.json",
+        "format": "json",
+        "document": {
+          "hooks": [],
+          "permissions": {
+            "allow": []
+          }
+        },
+        "digest": "sha256:e5fdf49934188df7c6015ebea0018fbe1699758789f052590e812cc878d75e98",
+        "role": "project"
+      }
+    ],
+    "project": {
+      "id": "project-1",
+      "root": "/project",
+      "plugin_parent": "/plugin/base",
+      "plugin_view": "/private/plugin",
+      "mcp_configuration": {
+        "mcpServers": {}
+      }
+    },
+    "mcp": [],
+    "producer": [],
+    "policy": {
+      "managed_sources": [],
+      "trust_filter": {},
+      "parent_settings": "admitted",
+      "helpers": [],
+      "generation_digest": "sha256:915b9c407f38730fd48a5c89d58b0c70ff489630563dea2ca511b8e57173e3d3",
+      "refresh_ceiling": {}
+    },
+    "selection": {
+      "sequence": 3,
+      "constructor_baseline": "sha256:8d34552064d487c97ca23ecedf52275a715af201bb624943b6a43525864a93bf"
+    },
+    "conversation": {
+      "kind": "new",
+      "native_session": null,
+      "frontier": null,
+      "operation_index": null,
+      "pending_control": []
+    },
+    "stop_epoch": 4
+  },
+  "profile_digest": "sha256:33a1d9a9efa69e01eb3c3809bd1c84b4743c74e6d8fbd88175613cb1b230183e",
+  "canonical_vector": {
+    "a": {
+      "a": 1,
+      "b": null
+    },
+    "z": [
+      3,
+      "é",
+      false
+    ]
+  },
+  "canonical_text": "{\"a\":{\"a\":1,\"b\":null},\"z\":[3,\"é\",false]}"
+}

@@ -1,0 +1,61 @@
+[project]
+license-files = ["LICENSE"]
+license = "AGPL-3.0-only"
+name = "nmemory-evals"
+version = "0.1.0"
+description = "Scores the local nMEMORY binary against deterministic and external evaluation benchmarks"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "nmemory",
+    "nott-database",
+    "tiktoken>=0.14.0",
+]
+
+[tool.uv.sources]
+nmemory = { workspace = true }
+nott-database = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.4",
+    "mypy>=2.3.1",
+    "pytest>=8.0.0",
+]
+
+[project.scripts]
+nmemory-evals = "nmemory_evals.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.0,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+
+[tool.ruff]
+target-version = "py314"
+
+[tool.mypy]
+# `nmemory` was built by `setuptools.build_meta` until 2026-09-24, and the setuptools editable
+# install is an import-hook finder (`__editable___nmemory_0_8_0_finder.py`) — a MAPPING inside a
+# Python module, which mypy does not read. `uv_build`, which every member now uses, writes a
+# plain-path `.pth`, which mypy follows. That is why `harness` answers it with
+# `ignore_missing_imports`.
+# Without it mypy said `import-not-found` about a package the interpreter imports without failing.
+# It points at the SOURCE, which mypy really checks; `ignore_missing_imports` would silence the
+# error by turning all of `nmemory` into `Any`.
+mypy_path = [".."]
+
+[tool.python]
+# MEASURED on SERVER, 2026-09-25, at 6ec45c8a0: 474 passed three times each way, 40 s serial and
+# 17.5 s under `-n 5 --dist loadfile`. The member had no declaration because the guard of the
+# retired gate only read one level below apps/ and libs/.
+xdist = "loadfile"
+[tool.mutmut]
+# Stock mutmut 3.7 (campaign mutmut-standard). Each mutant runs only the tests its
+# function's stats run recorded; xdist workers would lose those stats.
+source_paths = ["nmemory_evals"]
+pytest_add_cli_args = ["-p", "no:xdist"]
+pytest_add_cli_args_test_selection = ["tests"]
+also_copy = ["longmemeval"]

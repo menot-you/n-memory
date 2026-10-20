@@ -1,0 +1,34 @@
+[project]
+license-files = ["LICENSE"]
+license = "AGPL-3.0-only"
+name = "nott-database"
+version = "0.1.0"
+description = "The one door to every pynott SQLite store: guarded opens, write transactions, locks and snapshots."
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = ["sqlite-vec>=0.1.9"]
+
+[project.entry-points.pytest11]
+nott_database = "nott_database.pytest_plugin"
+
+[build-system]
+requires = ["uv_build>=0.12.0,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+
+[tool.ruff]
+target-version = "py314"
+
+[tool.python]
+# Every test owns its temporary directory, and the tests that spawn processes do so
+# on their own files. Nothing is shared between test files.
+xdist = "loadfile"
+
+[tool.mutmut]
+# Stock mutmut 3.7 (campaign mutmut-standard). Each mutant runs only the tests its
+# function's stats run recorded; xdist workers would lose those stats.
+source_paths = ["nott_database"]
+pytest_add_cli_args = ["-p", "no:xdist"]
+pytest_add_cli_args_test_selection = ["tests"]

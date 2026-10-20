@@ -1,0 +1,94 @@
+{
+  "schema": 1,
+  "components": {
+    "nmemory": {
+      "module": "nmemory",
+      "primary": "mcps/nmemory",
+      "packages": {
+        "libs/database": "packages/database",
+        "libs/netdoor": "packages/netdoor",
+        "libs/system1": "packages/system1",
+        "evals/nmemory": "evals",
+        "mcps/nspawn": "packages/nspawn",
+        "libs/socket": "packages/socket"
+      }
+    },
+    "nspawn": {
+      "module": "nspawn",
+      "primary": "mcps/nspawn",
+      "packages": {
+        "libs/database": "packages/database",
+        "libs/socket": "packages/socket",
+        "libs/system1": "packages/system1"
+      }
+    },
+    "nbrowser": {
+      "module": "nbrowser",
+      "primary": "mcps/nbrowser",
+      "packages": {
+        "libs/database": "packages/database",
+        "libs/netdoor": "packages/netdoor",
+        "libs/spine": "packages/spine"
+      }
+    },
+    "napple": {
+      "module": "napple",
+      "primary": "mcps/napple",
+      "packages": {}
+    },
+    "plugin": {
+      "primary": "plugin",
+      "packages": {
+        "mcps/nmemory": "packages/nmemory",
+        "mcps/nspawn": "packages/nspawn",
+        "mcps/nbrowser": "packages/nbrowser",
+        "libs/database": "packages/database",
+        "libs/netdoor": "packages/netdoor",
+        "libs/system1": "packages/system1",
+        "libs/socket": "packages/socket",
+        "libs/spine": "packages/spine",
+        "evals/nmemory": "evals"
+      }
+    }
+  },
+  "documents": {
+    "root": [
+      "README.md",
+      "LICENSE",
+      "CHANGELOG.md",
+      "CONTRIBUTING.md",
+      "CODE_OF_CONDUCT.md",
+      "SECURITY.md",
+      "SUPPORT.md",
+      "CITATION.cff"
+    ],
+    "docs": [
+      "docs/README.md",
+      "docs/RUNBOOK.md",
+      "docs/ARCHITECTURE.md",
+      "docs/REFERENCE.md",
+      "docs/INSTALLATION.md",
+      "docs/PRIVACY.md",
+      "docs/UPGRADE.md",
+      "docs/TROUBLESHOOTING.md",
+      "docs/ROADMAP.md"
+    ]
+  },
+  "repositories": {
+    "nmemory": "menot-you/n-memory",
+    "nspawn": "menot-you/n-spawn",
+    "nbrowser": "menot-you/n-browser",
+    "napple": "menot-you/n-apple",
+    "plugin": "menot-you/plugin"
+  },
+  "test_resources": {
+    "mcps/nspawn": {
+      "templates/nott/spawn.toml": "tests/resources/templates/nott/spawn.toml",
+      "plugin/NOTT.md": "tests/resources/plugin/NOTT.md",
+      "plugin/hooks/nspawn-notices.sh": "tests/resources/plugin/hooks/nspawn-notices.sh",
+      "rails/organization.toml": "tests/resources/rails/organization.toml",
+      "harness/tests/acp/fixtures/codex-acp-2.1.1-auth-required.jsonl": "tests/resources/harness/tests/acp/fixtures/codex-acp-2.1.1-auth-required.jsonl",
+      "harness/tests/acp/fixtures/codex-acp-2.1.1-usage-limit.jsonl": "tests/resources/harness/tests/acp/fixtures/codex-acp-2.1.1-usage-limit.jsonl"
+    }
+  }
+}

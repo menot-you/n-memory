@@ -1,50 +1,139 @@
-# CI for the public n-memory mirror.
-# GitHub-hosted runners ONLY — never self-hosted here: fork PRs must not be
-# able to reach private infrastructure.
-name: ci
+name: CI
+
 on:
   push:
     branches: [main]
   pull_request:
+
 permissions:
   contents: read
+
 env:
-  CARGO_TERM_COLOR: always
+  TMPDIR: ${{ runner.temp }}
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
   checks:
+    name: checks
     runs-on: ubuntu-latest
+    outputs:
+      memory: ${{ steps.scope.outputs.memory }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
-  coverage:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: taiki-e/install-action@b98dda19e8b67e904c9e78a0cbd773be4105a74f # cargo-llvm-cov
-      # Floor below the measured 95.67% so honest drift is visible before it
-      # breaks the build; raising the floor is a deliberate act, not a race.
-      - run: cargo llvm-cov --lcov --output-path lcov.info --fail-under-lines 90
-      # Upload is best-effort: the coverage FLOOR above is the gate; Codecov is
-      # the public window. A flaky upload must never fail an honest build.
-      - uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          files: lcov.info
-          fail_ci_if_error: false
-  # Mirror to Codeberg on main pushes only — folded into this single workflow
-  # so each event produces exactly one run (noise control until nSHIP owns
-  # shipping). Read-only mirror: issues/PRs/wiki disabled on the far side.
-  mirror:
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          fetch-depth: 0
-      - name: push to codeberg
-        env:
-          TOKEN: ${{ secrets.CODEBERG_TOKEN }}
+          version: '0.12.5'
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Check the public workspace
+        id: scope
         run: |
-          git push "https://tiagodocouto:${TOKEN}@codeberg.org/nott/n-memory.git" \
-            HEAD:refs/heads/main --tags
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import tomllib
+
+          manifest = json.loads(Path('source-manifest.json').read_text())
+          component = manifest['component']
+          contract = json.loads(Path('ops/mirror/projects.json').read_text())
+          entry = contract['components'][component]
+          expected = set(entry['packages'].values())
+          members = tomllib.loads(Path('pyproject.toml').read_text())['tool']['uv']['workspace']['members']
+          if len(members) != len(expected) or set(members) != expected:
+              raise SystemExit('The public workspace members do not match the selected product.')
+          if set(manifest['members']) != expected:
+              raise SystemExit('The source inventory does not match the selected product.')
+          primary = [] if component == 'plugin' else ['.']
+          memory_member = '.' if component == 'nmemory' else 'packages/nmemory'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'memory={str(component == "nmemory").lower()}\n')
+              output.write(f'plugin={str(component == "plugin").lower()}\n')
+              output.write(f'architecture={str(component in {"nmemory", "plugin"}).lower()}\n')
+              output.write(f'memory_member={memory_member}\n')
+              output.write(f'members={" ".join([*primary, *members])}\n')
+          PY
+      - name: Check the lock and install dependencies
+        run: |
+          uv lock --check
+          uv sync --locked --all-packages --group dev
+      - name: Prepare the SDK test packages
+        env:
+          MEMBERS: ${{ steps.scope.outputs.members }}
+        run: |
+          for member in $MEMBERS; do
+            if [ -f "$member/tests/sdk_setup.py" ]; then
+              uv run --locked python "$member/tests/sdk_setup.py" \
+                "$PWD/.nott/disposable/test-sdk" >> "$GITHUB_PATH"
+              break
+            fi
+          done
+      - name: Check format, lint, and types
+        env:
+          MEMBERS: ${{ steps.scope.outputs.members }}
+        run: |
+          uv run --locked ruff check .
+          uv run --locked ruff format --check .
+          for member in $MEMBERS; do
+            (
+              cd "$member" || exit
+              module=$(python3 -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["name"].replace("-", "_"))')
+              uv run --locked mypy --strict "$module"
+            )
+          done
+      - name: Check the memory architecture
+        if: steps.scope.outputs.architecture == 'true'
+        working-directory: ${{ steps.scope.outputs.memory_member }}
+        run: uv run --locked --group dev pytest tests/test_architecture.py -q
+      - name: Test the selected packages
+        env:
+          MEMBERS: ${{ steps.scope.outputs.members }}
+        run: |
+          for member in $MEMBERS; do
+            if [ "$member" = . ] && [ '${{ steps.scope.outputs.memory }}' = true ]; then
+              continue
+            fi
+            if [ ! -d "$member/tests" ]; then
+              continue
+            fi
+            (
+              cd "$member" || exit
+              uv run --locked --group dev pytest tests -q -n 4 --dist loadfile
+            )
+          done
+      - name: Check and test the public plugin
+        if: steps.scope.outputs.plugin == 'true'
+        run: |
+          uv run --locked mypy --strict scripts/plugin.py scripts/plugin
+          uv run --locked --group dev pytest tests -q -n 4 --dist loadfile
+          uv run --locked python scripts/plugin.py build \
+            --source "$PWD" --output "$TMPDIR/plugin-bundle" --runtime-root "$PWD/.venv"
+          uv run --locked python scripts/plugin.py verify "$TMPDIR/plugin-bundle"
+
+  coverage:
+    name: coverage
+    needs: checks
+    if: needs.checks.outputs.memory == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: '0.12.5'
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Check the lock and install dependencies
+        run: |
+          uv lock --check
+          uv sync --locked --all-packages --group dev
+      - name: Test the complete memory package with coverage
+        run: >-
+          uv run --locked --group dev pytest tests -q -n 4 --dist loadfile
+          --cov=nmemory --cov-report=term-missing --cov-fail-under=90

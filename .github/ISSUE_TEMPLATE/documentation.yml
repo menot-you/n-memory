@@ -1,0 +1,23 @@
+name: Documentation correction
+description: Help a new reader complete one task.
+labels: [documentation]
+body:
+  - type: input
+    id: page
+    attributes:
+      label: Page and version
+      description: Give the path or URL and the release that you read.
+    validations:
+      required: true
+  - type: textarea
+    id: task
+    attributes:
+      label: Task and observed problem
+      description: Describe the task, the unclear text or broken link, and the result.
+    validations:
+      required: true
+  - type: textarea
+    id: correction
+    attributes:
+      label: Suggested correction
+      description: Propose a short correction. Do not include private paths or data.

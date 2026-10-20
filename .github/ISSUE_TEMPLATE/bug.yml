@@ -1,0 +1,42 @@
+name: Bug report
+description: Report a reproducible failure with safe example data.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include credentials, private transcripts, databases, or rollback receipts. Report vulnerabilities through SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: Version and component
+      description: Name the release or source commit and the affected component.
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform and client
+      description: Include the operating system, architecture, Python version, and native client version when relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Give the working directory, exact command or tool call, and steps with synthetic data.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+      description: Link the documented behavior if possible.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+      description: Include redacted output and the exit code. State whether a fresh disposable configuration reproduces the failure.
+    validations:
+      required: true

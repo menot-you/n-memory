@@ -1,3 +1,0 @@
-a fact before the fence.
-```rust
-fn never_closed() {

@@ -1,0 +1,94 @@
+[project]
+license-files = ["LICENSE"]
+license = "AGPL-3.0-only"
+name = "nspawn"
+version = "0.1.0"
+description = "Executor run registry and MCP server — Python port of capabilities/nspawn"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    # The registry is one SQLite file behind the repository's one opener.
+    "nott-database",
+    # The official MCP Python SDK serves the stdio door (`main.py`): framing,
+    # handshake and protocol version are the standard's, not ours.
+    "mcp>=2.3",
+    # Tool arguments are validated against their declared JSON schemas.
+    "jsonschema>=4.23",
+    # The stdio MCP client the operator verbs reach a live door with (`client.py`).
+    "nott-socket",
+    # Transport for typed questions was moved down by the two-consumer rule (D15):
+    # nMEMORY became the second in-tree consumer. Only resolution via the
+    # roster remains here, which belongs to nSPAWN.
+    "nott-system1",
+]
+
+[tool.uv.sources]
+nott-database = { workspace = true }
+nott-socket = { workspace = true }
+nott-system1 = { workspace = true }
+
+[project.urls]
+Homepage = "https://no.tt"
+Repository = "https://github.com/menot-you/n-spawn"
+Documentation = "https://github.com/menot-you/n-spawn/tree/main/docs"
+Issues = "https://github.com/menot-you/n-spawn/issues"
+
+[project.scripts]
+# ONE executable (rails/organization.toml). `nspawn mcp serve` serves the MCP surface
+# on stdio; every other piece is a verb of it.
+nspawn = "nspawn.cli:main"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.4",
+    "mypy>=2.3.1",
+    "pytest>=8.0.0",
+    # tests/ imports hypothesis; `uv run --group dev` installs it from here.
+    "hypothesis>=6.0",
+    # Coverage and mutation runs of this member.
+    "pytest-cov>=7.0.0",
+    # This member's suite is dominated by WAITING — 28 process waits and 4
+    # sleeps in test_supervisor.py alone — and takes 1086-1418 s serially. There
+    # is no stdlib equivalent that parallelizes pytest, and every test has its own
+    # registry file (the nott-database plugin), so workers share no store.
+    "pytest-xdist>=3.6",
+    "mutmut>=3.7.0",
+    # Mutant runs only: tests/conftest.py bounds each test from its stats-run duration.
+    "pytest-timeout>=2.3",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.0,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+
+
+[tool.pytest.ini_options]
+# Parallelism is opt-in (`-n auto`): measured 2026-08-31 on the 32-core host, 171
+# tests took 475 s+ serially and 50 s under `-n auto`. `auto` is the only portable
+# value; a fixed number would carry the SERVER core count to M5.
+addopts = []
+# An exception escaping onto a serving thread is a DEFECT, not a warning: it is
+# how a door that drops sessions still looks green. Promoted here so every future
+# test in this package inherits the rule.
+filterwarnings = [
+    "error::pytest.PytestUnhandledThreadExceptionWarning",
+]
+
+[tool.python]
+xdist = "loadfile"
+
+[tool.ruff]
+target-version = "py314"
+
+[tool.mutmut]
+# Stock mutmut 3.7 (campaign mutmut-standard). Each mutant runs only the tests its
+# function's stats run recorded; xdist workers would lose those stats.
+# tests/live/ holds live suites, not unit oracles (the retired meter excluded it
+# too): ignored here, it never enters the stats run, so no mutant is judged by it.
+# tests/test_supervisor_layout.py holds this.
+source_paths = ["nspawn"]
+pytest_add_cli_args = ["-p", "no:xdist"]
+pytest_add_cli_args_test_selection = ["tests", "--ignore=tests/live"]

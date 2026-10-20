@@ -1,0 +1,169 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 520" role="img" aria-labelledby="title desc">
+  <title id="title">NOTT Plugin: Closed-Loop Engineering and Native Views</title>
+  <desc id="desc">Architectural diagram showing the 3 horizontal layers of the NOTT Plugin: Closed-Loop Engineering Workflow, Native Client Views projected via package.py into Claude Code, Codex, and AGY, and Three Core MCP Services (nMEMORY, nSPAWN, nBROWSER).</desc>
+  <defs>
+    <marker id="arrow-copper" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#E4733A" />
+    </marker>
+    <marker id="arrow-cyan" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#8FB3B0" />
+    </marker>
+    <marker id="arrow-muted" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+      <path d="M 0 2 L 7 5 L 0 8 z" fill="#B5AEA3" />
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1120" height="520" fill="#0F0E0D" />
+
+  <!-- Header -->
+  <text x="36" y="38" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="#ECE7DE">NOTT Plugin: Closed-Loop Engineering and Native Views</text>
+  <text x="36" y="56" font-family="Arial, sans-serif" font-size="11" fill="#B5AEA3">Unified engineering lifecycle, single-source projection across clients, and grounded MCP platform primitives</text>
+
+  <!-- LAYER 1: CLOSED-LOOP WORKFLOW -->
+  <g id="layer-1">
+    <rect x="30" y="74" width="1060" height="126" rx="8" fill="#171513" stroke="#2E2A27" stroke-width="1.5" />
+    <text x="45" y="93" font-family="monospace" font-size="10.5" font-weight="bold" fill="#E4733A" letter-spacing="1.2px">LAYER 1 · CLOSED-LOOP WORKFLOW</text>
+    <text x="305" y="93" font-family="Arial, sans-serif" font-size="10" fill="#B5AEA3">(Iterative verification: each stage gate holds before advancing)</text>
+
+    <!-- Step 1: Brainstorm & Ratify -->
+    <rect x="45" y="104" width="156" height="82" rx="5" fill="#1C1A17" stroke="#2E2A27" stroke-width="1" />
+    <text x="55" y="121" font-family="monospace" font-size="9" font-weight="bold" fill="#E4733A">01 · SCOPE</text>
+    <text x="55" y="137" font-family="Arial, sans-serif" font-size="11" font-weight="bold" fill="#ECE7DE">Brainstorm &amp; Ratify</text>
+    <text x="55" y="153" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">Settle scope &amp; DoDs</text>
+    <text x="55" y="167" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">Authority contract</text>
+
+    <!-- Arrow 1 -> 2 -->
+    <line x1="201" y1="145" x2="217" y2="145" stroke="#E4733A" stroke-width="1.5" marker-end="url(#arrow-copper)" />
+
+    <!-- Step 2: Plan & Independent Review Loop -->
+    <rect x="220" y="104" width="156" height="82" rx="5" fill="#1C1A17" stroke="#2E2A27" stroke-width="1" />
+    <text x="230" y="121" font-family="monospace" font-size="9" font-weight="bold" fill="#E8A33D">02 · PLAN LOOP</text>
+    <text x="230" y="137" font-family="Arial, sans-serif" font-size="11" font-weight="bold" fill="#ECE7DE">Plan &amp; Review</text>
+    <text x="230" y="153" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">Independent review</text>
+    <text x="230" y="167" font-family="Arial, sans-serif" font-size="9" font-weight="bold" fill="#E8A33D">Loop until holds</text>
+
+    <!-- Arrow 2 -> 3 -->
+    <line x1="376" y1="145" x2="392" y2="145" stroke="#E4733A" stroke-width="1.5" marker-end="url(#arrow-copper)" />
+
+    <!-- Step 3: Execute -->
+    <rect x="395" y="104" width="156" height="82" rx="5" fill="#1C1A17" stroke="#2E2A27" stroke-width="1" />
+    <text x="405" y="121" font-family="monospace" font-size="9" font-weight="bold" fill="#C4523A">03 · CODE</text>
+    <text x="405" y="137" font-family="Arial, sans-serif" font-size="11" font-weight="bold" fill="#ECE7DE">Execute</text>
+    <text x="405" y="153" font-family="Arial, sans-serif" font-size="9.5" font-weight="bold"><tspan fill="#C4523A">RED</tspan><tspan fill="#B5AEA3"> test first,</tspan></text>
+    <text x="405" y="167" font-family="Arial, sans-serif" font-size="9.5" font-weight="bold"><tspan fill="#B5AEA3">then </tspan><tspan fill="#8FB3B0">GREEN</tspan><tspan fill="#B5AEA3"> (ponytail)</tspan></text>
+
+    <!-- Arrow 3 -> 4 -->
+    <line x1="551" y1="145" x2="567" y2="145" stroke="#E4733A" stroke-width="1.5" marker-end="url(#arrow-copper)" />
+
+    <!-- Step 4: Intent & Quality Validation -->
+    <rect x="570" y="104" width="156" height="82" rx="5" fill="#1C1A17" stroke="#2E2A27" stroke-width="1" />
+    <text x="580" y="121" font-family="monospace" font-size="9" font-weight="bold" fill="#8FB3B0">04 · VALIDATE</text>
+    <text x="580" y="137" font-family="Arial, sans-serif" font-size="11" font-weight="bold" fill="#ECE7DE">Intent &amp; Quality</text>
+    <text x="580" y="153" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">Agreed result vs code</text>
+    <text x="580" y="167" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">Declared check limits</text>
+
+    <!-- Arrow 4 -> 5 -->
+    <line x1="726" y1="145" x2="742" y2="145" stroke="#E4733A" stroke-width="1.5" marker-end="url(#arrow-copper)" />
+
+    <!-- Step 5: Independent Witness Review -->
+    <rect x="745" y="104" width="156" height="82" rx="5" fill="#1C1A17" stroke="#2E2A27" stroke-width="1" />
+    <text x="755" y="121" font-family="monospace" font-size="9" font-weight="bold" fill="#8FB3B0">05 · AUDIT</text>
+    <text x="755" y="137" font-family="Arial, sans-serif" font-size="11" font-weight="bold" fill="#ECE7DE">Witness Review</text>
+    <text x="755" y="153" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">Independent reviewer</text>
+    <text x="755" y="167" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">Falsifiable oracles</text>
+
+    <!-- Arrow 5 -> 6 -->
+    <line x1="901" y1="145" x2="917" y2="145" stroke="#E4733A" stroke-width="1.5" marker-end="url(#arrow-copper)" />
+
+    <!-- Step 6: Ship & Consumer Readback -->
+    <rect x="920" y="104" width="156" height="82" rx="5" fill="#1C1A17" stroke="#2E2A27" stroke-width="1" />
+    <text x="930" y="121" font-family="monospace" font-size="9" font-weight="bold" fill="#E4733A">06 · DELIVER</text>
+    <text x="930" y="137" font-family="Arial, sans-serif" font-size="11" font-weight="bold" fill="#ECE7DE">Ship &amp; Readback</text>
+    <text x="930" y="153" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">Perform verified merge</text>
+    <text x="930" y="167" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">Read live consumer</text>
+  </g>
+
+  <!-- LAYER 2: NATIVE CLIENT VIEWS -->
+  <g id="layer-2">
+    <rect x="30" y="214" width="1060" height="126" rx="8" fill="#171513" stroke="#2E2A27" stroke-width="1.5" />
+    <text x="45" y="233" font-family="monospace" font-size="10.5" font-weight="bold" fill="#8FB3B0" letter-spacing="1.2px">LAYER 2 · NATIVE CLIENT VIEWS</text>
+    <text x="295" y="233" font-family="Arial, sans-serif" font-size="10" fill="#B5AEA3">(Content-addressed bundle projecting skills, agents, and event hooks)</text>
+
+    <!-- Source definitions -->
+    <rect x="45" y="244" width="220" height="82" rx="5" fill="#1C1A17" stroke="#2E2A27" stroke-width="1" />
+    <text x="56" y="261" font-family="monospace" font-size="9" font-weight="bold" fill="#8FB3B0">CANONICAL ASSETS</text>
+    <text x="56" y="277" font-family="Arial, sans-serif" font-size="11" font-weight="bold" fill="#ECE7DE">Single Source of Truth</text>
+    <text x="56" y="293" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">• Skills, agents &amp; rules canon</text>
+    <text x="56" y="307" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">• Shared event hooks &amp; schemas</text>
+
+    <!-- Arrow source -> package.py -->
+    <line x1="265" y1="285" x2="289" y2="285" stroke="#8FB3B0" stroke-width="1.5" marker-end="url(#arrow-cyan)" />
+
+    <!-- Compiler: package.py -->
+    <rect x="292" y="244" width="230" height="82" rx="5" fill="#1C1A17" stroke="#8FB3B0" stroke-width="1" />
+    <text x="303" y="261" font-family="monospace" font-size="9" font-weight="bold" fill="#E4733A">PROJECTION COMPILER</text>
+    <text x="303" y="277" font-family="Arial, sans-serif" font-size="11" font-weight="bold" fill="#ECE7DE"><tspan font-family="monospace" fill="#E4733A">package.py</tspan> Projector</text>
+    <text x="303" y="293" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">• Content-addressed bundle build</text>
+    <text x="303" y="307" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">• Tailors native client structures</text>
+
+    <!-- Arrows from package.py to 3 clients -->
+    <line x1="522" y1="285" x2="548" y2="285" stroke="#8FB3B0" stroke-width="1.5" marker-end="url(#arrow-cyan)" />
+
+    <!-- Client 1: Claude Code -->
+    <rect x="552" y="244" width="160" height="82" rx="5" fill="#1C1A17" stroke="#2E2A27" stroke-width="1" />
+    <text x="563" y="261" font-family="monospace" font-size="9" font-weight="bold" fill="#B5AEA3">CLIENT: ANTHROPIC</text>
+    <text x="563" y="277" font-family="Arial, sans-serif" font-size="11" font-weight="bold" fill="#ECE7DE">Claude Code</text>
+    <text x="563" y="293" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">• Native plugin bundle</text>
+    <text x="563" y="307" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">• Slash routes &amp; tool hooks</text>
+
+    <!-- Client 2: Codex -->
+    <rect x="726" y="244" width="160" height="82" rx="5" fill="#1C1A17" stroke="#2E2A27" stroke-width="1" />
+    <text x="737" y="261" font-family="monospace" font-size="9" font-weight="bold" fill="#B5AEA3">CLIENT: OPENAI</text>
+    <text x="737" y="277" font-family="Arial, sans-serif" font-size="11" font-weight="bold" fill="#ECE7DE">Codex</text>
+    <text x="737" y="293" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">• Projected skill manifests</text>
+    <text x="737" y="307" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">• Native agent instructions</text>
+
+    <!-- Client 3: AGY -->
+    <rect x="900" y="244" width="176" height="82" rx="5" fill="#1C1A17" stroke="#8FB3B0" stroke-width="1" />
+    <text x="911" y="261" font-family="monospace" font-size="9" font-weight="bold" fill="#8FB3B0">CLIENT: GOOGLE AGY</text>
+    <text x="911" y="277" font-family="Arial, sans-serif" font-size="11" font-weight="bold" fill="#ECE7DE">Antigravity (AGY)</text>
+    <text x="911" y="293" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">• Native rules &amp; skills</text>
+    <text x="911" y="307" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">• JSON hooks &amp; agentapi</text>
+  </g>
+
+  <!-- LAYER 3: THREE MCP SERVICES -->
+  <g id="layer-3">
+    <rect x="30" y="354" width="1060" height="136" rx="8" fill="#171513" stroke="#2E2A27" stroke-width="1.5" />
+    <text x="45" y="373" font-family="monospace" font-size="10.5" font-weight="bold" fill="#E8A33D" letter-spacing="1.2px">LAYER 3 · THREE CORE MCP SERVICES</text>
+    <text x="315" y="373" font-family="Arial, sans-serif" font-size="10" fill="#B5AEA3">(Local MCP servers powering durable state, multi-agent fanout, and cited proof)</text>
+
+    <!-- MCP 1: nMEMORY -->
+    <rect x="45" y="384" width="330" height="92" rx="5" fill="#1C1A17" stroke="#E4733A" stroke-width="1" />
+    <text x="56" y="402" font-family="monospace" font-size="9.5" font-weight="bold" fill="#E4733A">MCP SERVICE 01 · PERSISTENCE</text>
+    <text x="56" y="418" font-family="Arial, sans-serif" font-size="11.5" font-weight="bold" fill="#ECE7DE"><tspan font-family="monospace" fill="#E4733A">nMEMORY</tspan>: Grounded Decisions &amp; DoDs</text>
+    <text x="56" y="435" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">• Canonical durable memory (graph capsules, DoD tracker)</text>
+    <text x="56" y="449" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">• Explicit authority class, provenance &amp; taint tracking</text>
+    <text x="56" y="463" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">• Zero hallucinations: readback of actual accepted contracts</text>
+
+    <!-- MCP 2: nSPAWN -->
+    <rect x="395" y="384" width="330" height="92" rx="5" fill="#1C1A17" stroke="#8FB3B0" stroke-width="1" />
+    <text x="406" y="402" font-family="monospace" font-size="9.5" font-weight="bold" fill="#8FB3B0">MCP SERVICE 02 · ORCHESTRATION</text>
+    <text x="406" y="418" font-family="Arial, sans-serif" font-size="11.5" font-weight="bold" fill="#ECE7DE"><tspan font-family="monospace" fill="#8FB3B0">nSPAWN</tspan>: Multi-Route Subagents &amp; Reviewers</text>
+    <text x="406" y="435" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">• Parallel fan-out: lead model judges, fast models test</text>
+    <text x="406" y="449" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">• Isolated execution workspaces &amp; bounded budgets</text>
+    <text x="406" y="463" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">• Independent witness reviews with falsifiable oracles</text>
+
+    <!-- MCP 3: nBROWSER -->
+    <rect x="745" y="384" width="331" height="92" rx="5" fill="#1C1A17" stroke="#E8A33D" stroke-width="1" />
+    <text x="756" y="402" font-family="monospace" font-size="9.5" font-weight="bold" fill="#E8A33D">MCP SERVICE 03 · GROUNDING</text>
+    <text x="756" y="418" font-family="Arial, sans-serif" font-size="11.5" font-weight="bold" fill="#ECE7DE"><tspan font-family="monospace" fill="#E8A33D">nBROWSER</tspan>: Cited Web Evidence</text>
+    <text x="756" y="435" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">• Reproducible web sessions &amp; live DOM inspection</text>
+    <text x="756" y="449" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">• Verifiable page citations, traces &amp; screenshot proofs</text>
+    <text x="756" y="463" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">• Safe external research isolated from secret scopes</text>
+  </g>
+
+  <!-- Connective Indicators Between Layers -->
+  <line x1="560" y1="200" x2="560" y2="214" stroke="#2E2A27" stroke-width="1.5" stroke-dasharray="3,3" />
+  <line x1="560" y1="340" x2="560" y2="354" stroke="#2E2A27" stroke-width="1.5" stroke-dasharray="3,3" />
+</svg>

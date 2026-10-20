@@ -1,15 +1,20 @@
-## What
+<!-- Use English. Remove credentials and private data. -->
 
-<!-- One concern per PR. What becomes true when this merges? -->
+## Problem and resulting behavior
 
-## Proof
+<!-- State the concrete failure and the result after this change. Link the issue. -->
 
-<!-- Paste the actual output, not a summary: -->
+## Focused proof
 
-```
-cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
-```
+<!-- List exact commands, exits, and observed results. -->
+<!-- For behavior changes, name the regression test and its observed failure before the fix. -->
+<!-- For documentation, check local links, examples, and figures. -->
 
-## Rollback
+## Data and compatibility
 
-<!-- Usually "revert this commit" — say so explicitly if it is more than that. -->
+<!-- State effects on stored data, configuration, supported clients, and rollback. -->
+<!-- Use synthetic examples. Do not attach a database or private receipt. -->
+
+## Open items
+
+<!-- Name unverified claims, missing external prerequisites, and known limits. -->

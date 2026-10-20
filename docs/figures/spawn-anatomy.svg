@@ -1,0 +1,197 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 520" role="img" aria-labelledby="title desc">
+  <title id="title">nSPAWN: Multi-Provider Admission and Process Custody</title>
+  <desc id="desc">Architectural diagram illustrating the four visual stages of nSPAWN: Admission and Roster, Isolation and Custody, Native Executor Routes, and Redacted Registry and Result.</desc>
+
+  <defs>
+    <marker id="arrow-copper" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M 1 1 L 7 4 L 1 7 Z" fill="#E4733A"/>
+    </marker>
+    <marker id="arrow-cyan" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M 1 1 L 7 4 L 1 7 Z" fill="#8FB3B0"/>
+    </marker>
+    <linearGradient id="header-rule" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#E4733A"/>
+      <stop offset="50%" stop-color="#8FB3B0"/>
+      <stop offset="100%" stop-color="#2E2A27"/>
+    </linearGradient>
+    <filter id="card-shadow" x="-4%" y="-2%" width="108%" height="108%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+
+  <!-- Canvas Background -->
+  <rect width="1120" height="520" fill="#0F0E0D"/>
+
+  <!-- Top Title and Subtitle -->
+  <g transform="translate(30, 24)">
+    <text x="0" y="22" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#ECE7DE" letter-spacing="0.5">nSPAWN: Multi-Provider Admission and Process Custody</text>
+    <text x="0" y="40" font-family="Arial, sans-serif" font-size="12" fill="#B5AEA3">Admit, isolate, execute, and record provider runs with credential safety and process custody</text>
+    <rect x="0" y="49" width="1060" height="1" fill="url(#header-rule)"/>
+  </g>
+
+  <!-- Connective Arrows between Stages -->
+  <!-- Stage 1 -> Stage 2 -->
+  <path d="M 277 280 L 297 280" fill="none" stroke="#E4733A" stroke-width="2" marker-end="url(#arrow-copper)"/>
+  <!-- Stage 2 -> Stage 3 -->
+  <path d="M 548 280 L 568 280" fill="none" stroke="#8FB3B0" stroke-width="2" marker-end="url(#arrow-cyan)"/>
+  <!-- Stage 3 -> Stage 4 -->
+  <path d="M 819 280 L 839 280" fill="none" stroke="#E4733A" stroke-width="2" marker-end="url(#arrow-copper)"/>
+
+  <!-- ================= STAGE 1: ADMISSION & ROSTER ================= -->
+  <g transform="translate(30, 85)" filter="url(#card-shadow)">
+    <!-- Stage Card Frame -->
+    <rect width="247" height="405" rx="6" fill="#171513" stroke="#2E2A27" stroke-width="1.5"/>
+    <!-- Stage Accent Bar -->
+    <rect x="0" y="0" width="247" height="3" rx="1.5" fill="#E4733A"/>
+    
+    <!-- Stage Header -->
+    <text x="14" y="24" font-family="monospace" font-size="10" font-weight="700" fill="#E4733A" letter-spacing="1">STAGE 01</text>
+    <text x="14" y="44" font-family="Arial, sans-serif" font-size="13" font-weight="700" fill="#ECE7DE">ADMISSION &amp; ROSTER</text>
+    <text x="14" y="60" font-family="Arial, sans-serif" font-size="11" fill="#B5AEA3">Caller ingress &amp; rate governance</text>
+
+    <!-- Sub-block 1: Caller MCP Request -->
+    <rect x="12" y="74" width="223" height="106" rx="4" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1"/>
+    <text x="22" y="93" font-family="Arial, sans-serif" font-size="11" font-weight="700" fill="#E8A33D">Caller MCP Entrypoint</text>
+    <rect x="22" y="103" width="203" height="24" rx="3" fill="#171513" stroke="#2E2A27" stroke-width="1"/>
+    <text x="30" y="119" font-family="monospace" font-size="10.5" fill="#ECE7DE">nspawn_run_start</text>
+    <rect x="22" y="133" width="203" height="24" rx="3" fill="#171513" stroke="#2E2A27" stroke-width="1"/>
+    <text x="30" y="149" font-family="monospace" font-size="10.5" fill="#ECE7DE">nspawn_review_start</text>
+
+    <!-- Sub-block 2: Admission Controls -->
+    <rect x="12" y="190" width="223" height="96" rx="4" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1"/>
+    <text x="22" y="209" font-family="Arial, sans-serif" font-size="11" font-weight="700" fill="#8FB3B0">Admission Guardrails</text>
+    <circle cx="27" cy="227" r="3" fill="#E4733A"/>
+    <text x="36" y="230" font-family="Arial, sans-serif" font-size="11" fill="#ECE7DE">Idempotency key lock</text>
+    <text x="36" y="244" font-family="Arial, sans-serif" font-size="10" fill="#B5AEA3">Deduplicates replayed turns</text>
+    <circle cx="27" cy="262" r="3" fill="#E4733A"/>
+    <text x="36" y="265" font-family="Arial, sans-serif" font-size="11" fill="#ECE7DE">Class effort ceiling</text>
+    <text x="36" y="278" font-family="Arial, sans-serif" font-size="10" fill="#B5AEA3">Caps compute &amp; token budget</text>
+
+    <!-- Sub-block 3: Account Picker -->
+    <rect x="12" y="296" width="223" height="95" rx="4" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1"/>
+    <text x="22" y="315" font-family="Arial, sans-serif" font-size="11" font-weight="700" fill="#E4733A">Quota-Aware Picker</text>
+    <text x="22" y="333" font-family="Arial, sans-serif" font-size="11" fill="#ECE7DE">Multi-account roster check</text>
+    <text x="22" y="348" font-family="Arial, sans-serif" font-size="10" fill="#B5AEA3">Skips rate-limited credentials</text>
+    <rect x="22" y="358" width="203" height="22" rx="3" fill="#171513" stroke="#2E2A27" stroke-width="1"/>
+    <text x="30" y="373" font-family="monospace" font-size="10" fill="#8FB3B0">cooling_until &lt; now()</text>
+  </g>
+
+  <!-- ================= STAGE 2: ISOLATION & CUSTODY ================= -->
+  <g transform="translate(301, 85)" filter="url(#card-shadow)">
+    <!-- Stage Card Frame -->
+    <rect width="247" height="405" rx="6" fill="#171513" stroke="#2E2A27" stroke-width="1.5"/>
+    <!-- Stage Accent Bar -->
+    <rect x="0" y="0" width="247" height="3" rx="1.5" fill="#8FB3B0"/>
+    
+    <!-- Stage Header -->
+    <text x="14" y="24" font-family="monospace" font-size="10" font-weight="700" fill="#8FB3B0" letter-spacing="1">STAGE 02</text>
+    <text x="14" y="44" font-family="Arial, sans-serif" font-size="13" font-weight="700" fill="#ECE7DE">ISOLATION &amp; CUSTODY</text>
+    <text x="14" y="60" font-family="Arial, sans-serif" font-size="11" fill="#B5AEA3">Filesystem cage &amp; PID ownership</text>
+
+    <!-- Sub-block 1: Caged Read-Only Grant -->
+    <rect x="12" y="74" width="223" height="92" rx="4" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1"/>
+    <text x="22" y="93" font-family="Arial, sans-serif" font-size="11" font-weight="700" fill="#8FB3B0">Caged Read-Only Grant</text>
+    <text x="22" y="110" font-family="Arial, sans-serif" font-size="10.5" fill="#ECE7DE">Non-mutating verification</text>
+    <rect x="22" y="120" width="203" height="34" rx="3" fill="#171513" stroke="#2E2A27" stroke-width="1"/>
+    <text x="30" y="135" font-family="monospace" font-size="9.5" fill="#B5AEA3">grant: <tspan fill="#ECE7DE">cwd</tspan> + <tspan fill="#ECE7DE">read_paths</tspan></text>
+    <text x="30" y="148" font-family="Arial, sans-serif" font-size="9.5" fill="#C4523A">Writes blocked by mount namespace</text>
+
+    <!-- Sub-block 2: One-Writer Clone Claim -->
+    <rect x="12" y="176" width="223" height="78" rx="4" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1"/>
+    <text x="22" y="195" font-family="Arial, sans-serif" font-size="11" font-weight="700" fill="#E4733A">One-Writer Clone Claim</text>
+    <text x="22" y="212" font-family="Arial, sans-serif" font-size="11" fill="#ECE7DE">Standalone scratch clone</text>
+    <text x="22" y="228" font-family="Arial, sans-serif" font-size="10" fill="#B5AEA3">Isolated workspace copy</text>
+    <text x="22" y="242" font-family="monospace" font-size="9.5" fill="#8FB3B0">single_tenant_lock=true</text>
+
+    <!-- Sub-block 3: Process Custody -->
+    <rect x="12" y="264" width="223" height="127" rx="4" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1"/>
+    <text x="22" y="283" font-family="Arial, sans-serif" font-size="11" font-weight="700" fill="#E8A33D">Process Custody &amp; Signals</text>
+    <circle cx="27" cy="301" r="3" fill="#8FB3B0"/>
+    <text x="36" y="304" font-family="Arial, sans-serif" font-size="11" fill="#ECE7DE">systemd slice custody</text>
+    <text x="36" y="318" font-family="Arial, sans-serif" font-size="10" fill="#B5AEA3">CPU, RAM &amp; task cgroup limits</text>
+    <circle cx="27" cy="336" r="3" fill="#8FB3B0"/>
+    <text x="36" y="339" font-family="Arial, sans-serif" font-size="11" fill="#ECE7DE">ProcessIdentity verification</text>
+    <text x="36" y="353" font-family="Arial, sans-serif" font-size="10" fill="#B5AEA3">PID + start-time + UID checked</text>
+    <rect x="22" y="360" width="203" height="20" rx="3" fill="#171513" stroke="#2E2A27" stroke-width="1"/>
+    <text x="30" y="374" font-family="monospace" font-size="9" fill="#C4523A">Reject signal on PID rollover</text>
+  </g>
+
+  <!-- ================= STAGE 3: NATIVE EXECUTOR ROUTES ================= -->
+  <g transform="translate(572, 85)" filter="url(#card-shadow)">
+    <!-- Stage Card Frame -->
+    <rect width="247" height="405" rx="6" fill="#171513" stroke="#2E2A27" stroke-width="1.5"/>
+    <!-- Stage Accent Bar -->
+    <rect x="0" y="0" width="247" height="3" rx="1.5" fill="#E4733A"/>
+    
+    <!-- Stage Header -->
+    <text x="14" y="24" font-family="monospace" font-size="10" font-weight="700" fill="#E4733A" letter-spacing="1">STAGE 03</text>
+    <text x="14" y="44" font-family="Arial, sans-serif" font-size="13" font-weight="700" fill="#ECE7DE">NATIVE EXECUTORS</text>
+    <text x="14" y="60" font-family="Arial, sans-serif" font-size="11" fill="#B5AEA3">Direct execution, no proxy</text>
+
+    <!-- Sub-block 1: Authenticated Host Accounts -->
+    <rect x="12" y="74" width="223" height="66" rx="4" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1"/>
+    <text x="22" y="93" font-family="Arial, sans-serif" font-size="11" font-weight="700" fill="#8FB3B0">Host Identity Context</text>
+    <text x="22" y="110" font-family="Arial, sans-serif" font-size="10.5" fill="#ECE7DE">Authenticated host accounts</text>
+    <text x="22" y="125" font-family="Arial, sans-serif" font-size="10" fill="#B5AEA3">Native toolchains &amp; user env</text>
+
+    <!-- Sub-block 2: Native Adapters -->
+    <rect x="12" y="150" width="223" height="241" rx="4" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1"/>
+    <text x="22" y="169" font-family="Arial, sans-serif" font-size="11" font-weight="700" fill="#E4733A">Native Adapters (Unproxied)</text>
+
+    <!-- Adapter 1: Claude Code -->
+    <rect x="20" y="180" width="207" height="58" rx="3" fill="#171513" stroke="#2E2A27" stroke-width="1"/>
+    <text x="28" y="197" font-family="Arial, sans-serif" font-size="11" font-weight="700" fill="#ECE7DE">Claude Code Adapter</text>
+    <text x="28" y="213" font-family="monospace" font-size="9.5" fill="#E4733A">claude --stream-json</text>
+    <text x="28" y="228" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">Direct stdin/stdout pipe</text>
+
+    <!-- Adapter 2: Codex app-server -->
+    <rect x="20" y="248" width="207" height="58" rx="3" fill="#171513" stroke="#2E2A27" stroke-width="1"/>
+    <text x="28" y="265" font-family="Arial, sans-serif" font-size="11" font-weight="700" fill="#ECE7DE">Codex app-server Adapter</text>
+    <text x="28" y="281" font-family="monospace" font-size="9.5" fill="#8FB3B0">codex serve --protocol=v2</text>
+    <text x="28" y="296" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">Direct JSON-RPC interface</text>
+
+    <!-- Adapter 3: AGY -->
+    <rect x="20" y="316" width="207" height="58" rx="3" fill="#171513" stroke="#2E2A27" stroke-width="1"/>
+    <text x="28" y="333" font-family="Arial, sans-serif" font-size="11" font-weight="700" fill="#ECE7DE">AGY Host Adapter</text>
+    <text x="28" y="349" font-family="monospace" font-size="9.5" fill="#E8A33D">antigravity subagent session</text>
+    <text x="28" y="364" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">Native IPC &amp; CLI runner</text>
+  </g>
+
+  <!-- ================= STAGE 4: REDACTED REGISTRY & RESULT ================= -->
+  <g transform="translate(843, 85)" filter="url(#card-shadow)">
+    <!-- Stage Card Frame -->
+    <rect width="247" height="405" rx="6" fill="#171513" stroke="#2E2A27" stroke-width="1.5"/>
+    <!-- Stage Accent Bar -->
+    <rect x="0" y="0" width="247" height="3" rx="1.5" fill="#8FB3B0"/>
+    
+    <!-- Stage Header -->
+    <text x="14" y="24" font-family="monospace" font-size="10" font-weight="700" fill="#8FB3B0" letter-spacing="1">STAGE 04</text>
+    <text x="14" y="44" font-family="Arial, sans-serif" font-size="13" font-weight="700" fill="#ECE7DE">REGISTRY &amp; RESULT</text>
+    <text x="14" y="60" font-family="Arial, sans-serif" font-size="11" fill="#B5AEA3">Safety scrubbing &amp; tracking</text>
+
+    <!-- Sub-block 1: Credential Redaction -->
+    <rect x="12" y="74" width="223" height="96" rx="4" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1"/>
+    <text x="22" y="93" font-family="Arial, sans-serif" font-size="11" font-weight="700" fill="#C4523A">Redacted Transcript</text>
+    <text x="22" y="110" font-family="Arial, sans-serif" font-size="10.5" fill="#ECE7DE">Credential-scrubbed stream</text>
+    <rect x="22" y="120" width="203" height="38" rx="3" fill="#171513" stroke="#2E2A27" stroke-width="1"/>
+    <text x="30" y="136" font-family="monospace" font-size="9" fill="#B5AEA3">tokens, keys &amp; cookies → <tspan fill="#C4523A">[REDACTED]</tspan></text>
+    <text x="30" y="150" font-family="monospace" font-size="9" fill="#8FB3B0">stream-json parser</text>
+
+    <!-- Sub-block 2: SQLite Registry -->
+    <rect x="12" y="180" width="223" height="110" rx="4" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1"/>
+    <text x="22" y="199" font-family="Arial, sans-serif" font-size="11" font-weight="700" fill="#8FB3B0">SQLite Run Registry</text>
+    <text x="22" y="216" font-family="Arial, sans-serif" font-size="10.5" fill="#ECE7DE">Durable lifecycle state</text>
+    <rect x="22" y="226" width="203" height="52" rx="3" fill="#171513" stroke="#2E2A27" stroke-width="1"/>
+    <text x="30" y="242" font-family="monospace" font-size="9" fill="#B5AEA3">schema: <tspan fill="#ECE7DE">runs, events, quota</tspan></text>
+    <text x="30" y="256" font-family="Arial, sans-serif" font-size="9.5" fill="#E8A33D">Quota wall tracking</text>
+    <text x="30" y="270" font-family="monospace" font-size="9" fill="#8FB3B0">cooling_until timestamp</text>
+
+    <!-- Sub-block 3: Terminal Notice -->
+    <rect x="12" y="300" width="223" height="91" rx="4" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1"/>
+    <text x="22" y="319" font-family="Arial, sans-serif" font-size="11" font-weight="700" fill="#E4733A">Result Dispatch</text>
+    <text x="22" y="337" font-family="Arial, sans-serif" font-size="11" fill="#ECE7DE">Terminal notice delivery</text>
+    <text x="22" y="352" font-family="Arial, sans-serif" font-size="10" fill="#B5AEA3">Signals exit code, duration,</text>
+    <text x="22" y="366" font-family="Arial, sans-serif" font-size="10" fill="#B5AEA3">diff summary &amp; artifact URI</text>
+    <text x="22" y="381" font-family="monospace" font-size="9.5" fill="#8FB3B0">status: COMPLETE | FAILED</text>
+  </g>
+</svg>

@@ -1,1 +1,0 @@
-legacy fallback canon.

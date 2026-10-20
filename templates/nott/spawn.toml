@@ -1,0 +1,25 @@
+# Copy this template to ~/.nott/spawn.toml only when that file is absent.
+# Keep only the provider you use. Set its absolute executable path.
+# The account points to an existing native client home. It contains no key.
+# Complete native login in that home. This file does not prove authentication.
+# Declare the model and effort that your selected client supports before dispatch.
+
+[bins]
+claude = "/absolute/path/to/claude"
+codex = "/absolute/path/to/codex"
+
+[[provider]]
+name = "claude"
+kind = "claude"
+model = "claude-opus-5-5"
+
+[provider.accounts.example-claude]
+home = "~/.claude"
+
+[[provider]]
+name = "codex"
+kind = "codex"
+model = "gpt-6.1-sol"
+
+[provider.accounts.example-codex]
+home = "~/.codex"

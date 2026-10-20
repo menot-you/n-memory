@@ -1,0 +1,305 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 520" role="img" aria-labelledby="title desc">
+  <title id="title">nBROWSER: Network Admission and Compact Web Evidence</title>
+  <desc id="desc">Four-stage architectural pipeline showing network egress validation, fast static extraction, isolated browser execution, and compact evidence output.</desc>
+
+  <defs>
+    <!-- Arrowhead Markers -->
+    <marker id="arrow-copper" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M1,1 L7,4 L1,7 Z" fill="#E4733A" />
+    </marker>
+    <marker id="arrow-cyan" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M1,1 L7,4 L1,7 Z" fill="#8FB3B0" />
+    </marker>
+    <marker id="arrow-amber" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M1,1 L7,4 L1,7 Z" fill="#E8A33D" />
+    </marker>
+
+    <!-- Linear Gradients -->
+    <linearGradient id="grad-copper-cyan" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#E4733A" />
+      <stop offset="100%" stop-color="#8FB3B0" />
+    </linearGradient>
+    <linearGradient id="grad-cyan-copper" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#8FB3B0" />
+      <stop offset="100%" stop-color="#E4733A" />
+    </linearGradient>
+  </defs>
+
+  <!-- Canvas Background -->
+  <rect width="1120" height="520" fill="#0F0E0D" />
+
+  <!-- Subtle Blueprint Grid Pattern -->
+  <g opacity="0.04" stroke="#ECE7DE" stroke-width="1">
+    <line x1="40" y1="40" x2="1080" y2="40" />
+    <line x1="40" y1="90" x2="1080" y2="90" />
+    <line x1="40" y1="485" x2="1080" y2="485" />
+    <line x1="40" y1="40" x2="40" y2="485" />
+    <line x1="294" y1="40" x2="294" y2="485" />
+    <line x1="560" y1="40" x2="560" y2="485" />
+    <line x1="826" y1="40" x2="826" y2="485" />
+    <line x1="1080" y1="40" x2="1080" y2="485" />
+  </g>
+
+  <!-- Header Area -->
+  <g>
+    <!-- System Badge -->
+    <rect x="40" y="24" width="88" height="20" rx="4" fill="#171513" stroke="#2E2A27" stroke-width="1" />
+    <text x="84" y="38" font-family="'Courier New', monospace" font-size="10" font-weight="bold" fill="#E4733A" text-anchor="middle" letter-spacing="1">PIPELINE</text>
+
+    <!-- Main Title -->
+    <text x="140" y="40" font-family="Arial, sans-serif" font-size="20" font-weight="bold" fill="#ECE7DE" letter-spacing="0.5">nBROWSER: Network Admission and Compact Web Evidence</text>
+    
+    <!-- Subtitle / Architecture Description -->
+    <text x="40" y="66" font-family="Arial, sans-serif" font-size="12" fill="#B5AEA3">Deterministic egress isolation, zero-Chromium fast extraction, ephemeral sandboxing, and cited evidence capture</text>
+  </g>
+
+  <!-- Connective Arrows & Data-Flow Lines -->
+  <!-- Arrow 1 -> 2 (Egress Guard to Static Seam) -->
+  <path d="M 282 230 L 304 230" fill="none" stroke="#E4733A" stroke-width="2" marker-end="url(#arrow-copper)" />
+  <text x="294" y="222" font-family="'Courier New', monospace" font-size="8" fill="#E4733A" text-anchor="middle">CLEARED</text>
+
+  <!-- Arrow 2 -> 3 (Static Seam to Browser Engine: dynamic JS fallback) -->
+  <path d="M 548 230 L 570 230" fill="none" stroke="#8FB3B0" stroke-width="2" marker-end="url(#arrow-cyan)" />
+  <text x="560" y="222" font-family="'Courier New', monospace" font-size="8" fill="#8FB3B0" text-anchor="middle">REQUIRES JS</text>
+
+  <!-- Arrow 3 -> 4 (Browser Engine to Evidence Output) -->
+  <path d="M 814 230 L 836 230" fill="none" stroke="#E4733A" stroke-width="2" marker-end="url(#arrow-copper)" />
+  <text x="826" y="222" font-family="'Courier New', monospace" font-size="8" fill="#E4733A" text-anchor="middle">CAPTURED</text>
+
+  <!-- Direct Static Bypass Route (Stage 2 Static Seam -> Stage 4 Evidence Output) -->
+  <path d="M 427 465 L 427 485 L 959 485 L 959 465" fill="none" stroke="#8FB3B0" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrow-cyan)" />
+  <rect x="650" y="476" width="130" height="18" rx="3" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1" />
+  <text x="715" y="489" font-family="'Courier New', monospace" font-size="9" fill="#8FB3B0" text-anchor="middle">DIRECT STATIC RESULT</text>
+
+  <!-- ========================================================================= -->
+  <!-- STAGE 1: REQUEST & EGRESS GUARD -->
+  <!-- ========================================================================= -->
+  <g id="stage-1">
+    <rect x="40" y="85" width="242" height="380" rx="6" fill="#171513" stroke="#2E2A27" stroke-width="1.5" />
+    
+    <!-- Stage Header -->
+    <rect x="40" y="85" width="242" height="42" rx="6" fill="#171513" />
+    <path d="M 40 127 L 282 127" stroke="#2E2A27" stroke-width="1" />
+    
+    <!-- Step Badge -->
+    <rect x="52" y="97" width="24" height="18" rx="3" fill="#2E2A27" />
+    <text x="64" y="110" font-family="'Courier New', monospace" font-size="10" font-weight="bold" fill="#ECE7DE" text-anchor="middle">01</text>
+    
+    <text x="84" y="105" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#ECE7DE">REQUEST &amp; EGRESS</text>
+    <text x="84" y="119" font-family="'Courier New', monospace" font-size="9" fill="#C4523A">ZERO-TRUST GUARD</text>
+
+    <!-- Block A: URL Scheme Validation -->
+    <g transform="translate(52, 140)">
+      <rect width="218" height="58" rx="4" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1" />
+      <text x="10" y="17" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="#ECE7DE">Public URL Scheme Check</text>
+      <text x="10" y="32" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">Permits standard web traffic:</text>
+      <rect x="10" y="38" width="52" height="15" rx="3" fill="#171513" stroke="#2E2A27" stroke-width="1" />
+      <text x="36" y="49" font-family="'Courier New', monospace" font-size="8.5" fill="#8FB3B0" text-anchor="middle"></text>
+      <rect x="68" y="38" width="58" height="15" rx="3" fill="#171513" stroke="#2E2A27" stroke-width="1" />
+      <text x="97" y="49" font-family="'Courier New', monospace" font-size="8.5" fill="#8FB3B0" text-anchor="middle"></text>
+      <text x="134" y="49" font-family="'Courier New', monospace" font-size="8" fill="#C4523A">file/gopher ✗</text>
+    </g>
+
+    <!-- Block B: DNS Resolution & Re-binding Guard -->
+    <g transform="translate(52, 206)">
+      <rect width="218" height="66" rx="4" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1" />
+      <text x="10" y="17" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="#ECE7DE">DNS Resolution Guard</text>
+      <text x="10" y="32" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">Pre-flight resolve at every hop</text>
+      <text x="10" y="46" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">Re-verifies on 30x redirects</text>
+      <text x="10" y="58" font-family="'Courier New', monospace" font-size="8.5" fill="#E8A33D">Blocks DNS rebinding &amp; TOCTOU</text>
+    </g>
+
+    <!-- Block C: Strict IP Blacklist Filter -->
+    <g transform="translate(52, 280)">
+      <rect width="218" height="110" rx="4" fill="#0F0E0D" stroke="#C4523A" stroke-width="1" />
+      <text x="10" y="16" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="#C4523A">Refused Targets (All Hops)</text>
+      
+      <circle cx="15" cy="30" r="2.5" fill="#C4523A" />
+      <text x="24" y="33" font-family="'Courier New', monospace" font-size="8.5" fill="#ECE7DE">127.0.0.0/8</text>
+      <text x="110" y="33" font-family="Arial, sans-serif" font-size="8.5" fill="#B5AEA3">(Loopback)</text>
+
+      <circle cx="15" cy="48" r="2.5" fill="#C4523A" />
+      <text x="24" y="51" font-family="'Courier New', monospace" font-size="8.5" fill="#ECE7DE">RFC1918 Private</text>
+      <text x="118" y="51" font-family="Arial, sans-serif" font-size="8.5" fill="#B5AEA3">(10/8, 172.16, 192.168)</text>
+
+      <circle cx="15" cy="66" r="2.5" fill="#C4523A" />
+      <text x="24" y="69" font-family="'Courier New', monospace" font-size="8.5" fill="#ECE7DE">169.254.0.0/16</text>
+      <text x="115" y="69" font-family="Arial, sans-serif" font-size="8.5" fill="#B5AEA3">(Link-local APIPA)</text>
+
+      <circle cx="15" cy="84" r="2.5" fill="#C4523A" />
+      <text x="24" y="87" font-family="'Courier New', monospace" font-size="8.5" fill="#E8A33D">169.254.169.254</text>
+      <text x="122" y="87" font-family="Arial, sans-serif" font-size="8.5" fill="#B5AEA3">(Cloud Metadata)</text>
+
+      <text x="10" y="103" font-family="Arial, sans-serif" font-size="8" fill="#B5AEA3" font-style="italic">Socket blocked before connect()</text>
+    </g>
+
+    <!-- Stage 1 Footer Status -->
+    <rect x="52" y="420" width="218" height="26" rx="3" fill="#171513" stroke="#2E2A27" stroke-width="1" />
+    <text x="62" y="437" font-family="'Courier New', monospace" font-size="9" fill="#8FB3B0">STATUS:</text>
+    <text x="110" y="437" font-family="Arial, sans-serif" font-size="9" fill="#ECE7DE">Non-routable IP drop</text>
+  </g>
+
+  <!-- ========================================================================= -->
+  <!-- STAGE 2: FAST STATIC SEAM -->
+  <!-- ========================================================================= -->
+  <g id="stage-2">
+    <rect x="306" y="85" width="242" height="380" rx="6" fill="#171513" stroke="#2E2A27" stroke-width="1.5" />
+    
+    <!-- Stage Header -->
+    <rect x="306" y="85" width="242" height="42" rx="6" fill="#171513" />
+    <path d="M 306 127 L 548 127" stroke="#2E2A27" stroke-width="1" />
+
+    <!-- Step Badge -->
+    <rect x="318" y="97" width="24" height="18" rx="3" fill="#2E2A27" />
+    <text x="330" y="110" font-family="'Courier New', monospace" font-size="10" font-weight="bold" fill="#ECE7DE" text-anchor="middle">02</text>
+    
+    <text x="350" y="105" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#ECE7DE">FAST STATIC SEAM</text>
+    <text x="350" y="119" font-family="'Courier New', monospace" font-size="9" fill="#8FB3B0">HEADLESS-FREE EXTRACTION</text>
+
+    <!-- Block A: Direct HTTP Extraction -->
+    <g transform="translate(318, 140)">
+      <rect width="218" height="66" rx="4" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1" />
+      <text x="10" y="17" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="#ECE7DE">Direct HTTP Ingestion</text>
+      <text x="10" y="32" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">Standard HTTP/2 client stream</text>
+      <text x="10" y="46" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">Configurable response size limits</text>
+      <text x="10" y="58" font-family="'Courier New', monospace" font-size="8.5" fill="#8FB3B0">Bypasses Chromium startup</text>
+    </g>
+
+    <!-- Block B: HTML-to-Markdown Engine -->
+    <g transform="translate(318, 214)">
+      <rect width="218" height="74" rx="4" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1" />
+      <text x="10" y="17" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="#ECE7DE">HTML-to-Markdown Parser</text>
+      <text x="10" y="32" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">Strips scripts, styling &amp; chrome</text>
+      <text x="10" y="46" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">Maintains semantic document tree</text>
+      <text x="10" y="62" font-family="'Courier New', monospace" font-size="8.5" fill="#E4733A">Sub-100ms processing floor</text>
+    </g>
+
+    <!-- Block C: Dynamic Evaluation Decision -->
+    <g transform="translate(318, 296)">
+      <rect width="218" height="74" rx="4" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1" />
+      <text x="10" y="16" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="#ECE7DE">Execution Fork</text>
+      <text x="10" y="31" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">SPA shell or JS-rendered markup?</text>
+      
+      <g transform="translate(10, 40)">
+        <rect width="90" height="24" rx="3" fill="#171513" stroke="#8FB3B0" stroke-width="1" />
+        <text x="45" y="16" font-family="Arial, sans-serif" font-size="8" fill="#8FB3B0" text-anchor="middle">No: Emit Markdown</text>
+
+        <rect x="98" width="100" height="24" rx="3" fill="#171513" stroke="#E4733A" stroke-width="1" />
+        <text x="148" y="16" font-family="Arial, sans-serif" font-size="8" fill="#E4733A" text-anchor="middle">Yes: Spawn Browser</text>
+      </g>
+    </g>
+
+    <!-- Stage 2 Footer Status -->
+    <rect x="318" y="420" width="218" height="26" rx="3" fill="#171513" stroke="#2E2A27" stroke-width="1" />
+    <text x="328" y="437" font-family="'Courier New', monospace" font-size="9" fill="#8FB3B0">RESOURCE:</text>
+    <text x="390" y="437" font-family="Arial, sans-serif" font-size="9" fill="#ECE7DE">Zero-GPU, minimal RAM</text>
+  </g>
+
+  <!-- ========================================================================= -->
+  <!-- STAGE 3: ISOLATED BROWSER ENGINE -->
+  <!-- ========================================================================= -->
+  <g id="stage-3">
+    <rect x="572" y="85" width="242" height="380" rx="6" fill="#171513" stroke="#2E2A27" stroke-width="1.5" />
+    
+    <!-- Stage Header -->
+    <rect x="572" y="85" width="242" height="42" rx="6" fill="#171513" />
+    <path d="M 572 127 L 814 127" stroke="#2E2A27" stroke-width="1" />
+
+    <!-- Step Badge -->
+    <rect x="584" y="97" width="24" height="18" rx="3" fill="#2E2A27" />
+    <text x="596" y="110" font-family="'Courier New', monospace" font-size="10" font-weight="bold" fill="#ECE7DE" text-anchor="middle">03</text>
+    
+    <text x="616" y="105" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#ECE7DE">ISOLATED BROWSER</text>
+    <text x="616" y="119" font-family="'Courier New', monospace" font-size="9" fill="#E4733A">CLOAKBROWSER ENGINE</text>
+
+    <!-- Block A: Ephemeral Cloak Profile -->
+    <g transform="translate(584, 140)">
+      <rect width="218" height="66" rx="4" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1" />
+      <text x="10" y="17" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="#ECE7DE">Ephemeral Session Profile</text>
+      <text x="10" y="32" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">Dedicated scratch sandbox directory</text>
+      <text x="10" y="46" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">Strict process isolation per session</text>
+      <text x="10" y="58" font-family="'Courier New', monospace" font-size="8.5" fill="#E4733A">Zero cross-session data leak</text>
+    </g>
+
+    <!-- Block B: Rate Limiting & Courtesy Guard -->
+    <g transform="translate(584, 214)">
+      <rect width="218" height="66" rx="4" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1" />
+      <text x="10" y="17" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="#ECE7DE">Rate Limiting &amp; Backoff</text>
+      <text x="10" y="32" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">Robots.txt courtesy evaluation</text>
+      <text x="10" y="46" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">Exponential backoff on HTTP 429</text>
+      <text x="10" y="58" font-family="'Courier New', monospace" font-size="8.5" fill="#8FB3B0">Origin-scoped request pacing</text>
+    </g>
+
+    <!-- Block C: Local Encrypted Credential Vault -->
+    <g transform="translate(584, 288)">
+      <rect width="218" height="82" rx="4" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1" />
+      <text x="10" y="17" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="#ECE7DE">Origin-Bound Vault</text>
+      <text x="10" y="32" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">Encrypted local credential storage</text>
+      <text x="10" y="46" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">Bound strictly to scheme + host + port</text>
+      <text x="10" y="60" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">Prevents token leakage to third parties</text>
+      <text x="10" y="74" font-family="'Courier New', monospace" font-size="8.5" fill="#E8A33D">Zero plain-text secrets in memory</text>
+    </g>
+
+    <!-- Stage 3 Footer Status -->
+    <rect x="584" y="420" width="218" height="26" rx="3" fill="#171513" stroke="#2E2A27" stroke-width="1" />
+    <text x="594" y="437" font-family="'Courier New', monospace" font-size="9" fill="#E4733A">ISOLATION:</text>
+    <text x="668" y="437" font-family="Arial, sans-serif" font-size="9" fill="#ECE7DE">Sandboxed profile teardown</text>
+  </g>
+
+  <!-- ========================================================================= -->
+  <!-- STAGE 4: COMPACT EVIDENCE OUTPUT -->
+  <!-- ========================================================================= -->
+  <g id="stage-4">
+    <rect x="838" y="85" width="242" height="380" rx="6" fill="#171513" stroke="#2E2A27" stroke-width="1.5" />
+    
+    <!-- Stage Header -->
+    <rect x="838" y="85" width="242" height="42" rx="6" fill="#171513" />
+    <path d="M 838 127 L 1080 127" stroke="#2E2A27" stroke-width="1" />
+
+    <!-- Step Badge -->
+    <rect x="850" y="97" width="24" height="18" rx="3" fill="#2E2A27" />
+    <text x="862" y="110" font-family="'Courier New', monospace" font-size="10" font-weight="bold" fill="#ECE7DE" text-anchor="middle">04</text>
+    
+    <text x="882" y="105" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#ECE7DE">COMPACT EVIDENCE</text>
+    <text x="882" y="119" font-family="'Courier New', monospace" font-size="9" fill="#8FB3B0">REPRODUCIBLE ARTIFACT</text>
+
+    <!-- Block A: Clean Markdown Stream -->
+    <g transform="translate(850, 140)">
+      <rect width="218" height="54" rx="4" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1" />
+      <text x="10" y="17" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="#ECE7DE">Clean Markdown Extract</text>
+      <text x="10" y="32" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">Sanitized hierarchical prose</text>
+      <text x="10" y="45" font-family="'Courier New', monospace" font-size="8.5" fill="#8FB3B0">Dense token-efficient payload</text>
+    </g>
+
+    <!-- Block B: Accessibility SemanticView -->
+    <g transform="translate(850, 202)">
+      <rect width="218" height="66" rx="4" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1" />
+      <text x="10" y="17" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="#ECE7DE">SemanticView Snapshot</text>
+      <text x="10" y="32" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">A11y tree node hierarchy</text>
+      <text x="10" y="46" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">ARIA landmark &amp; role mapping</text>
+      <text x="10" y="58" font-family="'Courier New', monospace" font-size="8.5" fill="#8FB3B0">Precise interaction targets</text>
+    </g>
+
+    <!-- Block C: Network & Console Telemetry -->
+    <g transform="translate(850, 276)">
+      <rect width="218" height="54" rx="4" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1" />
+      <text x="10" y="17" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="#ECE7DE">Network &amp; Console Logs</text>
+      <text x="10" y="32" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">HTTP status, TLS cipher, error logs</text>
+      <text x="10" y="45" font-family="'Courier New', monospace" font-size="8.5" fill="#E8A33D">Falsifiable execution proof</text>
+    </g>
+
+    <!-- Block D: Reproducible Source URL Citation -->
+    <g transform="translate(850, 338)">
+      <rect width="218" height="66" rx="4" fill="#0F0E0D" stroke="#2E2A27" stroke-width="1" />
+      <text x="10" y="17" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="#ECE7DE">Reproducible Citation</text>
+      <text x="10" y="32" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">Canonical URL + fetch timestamp</text>
+      <text x="10" y="46" font-family="Arial, sans-serif" font-size="9" fill="#B5AEA3">Content hash for integrity verify</text>
+      <text x="10" y="58" font-family="'Courier New', monospace" font-size="8.5" fill="#E4733A">sha256 digest + URI receipt</text>
+    </g>
+
+    <!-- Stage 4 Footer Status -->
+    <rect x="850" y="420" width="218" height="26" rx="3" fill="#171513" stroke="#2E2A27" stroke-width="1" />
+    <text x="860" y="437" font-family="'Courier New', monospace" font-size="9" fill="#8FB3B0">VERIFIED:</text>
+    <text x="926" y="437" font-family="Arial, sans-serif" font-size="9" fill="#ECE7DE">Cited, auditable proof</text>
+  </g>
+</svg>
