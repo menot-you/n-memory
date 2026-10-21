@@ -22,6 +22,14 @@ The plugin places its manifests, law, skills, hooks, and scripts at the root.
 No public command requires the private source workspace.
 
 The public wizard entry point is `https://no.tt/install.sh`.
+Run it with:
+
+```bash
+curl --proto '=https' --tlsv1.2 -fsSL https://no.tt/install.sh | sh
+```
+
+The default component is the plugin, which installs the plugin and the three MCP servers.
+Use `sh -s -- --component nmemory` (or `nspawn`, `nbrowser`) to install one MCP server only.
 It needs an approved published version and matching installer bytes.
 A prepared source tree does not prove that the public URL is active.
 Do not use an unapproved installer on an existing account.

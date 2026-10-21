@@ -1,0 +1,74 @@
+# The sector agents. Each sector has one agent, plugin/agents/<name>.md, that
+
+# routes each team lesson to one sector of this manifest through System1 and writes
+
+# The manifest lives next to the generator, so the daemon's install carries it.
+#
+# summary: what the sector covers. System1 reads it to route a lesson.
+# paths:   repository paths of the sector.
+# words:   words that name the sector's work.
+
+[sectors.tui]
+summary = "the nott CLI and its TUI (nott_cli/tui)"
+paths = ["apps/cli"]
+words = ["tui", "nott_cli", "nott cli", "nott tui"]
+
+[sectors.memory]
+summary = "nMEMORY: store, recall, capture, CLI and MCP"
+paths = ["mcps/nmemory"]
+words = ["nmemory", "capsule", "capsules", "recall"]
+
+[sectors.spawn]
+summary = "nSPAWN: roster, picker, supervisor, driver, review"
+paths = ["mcps/nspawn"]
+words = ["nspawn", "roster", "picker", "supervisor", "spawn.toml"]
+
+[sectors.browser]
+summary = "nBROWSER: page reads, web search, crawl"
+paths = ["mcps/nbrowser"]
+words = ["nbrowser", "web search", "crawl"]
+
+[sectors.app]
+summary = "NOTT.app, NottKit, the iOS app NOTTMobile, scenarios, the M5 build and install"
+paths = ["apps/apple"]
+words = ["nott.app", "nottkit", "nottmobile", "ios", "m5", "swiftui", "xcodebuild", "testflight"]
+
+[sectors.host]
+summary = "nott acp serve, the node host nott-node, the ACP contract and fixtures"
+paths = ["harness"]
+words = ["acp", "nott-node", "node host", "nott_harness", "acp serve"]
+
+[sectors.plugin]
+summary = "the plugin law, routes, agents, scripts and packaging (not the hooks)"
+paths = ["plugin/NOTT.md", "plugin/skills", "plugin/agents", "plugin/scripts"]
+words = ["nott.md", "law", "route", "routes", "skill", "skills", "sector agent"]
+
+[sectors.hooks]
+summary = "every hook, its contract under plugin/tests, and live delivery"
+paths = ["plugin/hooks", "plugin/hooks/hooks.json"]
+words = ["hook", "hooks", "hooks.json"]
+
+[sectors.store]
+summary = "the one SQLite opener, the peer-credential socket door, the network door, the spine"
+paths = ["libs/database", "libs/socket", "libs/netdoor", "libs/spine"]
+words = ["sqlite", "nott_database", "nott-database", "netdoor", "spine", "so_peercred", "peer credentials"]
+
+[sectors.system1]
+summary = "libs/system1 and the System1 classifier configuration (Laya on the macbook, never driven from here)"
+paths = ["libs/system1"]
+words = ["system1", "laya", "classifier"]
+
+[sectors.ops]
+summary = "systemd units and timers, the docs portal, the public mirror, installers, the gate and the rails"
+paths = ["ops", "templates/nott", "tools/mcp.sh", "tools/gate.sh", "tools/rail", "rails"]
+words = ["systemd", "timer", "rail", "rails", "mirror", "portal", "installer"]
+
+[sectors.web]
+summary = "web front-end work wherever it occurs: HTML, CSS, JavaScript and TypeScript, browser apps and static sites, accessibility and responsive layout, and browser proof through nBROWSER. Its consumers in pynott include apps/landing and any web client. This agent is a web expert for future fixes, not a landing-copy agent"
+paths = ["apps/landing"]
+words = ["html", "css", "javascript", "typescript", "front-end", "frontend", "web client", "web app", "web ui", "static site", "accessibility", "wcag", "aria", "responsive", "browser proof"]
+
+# The read-only readers that NOTT writes. A reader is not a sector: no lessons
+# file is routed to it, and test_plugin_agents.py keeps it read-only.
+[readers.qa]
+summary = "screen QA of the installed NOTT.app, from its screenshots"

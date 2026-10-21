@@ -500,6 +500,7 @@ class CuratorClient:
                 if value := env.get(variable):
                     arguments[argument] = value
             run_id: str | None = None
+            runs: list[str] = []
             request = {
                 "tool": "nspawn_run_start",
                 "arguments": {
@@ -524,6 +525,7 @@ class CuratorClient:
                 if not isinstance(found, str) or not found:
                     raise CuratorError("nSPAWN admission carries no run_id")
                 run_id = found
+                runs.append(run_id)
                 deadline = time.monotonic() + self.timeout_s
                 while True:
                     remaining = deadline - time.monotonic()
@@ -538,13 +540,22 @@ class CuratorClient:
                             },
                         )
                     )
-                    if status.get("phase") in {
+                    if status.get("phase") not in {
                         "completed",
                         "failed",
                         "closed",
                         "orphaned",
                     }:
+                        continue
+                    moved = _successor(status)
+                    if moved is None:
                         break
+                    if len(runs) > _MOVES:
+                        raise CuratorError("curator nSPAWN work moved too many times")
+                    # The successor is a new run with its own deadline.
+                    run_id = moved
+                    runs.append(run_id)
+                    deadline = time.monotonic() + self.timeout_s
                 result = owner.nspawn_result_show(run_id)
                 envelope: dict[str, Any] = {
                     "is_error": status.get("phase") != "completed",
@@ -566,23 +577,50 @@ class CuratorClient:
                 ) from error
             finally:
                 failure = sys.exception()
-                try:
-                    close = (
-                        {"run_id": run_id}
-                        if run_id is not None
-                        else {"idempotency_key": key, "request": request}
-                    )
-                    closed = _spawn_payload(owner.call_tool("nspawn_run_close", close))
-                    if private_cwd and closed.get("lookup") == "fenced":
-                        Path(str(cwd)).rmdir()
-                except McpError as error:
+                closes: list[dict[str, Any]] = (
+                    [{"run_id": each} for each in reversed(runs)]
+                    if runs
+                    else [{"idempotency_key": key, "request": request}]
+                )
+                refused: McpError | None = None
+                # The last run first: the driver's close watcher serves only the
+                # run that holds the work. One close that fails does not keep
+                # another run open.
+                for close in closes:
+                    try:
+                        closed = _spawn_payload(
+                            owner.call_tool("nspawn_run_close", close)
+                        )
+                        if private_cwd and closed.get("lookup") == "fenced":
+                            Path(str(cwd)).rmdir()
+                    except McpError as error:
+                        refused = refused or error
+                if refused is not None:
                     if failure is None:
                         raise CuratorError(
-                            f"nSPAWN curator cleanup failed: {error}"
-                        ) from error
-                    failure.add_note(f"nSPAWN curator cleanup failed: {error}")
+                            f"nSPAWN curator cleanup failed: {refused}"
+                        ) from refused
+                    failure.add_note(f"nSPAWN curator cleanup failed: {refused}")
         finally:
             owner.close()
+
+
+#: The most runs one curator call follows, as nSPAWN's own answer.
+_MOVES: Final = 32
+
+
+def _successor(status: dict[str, Any]) -> str | None:
+    """The run that continues the work of the ended run `status`, or None.
+
+    nSPAWN writes `continued as run <id>` in the `warning` of a failed run whose
+    work it moved; `nspawn_result_show` follows the same link."""
+    # nSPAWN is an optional package here: only `_invoke`, after its import, asks.
+    from nspawn.notify import continued_in
+
+    warning = status.get("warning")
+    if status.get("phase") not in ("failed", "closed") or not isinstance(warning, str):
+        return None
+    return continued_in(warning)
 
 
 def _spawn_payload(reply: dict[str, Any]) -> dict[str, Any]:

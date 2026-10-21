@@ -6,6 +6,8 @@ import json
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import nott_database
 import pytest
@@ -298,3 +300,67 @@ def test_prompt_is_data_on_stdin_and_never_an_option(native_curator: Path) -> No
     [call] = [json.loads(line) for line in native_curator.read_text().splitlines()]
     assert call["prompt"] == prompt
     assert prompt not in call["argv"]
+
+
+def test_curator_poll_follows_the_run_its_work_continued_as(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """nSPAWN moved the work off a failed account. The first run
+    failed and names its successor: the curator waits for the successor, reads
+    its answer and closes both runs, the successor first: the driver's close
+    watcher serves only the run that holds the work."""
+    moved = "22222222-2222-4222-8222-222222222222"
+    shows = iter(
+        [
+            {
+                "run_id": "curator-1",
+                "phase": "failed",
+                "warning": f"HTTP 429; continued as run {moved} on codex/second",
+            },
+            {"run_id": moved, "phase": "running"},
+            {"run_id": moved, "phase": "completed"},
+        ]
+    )
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class Owner:
+        def call_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+            calls.append((name, args))
+            payload = (
+                {"run_id": "curator-1"}
+                if name == "nspawn_run_start"
+                else next(shows)
+                if name == "nspawn_run_show"
+                else {"run_id": args["run_id"], "phase": "closed"}
+            )
+            return {"content": [{"text": json.dumps(payload)}]}
+
+        def nspawn_result_show(self, run_id: str) -> Any:
+            calls.append(("nspawn_result_show", {"run_id": run_id}))
+            return SimpleNamespace(
+                final_text="[]", structured_output=None, failure_reason=None
+            )
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("nspawn.mcp.McpServer", Owner)
+    monkeypatch.setattr(
+        "nmemory.curator.selected_curator_route",
+        lambda: SimpleNamespace(target="fixture"),
+    )
+    client = CuratorClient(custom_hook=lambda _: None)  # type: ignore[arg-type,return-value]
+    monkeypatch.setattr(client, "child_env", dict)
+    envelope = json.loads(client._invoke("Read repository facts.", None, cwd=tmp_path))
+    assert envelope["is_error"] is False
+    assert envelope["result"] == "[]"
+    assert [a["run_id"] for n, a in calls if n == "nspawn_run_show"] == [
+        "curator-1",
+        moved,
+        moved,
+    ]
+    assert ("nspawn_result_show", {"run_id": moved}) in calls
+    assert [a for n, a in calls if n == "nspawn_run_close"] == [
+        {"run_id": moved},
+        {"run_id": "curator-1"},
+    ]

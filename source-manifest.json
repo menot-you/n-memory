@@ -87,12 +87,12 @@
     "README.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "fd46d19063b7bfc799422bf0085cd05b237d2678e655a5732c3be1c519e902b7"
+      "sha256": "2b719fbe4387d32473546229f335481fe741516a37de951881f1aa569afbe13b"
     },
     "RULEBOOK.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "8fb44a93d8dcd9bbb20908dd6512eb320a3fbd4d501cb64bbad4ac84dc6e016b"
+      "sha256": "191a71d33e8bcec76ff41db3b2d9310dce9b2f59292090cc44ab4665b6cdccaf"
     },
     "SECURITY.md": {
       "executable": false,
@@ -107,7 +107,7 @@
     "docs/ARCHITECTURE.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "7c9a265df46277a8e40a9dee4e1b68a1645e17b464965d344d96846afd0d7bc3"
+      "sha256": "d8e5f9c315281b437a7124902722fa0c35e0089751cf1d945e1d625bacb14c78"
     },
     "docs/DOCUMENTATION.md": {
       "executable": false,
@@ -117,7 +117,7 @@
     "docs/INSTALLATION.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "942a87692e17729ee0c168d5a315d159d78a60921402121468f798c41e5edc74"
+      "sha256": "5f7affc43c0ef270d4754d45bb3b084106295a8d2c70c482662814d5d637226d"
     },
     "docs/PRIVACY.md": {
       "executable": false,
@@ -137,7 +137,7 @@
     "docs/REFERENCE.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "683ff25139bef4129f0e150196f0a9626429b465bb17b3f3bcc7993b64a094b4"
+      "sha256": "0c554ea1b9536241c253b761215f18b46f17a1496a9f50218b4f0302acd252f0"
     },
     "docs/ROADMAP.md": {
       "executable": false,
@@ -167,7 +167,12 @@
     "docs/components/nspawn/ARCHITECTURE.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "56072ee1e62fed5d09c2af0d231fd3a202c01e6ee49d97cf44b75940f6968b2c"
+      "sha256": "9507ae7e83f58c6fcb0914fed6edd706c7b3c46def118e502fcf04903c1fd8fc"
+    },
+    "docs/components/nspawn/QUALITY.md": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "4f92fc0adff4b98838dde9e234c2481dfa2a7abfd89c8fd36be3ff0d98a07bfe"
     },
     "docs/components/nspawn/README.md": {
       "executable": false,
@@ -177,37 +182,132 @@
     "docs/components/nspawn/REFERENCE.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "9c55e190f1562b4ea3220f1c2a756b33d0d41124b2eeeb103a784ca548b30a91"
+      "sha256": "97a4fd51df5618940c4a829c1bf4b076a71e444a5882690957ffdab83b58e846"
     },
     "docs/components/nspawn/RUNBOOK.md": {
       "executable": false,
       "mode": 420,
       "sha256": "5914daff86c54c1039eb694b4515efcf3b657716e5e1ad4cfbe10500b4109214"
     },
+    "docs/components/nspawn/SETUP.md": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "f54761d22bb8581c5ba70a41ec7de74000a843f6cd22b8dc4da8ef2a8858d7eb"
+    },
+    "docs/components/nspawn/setup-catalog.json": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "e38d088b4045b0a663d461df415f2f59ad8dcdc1a1858e15e79ea54126987972"
+    },
     "docs/export-map.json": {
       "executable": false,
       "mode": 420,
-      "sha256": "b0de769a5b879427ddd7a400c6737a60e1f1c6d868e8c716c8ad6d38d7df3c97"
+      "sha256": "4502e6d7c31ef4b21aef4e022b5b9a9520be0110bc988d07e4f806f003153fc6"
     },
     "docs/figures/README.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "971588926ff398f34db7e28cfc5897d0718bafa7f7873cb87bc7a30044dc0a5a"
+      "sha256": "07225809510c2fe7e271d4639d2967d4aa35300e8e04e9e10b9e98c2e876008c"
     },
     "docs/figures/browser-anatomy.svg": {
       "executable": false,
       "mode": 420,
-      "sha256": "3a5a591b1331103bfa45a01373723ae3bc97208eb7fdcb994ead0250e6b9611a"
+      "sha256": "fa53bcb2941345e672937c802532ea5839f1dc9f0810aae192824876a888a47e"
     },
     "docs/figures/browser-security.svg": {
       "executable": false,
       "mode": 420,
-      "sha256": "70de579b974693df24db2010d53d9ecaa45bcbd2f63d3b5819a0d7717733927d"
+      "sha256": "5c0e9f501518c955b6c06e4d5d51689e779bc1a974939518669ea2071b196798"
     },
     "docs/figures/browser.svg": {
       "executable": false,
       "mode": 420,
-      "sha256": "10725a37a17a864801a393337f2757bd1e0c25433757a9ea203003dcd40c2e0f"
+      "sha256": "1b5efa0fa589882a67832eb65f746f4f24fb9c2c2730a2585c8d55bc457cd093"
+    },
+    "docs/figures/chart-tests.svg": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "64d74d6b856ce73ed38fc75981ed447fc1f564f33f5f802b1d7dd72cebe633e4"
+    },
+    "docs/figures/chart-tools.svg": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "3b07a92642c32c576c124e03d8390263797d8b13804e066a69fe8fcf0139e00b"
+    },
+    "docs/figures/hero-napple-dark.svg": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "c0c6800e2d1fe579c5c8378c0ec6396cd8a4cf08ee699fa5378d56165fd7861a"
+    },
+    "docs/figures/hero-napple-light.svg": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "d9a41f31671c7fe6f013a64e275cb2a3faf748efdfb8355e019d9f4cb2b90234"
+    },
+    "docs/figures/hero-nbrowser-dark.svg": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "424d4e0a49f2cde5ef9bb963c2f4aa5cb1649c0fd83acdb5ecbed2bcb99c3e70"
+    },
+    "docs/figures/hero-nbrowser-light.svg": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "87bdfcc79c7c417e5f0a4042067c0de5f11091c42cadf245ad7a29f2b53abd4a"
+    },
+    "docs/figures/hero-nmemory-dark.svg": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "29a8240bb7aa5e0b7132ac7b84de62cc680e8531ca112181b0b10d988d21c922"
+    },
+    "docs/figures/hero-nmemory-light.svg": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "98dfdec25c8c454da1d6c62254a7a8e870320ddaa58f72863a9ac41d82d77561"
+    },
+    "docs/figures/hero-nspawn-dark.svg": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "19aa894f758c4ed27c5bd562608ac94944b7ae3a4341b1f00598f6e314c8830d"
+    },
+    "docs/figures/hero-nspawn-light.svg": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "da5195581cb3650ac64077545a42577362a530369432852e9d2b1daedb3a9010"
+    },
+    "docs/figures/hero-plugin-dark.svg": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "7df4ee5b97999ec0875829b594ceee63b59a5367993081cade583e4da0665766"
+    },
+    "docs/figures/hero-plugin-light.svg": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "bc6158087e54bb44b559f3769772f920e1fcca65f305120b9a502f4a924c1687"
+    },
+    "docs/figures/mark-napple.svg": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "7659ede86eb36a4641c8dbe4412a2714fd3d0c4af6070f31832db7a7e6eb4909"
+    },
+    "docs/figures/mark-nbrowser.svg": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "2c00a21f942ae912a39990e9a78379cbec11084360a28aa05f0da28785459a12"
+    },
+    "docs/figures/mark-nmemory.svg": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "78a878d59552b6afd2d24715ebb6a42881b28a1138a2fe8e26463ae602b4744e"
+    },
+    "docs/figures/mark-nspawn.svg": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "fc9ef42c5160f81870786d4b60e6371c9fb0fd2a7413d3f3be4ab3d2fd913652"
+    },
+    "docs/figures/mark-plugin.svg": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "a9961f97282a0cfd319eb850f53bc63960d6b882358fa772398640f339370606"
     },
     "docs/figures/memory-anatomy.svg": {
       "executable": false,
@@ -459,6 +559,11 @@
       "mode": 420,
       "sha256": "19ac5faebbdce67bd337cbdb6fabca09b31d97aec181309caeb474dd444a6588"
     },
+    "llms.txt": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "4c064902248be04cfa729904d397a0aad3c5981cc345cf59ff184e192262fd4a"
+    },
     "nmemory/__init__.py": {
       "executable": false,
       "mode": 420,
@@ -512,7 +617,7 @@
     "nmemory/cli.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "fbbb6ef170237d11b8fbccaf22511d2abb81d1e6615fe58a97218a4d64df66b9"
+      "sha256": "be8389ec19fe3dfb76ec0f65242db603f7c38943274ac43dac35bd750f76a2d2"
     },
     "nmemory/commands/__init__.py": {
       "executable": false,
@@ -532,7 +637,7 @@
     "nmemory/commands/common.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "b38559dd673017118a1e594c00d2c4ee1dbc0d3506582d8ae7cb8eec581f1c35"
+      "sha256": "73c89d6de40f80065da4e46beb72d6ab5f1c20bfa3f8fd5ffefee646ca0ef044"
     },
     "nmemory/commands/context.py": {
       "executable": false,
@@ -582,7 +687,7 @@
     "nmemory/commands/project.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "c0475235163577c9d5253072036c902d3396b23c94091d83125d442c872b7490"
+      "sha256": "61276d3e183a8c053956e9ebe59dcad99942f27232521dc986d02606aa69022c"
     },
     "nmemory/commands/projection.py": {
       "executable": false,
@@ -612,7 +717,7 @@
     "nmemory/commands/rule.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "cc857d575bd00ec5ef4c9bff4e5d717282f64448c07bbf8c5d164dabba94ec1d"
+      "sha256": "6c69c45cdd8a901b6cac8b3069e355e8ebfe3c66dcb9e1fe3cbc27f03da1ae63"
     },
     "nmemory/config.py": {
       "executable": false,
@@ -637,7 +742,7 @@
     "nmemory/curator.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "0d5af78de03429e88c8a3b758734811e093e6a2f13435d42962bf5637a811b23"
+      "sha256": "0e2ba2da6368b90ad68941435ffc09830437c19bdb6f8f254086283307427a32"
     },
     "nmemory/curator_policy.py": {
       "executable": false,
@@ -697,7 +802,7 @@
     "nmemory/hooks/hooks.json": {
       "executable": false,
       "mode": 420,
-      "sha256": "41f47f5e79da6480cde3b20aac23d49f67c33995f8ad5c1dd35d51a698e8f404"
+      "sha256": "2e376c388371b0dfc90af96cdca9e5c7832e2d6d1dbfdfbfb935858a62602a38"
     },
     "nmemory/hooks/nmemory-capture-gate.py": {
       "executable": true,
@@ -712,7 +817,7 @@
     "nmemory/hooks/nmemory-session.sh": {
       "executable": true,
       "mode": 493,
-      "sha256": "de1bf9f716fb2fcd065fe48da03f095805aac2f04a93e643a90adc39ceb2d8ea"
+      "sha256": "dd7eab20d813a8a7eb8301f206e571c4fea977bf18fafa32c065c0719f876cdf"
     },
     "nmemory/hooks/renamed.py": {
       "executable": false,
@@ -922,7 +1027,7 @@
     "nmemory/repositories/reviews.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "15a0bce0b1fd83d0bde7da120ddcab3c56020b19711b83d3b58aad58b85227dd"
+      "sha256": "ed8f5668b274e339cc0d20da8e86307684c5e5680d27874156b0c3254569f93b"
     },
     "nmemory/repositories/sessions.py": {
       "executable": false,
@@ -957,7 +1062,17 @@
     "nmemory/rules.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "2f01f16493864da463b8e791d17e89ddad458a6520f80a4fcc62567a8a81bebd"
+      "sha256": "dffbd99ba66ab21516701a234d4ab286de749799f48d7a132c6122f788fe514d"
+    },
+    "nmemory/rules_writer.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "933e86843ee6352ac998d9d03784ec1529fc9bb2072fc18a4e409a8611fa432f"
+    },
+    "nmemory/sectors.toml": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "69c0cb77bee074a8e2d51b63eb0059a6f14dc5a9e43620419d6aca4cc92dddd4"
     },
     "nmemory/serve.py": {
       "executable": false,
@@ -967,7 +1082,7 @@
     "nmemory/server.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "174f63b296635610d62a3b765b55e7f74ae920bcfdbb9961ff31c2f9a59e51d4"
+      "sha256": "35f6025bada412e8aecf18beee1912575e52d297a4bfa4da0814eb1b7ab45a9b"
     },
     "nmemory/space.py": {
       "executable": false,
@@ -997,7 +1112,7 @@
     "nmemory/system1.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "8de0fd2c02b83f4b912c2f45fe79f3818d7deaeebdf015a504ce1893058f5390"
+      "sha256": "439e99b1401e9a58fc459941aee46da190756f8c3942738bd8384f90df0d0d41"
     },
     "nmemory/taint.py": {
       "executable": false,
@@ -1292,7 +1407,7 @@
     "packages/nspawn/README.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "abe42e352f2b1e9bb6dc6b9e42090c1b3dff05e3e1f071ac7ccdda15d349530c"
+      "sha256": "82092d368788c0e9d6c893ac1e51e9fe19fbb07aff88082804f9855d25ce241a"
     },
     "packages/nspawn/RULEBOOK.md": {
       "executable": false,
@@ -2632,7 +2747,7 @@
     "pyproject.toml": {
       "executable": false,
       "mode": 420,
-      "sha256": "91df735653c21e85beb0c7214cf0d1611204d58d5c83a07c0826c9597593235f"
+      "sha256": "36a7ea0e45a3ebff16a43db97185e46058b8a579d20fca51692d3b7a33b2167a"
     },
     "templates/nott/spawn.toml": {
       "executable": false,
@@ -2852,7 +2967,7 @@
     "tests/test_curator_nspawn.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "9398834319bec4e98b43bc3ea613821db6691cf86d7fc0a2b0e886217edd501e"
+      "sha256": "43e3f9171635550c5ccc438c2237a291a63488e86152ede956755703ed6819cb"
     },
     "tests/test_curator_route.py": {
       "executable": false,
@@ -3132,7 +3247,7 @@
     "tests/test_pinned_list.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "170e1e9c86ee323bf699fbddd8ab8e047b332d6c7b419ef7e285882d5079d0f9"
+      "sha256": "cbf27bd7efa08aae812aededa9d57cebd2700461a1cedcc2cb12aef68a0b4308"
     },
     "tests/test_portal.py": {
       "executable": false,
@@ -3147,7 +3262,7 @@
     "tests/test_project_onboarding.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "3191d9085aad42625a4483dfb278164877e785872026578dfd66af0908eeda89"
+      "sha256": "a99d84536c9ff98d76ee9a84a089976bb865b78d9e86a583cbb6993fbd15eac1"
     },
     "tests/test_project_scan.py": {
       "executable": false,
@@ -3352,7 +3467,7 @@
     "tests/test_rules.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "5ef19de216a71cd4988a387506945076ee142785f3a445d6249971d79539f17c"
+      "sha256": "87f15aabc23560ebe004befcf39a17dab2a4a3f6bdd9b114179e11871ee7bba2"
     },
     "tests/test_runtime_boundary.py": {
       "executable": false,

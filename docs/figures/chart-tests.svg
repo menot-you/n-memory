@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="364" viewBox="0 0 1000 364" role="img" aria-labelledby="t d">
+<title id="t">Tests per component</title>
+<desc id="d">Horizontal bars: collected pytest tests. nSPAWN 4335, nMEMORY 2339, nBROWSER 731, nAPPLE 106.</desc>
+<rect width="1000" height="364" rx="16" fill="#0F0E0D" stroke="#2A2622"/>
+<text x="40" y="52" font-family="'IBM Plex Sans Condensed', 'Arial Narrow', 'Helvetica Neue', Arial, sans-serif" font-size="28" font-weight="700" fill="#ECE7DE">Tests per component</text>
+<text x="960" y="52" text-anchor="end" font-family="'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace" font-size="14" letter-spacing="2" fill="#8F887D">PYTEST TESTS</text>
+<text x="200" y="119" text-anchor="end" font-family="'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace" font-size="18" fill="#B5AEA3">nSPAWN</text>
+<rect x="220" y="100" width="640" height="28" rx="4" fill="#151311"/>
+<rect x="220" y="100" width="640" height="28" rx="4" fill="#E4733A"/>
+<text x="872" y="121" font-family="'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace" font-size="18" font-weight="600" fill="#ECE7DE">4,335</text>
+<text x="200" y="171" text-anchor="end" font-family="'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace" font-size="18" fill="#B5AEA3">nMEMORY</text>
+<rect x="220" y="152" width="640" height="28" rx="4" fill="#151311"/>
+<rect x="220" y="152" width="345" height="28" rx="4" fill="#E4733A"/>
+<text x="577" y="173" font-family="'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace" font-size="18" font-weight="600" fill="#ECE7DE">2,339</text>
+<text x="200" y="223" text-anchor="end" font-family="'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace" font-size="18" fill="#B5AEA3">nBROWSER</text>
+<rect x="220" y="204" width="640" height="28" rx="4" fill="#151311"/>
+<rect x="220" y="204" width="108" height="28" rx="4" fill="#E4733A"/>
+<text x="340" y="225" font-family="'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace" font-size="18" font-weight="600" fill="#ECE7DE">731</text>
+<text x="200" y="275" text-anchor="end" font-family="'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace" font-size="18" fill="#B5AEA3">nAPPLE</text>
+<rect x="220" y="256" width="640" height="28" rx="4" fill="#151311"/>
+<rect x="220" y="256" width="16" height="28" rx="4" fill="#E4733A"/>
+<text x="248" y="277" font-family="'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace" font-size="18" font-weight="600" fill="#ECE7DE">106</text>
+<text x="40" y="336" font-family="'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace" font-size="13" fill="#8F887D">Counted with: uv run --group dev pytest --collect-only -q, in each member root.</text>
+</svg>

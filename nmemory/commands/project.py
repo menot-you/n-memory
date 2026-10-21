@@ -600,7 +600,7 @@ def _bootstrap(args: Any, root: Path, owned: Path) -> None:
         servers["nmemory"] = binding
         files[target] = (_encoded(data), 0o600)
     events: dict[str, list[tuple[str, list[str]]]] = {
-        "SessionStart": [("nmemory-session.sh", []), ("nmemory-session.sh", ["pins"])],
+        "SessionStart": [("nmemory-session.sh", [])],
         "UserPromptSubmit": [("nmemory-recall.py", [])],
         "Stop": [("nmemory-capture-gate.py", [])],
     }

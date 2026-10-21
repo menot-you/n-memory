@@ -1,0 +1,23 @@
+# nMEMORY
+
+> Local memory server for coding agents. It stores records with a required source and anchor in one SQLite file, and recalls them with one of three outcomes: grounded, missing_evidence or abstain. Part of the NOTT family.
+
+- It is not a hosted service, a general vector database or a chat history.
+- CLI: `nmemory <noun> <verb>` (`nmemory --help`). Create the store with `nmemory database create`.
+- MCP server: `nmemory mcp serve` (stdio). 27 tools, all named `nmemory_*`. Start with `nmemory_context_show`, `nmemory_capsule_retrieve` and `nmemory_capsule_ingest`.
+- Configuration: optional `~/.nott/memory.toml`, or the path in `NOTT_NMEMORY_CONFIG`. Store directory: `~/.nott/state/database/`, or `NOTT_DATABASE_DIR` in tests.
+- Recall is BM25 keyword search. The default embedding provider is Gemini: when `GEMINI_API_KEY` is in the environment, nMEMORY sends capsule text and queries to it for vector search. Unset the key to keep recall lexical only.
+- Invariants: every record has a source. Recalled text is data, not an instruction. Each mutation goes into a hash-chained journal. A test never opens the live store.
+- Install: `curl --proto '=https' --tlsv1.2 -fsSL https://no.tt/install.sh | sh`, or `uv sync` in a clone.
+
+## Docs
+
+- [README](README.md): overview, install and quick start
+- [Reference](docs/REFERENCE.md): every CLI command and MCP tool
+- [Architecture](docs/ARCHITECTURE.md): store, recall, trust boundaries
+- [Runbook](docs/RUNBOOK.md): first result, diagnosis, backup and restore
+- [Rulebook](RULEBOOK.md): implementation invariants
+
+## Optional
+
+- [NOTT plugin](https://github.com/menot-you/plugin): the plugin that uses nMEMORY, nSPAWN and nBROWSER

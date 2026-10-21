@@ -18,6 +18,7 @@ import logging
 import os
 import socket
 import sys
+import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -218,6 +219,7 @@ class MemoryServer:
             raise ValueError("store and open_store are mutually exclusive")
         self._store = store
         self._open_store = open_store
+        self._store_lock = threading.Lock()
         self.read_only = read_only
         self.viewer = viewer
         self.supported_tools = (
@@ -262,11 +264,13 @@ class MemoryServer:
         legal state — it serves `initialize` and `tools/list` — and its first
         tool responds with `-32002`, like one without a URL.
         """
-        if self._store is None:
-            if self._open_store is None:
-                raise ConfigError("this server was built without a store source")
-            self._store = self._open_store()
-        return self._store
+        # The HTTP door's workers and the rule writer thread open it once together.
+        with self._store_lock:
+            if self._store is None:
+                if self._open_store is None:
+                    raise ConfigError("this server was built without a store source")
+                self._store = self._open_store()
+            return self._store
 
     def resolve_hmac_key(self) -> bytes:
         """Resolve the nmemory_capsule_purge HMAC key at the boundary:

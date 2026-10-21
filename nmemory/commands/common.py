@@ -178,8 +178,7 @@ def command_parser() -> argparse.ArgumentParser:
         help="Every owner rule with no row cap, each in full while it fits",
     )
 
-    rule_p = subparsers.add_parser("rule write", help="Write the rule files")
-    rule_p.add_argument("--root", type=str, default=None, help="Project root")
+    subparsers.add_parser("rule write", help="Write the rule files")
 
     # get
     get_p = subparsers.add_parser(

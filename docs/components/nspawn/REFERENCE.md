@@ -33,7 +33,7 @@ All commands use the executable from the public repository's root workspace.
 | `nspawn quota show` | `[provider]` |
 | `nspawn quota record` | `None` |
 | `nspawn provider list` | `[provider]` |
-| `nspawn route show` | `<provider> [--route <route> \| --account <alias>] [--codex-adapter <path>] [--consumer sdk]` |
+| `nspawn route show` | `<provider> [--route <route> \| --account <alias> \| --move <providers>] [--codex-adapter <path>] [--consumer sdk]` |
 | `nspawn route start` | `<provider> [--route <route>] [--codex-adapter <path>] [--cwd <dir>] [--profile <path> --profile-digest <digest> --grant-root <dir>] [--check]` |
 | `nspawn route list` | `claude --model <model> --effort <effort> [--exclude <JSON array>]` |
 | `nspawn route switch` | `claude --route <route> --model <model> --effort <effort>` |

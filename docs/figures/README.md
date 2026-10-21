@@ -19,6 +19,10 @@ They contain no external resource or script.
 | [Plugin](plugin.svg) | Give direction and inspect the delivered result |
 | [Plugin anatomy](plugin-anatomy.svg) | Closed-loop engineering workflow and native client views |
 | [Plugin lifecycle](plugin-lifecycle.svg) | 17 task routes, System1 hooks, and multi-client views |
+| [Hero banners](hero-nmemory-dark.svg) | One banner per member, `hero-<member>-dark.svg` and `hero-<member>-light.svg`: the Guará, the NOTT wordmark, the name and the promise |
+| [Family marks](mark-nmemory.svg) | One tile per member, `mark-<member>.svg`, for the family row |
+| [Tests chart](chart-tests.svg) | Collected pytest tests per component |
+| [Tools chart](chart-tools.svg) | MCP tools that each server lists |
 
 The figures show conceptual flows. They do not claim a measured product screenshot.
 Each component architecture page contains its editable Mermaid service and trust diagram.

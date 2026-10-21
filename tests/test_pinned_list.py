@@ -10,7 +10,6 @@ import subprocess
 import sys
 import unicodedata
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from time import perf_counter
 from typing import Any
 
@@ -19,7 +18,6 @@ from child_env import child_env
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from storefile import default_store_path, sample_capsule_id
-from workspace_root import WORKSPACE_ROOT
 
 from nmemory.capsule import (
     AuthorityClass,
@@ -129,63 +127,6 @@ def test_cli_bounds_headlines_and_counts_omitted_pins(
     assert lines[0] == (sample_capsule_id(65) + " [user-stated]: Rule 64")
     assert lines[-2] == (sample_capsule_id(6) + " [user-stated]: Rule 5")
     assert lines[-1] == "nMEMORY pinned: 5 capsules left out"
-
-
-def _run_pins(cwd: Path, home: Path, **extra: str) -> subprocess.CompletedProcess[str]:
-    """Run the pins hook in `cwd`, a git tree whose CLAUDE.md imports the project file."""
-    subprocess.run(["git", "init", "-q", str(cwd)], check=True)
-    (cwd / "CLAUDE.md").write_text("@.nott/RULES.md\n")
-    return subprocess.run(
-        ["bash", str(WORKSPACE_ROOT / "plugin/hooks/nmemory-session.sh"), "pins"],
-        cwd=cwd,
-        input='{"source":"startup"}',
-        env=child_env(
-            {
-                **os.environ,
-                "HOME": str(home),
-                "GIT_CEILING_DIRECTORIES": str(cwd.parent),
-                "NOTT_NMEMORY_BIN": str(Path(sys.executable).with_name("nmemory")),
-                "NOTT_NMEMORY_SYSTEM1": "0",
-                "NOTT_SESSION_DIGEST": "on",
-                **extra,
-            }
-        ),
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=20,
-    )
-
-
-@pytest.mark.parametrize("source", ["startup", "resume", "clear", "compact", "fork"])
-def test_hook_writes_live_rules_and_injects_none(source: str, tmp_path: Path) -> None:
-    """The pins entry writes the rule files and prints nothing."""
-    path = default_store_path()
-    store = Store.open(path)
-    for text in ("Old rule", "Keep tests isolated", "Use the shared opener"):
-        pin(store, append(store, text))
-    store.add_relation("supersedes", sample_capsule_id(3), "cap-1", now=NOW)
-    root = tmp_path / "repo"
-    root.mkdir()
-    result = _run_pins(
-        root,
-        tmp_path / "home",
-        NOTT_DATABASE_DIR=str(path.parent),
-        NOTT_NMEMORY_PROJECT="nott",
-        XDG_STATE_HOME=str(tmp_path),
-    )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == ""
-    rules = (root / ".nott" / "RULES.md").read_text()
-    assert (
-        sample_capsule_id(3)
-        + ": Use the shared opener\n"
-        + sample_capsule_id(2)
-        + ": Keep tests isolated\n"
-    ) in rules
-    assert "cap-1:" not in rules
-    assert "(System1 is off" in rules
-    assert (tmp_path / "home" / ".nott" / "RULES.md").is_file()
 
 
 def test_cli_withholds_tainted_headlines_and_bounds_lines(
@@ -991,24 +932,6 @@ def test_pins_do_not_expand_bare_nott(capsys: pytest.CaptureFixture[str]) -> Non
         pin(store, append(store, project, project))
     assert main(["capsule", "list", "--pinned", "--project", "nott"]) == 0
     assert capsys.readouterr().out == "cap-1 [user-stated]: nott\n"
-
-
-def test_hook_resolves_project_from_working_directory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    store = Store.open(default_store_path())
-    for project in ("pynott", "pynott/child", "other", "nott/monorepo"):
-        pin(store, append(store, project, project))
-    root = tmp_path / "pynott"
-    root.mkdir()
-    monkeypatch.delenv("NOTT_NMEMORY_PROJECT", raising=False)
-    result = _run_pins(root, tmp_path / "home")
-    assert result.returncode == 0, result.stderr
-    rules = (root / ".nott" / "RULES.md").read_text().splitlines()
-    assert [line for line in rules if line.startswith("cap-")] == [
-        (sample_capsule_id(2) + ": pynott/child"),
-        "cap-1: pynott",
-    ]
 
 
 @pytest.mark.parametrize("fenced", [0, 65])

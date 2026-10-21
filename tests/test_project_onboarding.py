@@ -135,6 +135,9 @@ def test_bootstrap_preserves_settings_and_restores(
         json.loads(settings.read_text())["hooks"]["Stop"][0]
         == before["hooks"]["Stop"][0]
     )
+    start = json.loads(settings.read_text())["hooks"]["SessionStart"]
+    commands = [hook["command"] for group in start for hook in group["hooks"]]
+    assert len(commands) == 1 and commands[0].endswith("nmemory-session.sh")
     installed = {path: path.read_bytes() for path in (settings, mcp)}
     second = bootstrap(root, capsys)
     assert second["status"] == "unchanged"

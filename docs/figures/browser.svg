@@ -88,9 +88,9 @@
     <rect x="226" y="93" width="60" height="15" rx="3" fill="#241410" stroke="#E4733A" stroke-width="0.8" />
     <text x="256" y="104" class="mono" font-size="7.5" font-weight="700" fill="#E4733A" text-anchor="middle">BLOCKED</text>
 
-    <!-- Rule 2: Loopback / Private Subnet -->
+    <!-- Rule 2: Private Subnet -->
     <circle cx="30" cy="120" r="3" fill="#E4733A" />
-    <text x="38" y="123" class="mono" font-size="8.5" fill="#B5AEA3">127.0.0.1 / 10.0.0.0/8</text>
+    <text x="38" y="123" class="mono" font-size="8.5" fill="#B5AEA3">10.0.0.0/8 / 192.168.0.0/16</text>
     <rect x="226" y="113" width="60" height="15" rx="3" fill="#241410" stroke="#E4733A" stroke-width="0.8" />
     <text x="256" y="124" class="mono" font-size="7.5" font-weight="700" fill="#E4733A" text-anchor="middle">BLOCKED</text>
 

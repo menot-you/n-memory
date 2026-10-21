@@ -18,7 +18,15 @@ class ReviewRepository(Repository):
     #: set, and refusal instead of orphan row: an unknown question records
     #: an observation that no consumer reads, and eligibility below
     #: would return zero forever — reads as "never asked".
-    SYSTEM1_QUESTIONS: Final = ("curator", "classify", "taint", "staged", "scope")
+    SYSTEM1_QUESTIONS: Final = (
+        "curator",
+        "classify",
+        "taint",
+        "staged",
+        "scope",
+        "scope2",
+        "sector",
+    )
 
     @writes
     def append_review_event(

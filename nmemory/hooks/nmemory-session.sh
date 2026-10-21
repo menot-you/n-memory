@@ -8,8 +8,9 @@
 #      halves: the PreCompact/PostCompact snapshot, and the SessionEnd observation
 #      that the session edited and acknowledged no capture. Neither can inject;
 #   2. the live seven-day writing/recall census, plus discovery guidance for the host.
-# The separate `pins` hook entry regenerates the rule files (.nott/RULES.md and
-# ~/.nott/RULES.md) and prints only a failure.
+# The owner rules reach a session through ~/.nott/RULES.md and ~/.nott/projects/<project>/
+# RULES.md, which the nMEMORY HTTP daemon writes after each change. This hook
+# prints no rules; it only says when the daemon's state file is missing or stale.
 #
 # (2) is the load-bearing line. The nMEMORY tools arrive DEFERRED: the name is
 # listed, the schema is not, and an unloaded tool cannot be called. Session
@@ -49,7 +50,7 @@ fi
 ( . "$(dirname "${BASH_SOURCE[0]}")/renamed.sh" && renamed_warn NOTT_NMEMORY_BIN NOTT_NMEMORY_PROJECT ) || :
 bin="${NOTT_NMEMORY_BIN:-}"
 # The release's executable before PATH: on the owner's host `nmemory` on PATH is
-# the mcps/nmemory link in the apps directory, the launcher that always runs `nmemory mcp serve`
+# the apps-directory MCP launcher, which always runs `nmemory mcp serve`
 # (tools/mcp.sh), so a verb through it prints nothing.
 release="${NOTT_MCP_APPS_DIR:-/guara/apps}/nmemory/current/bin/nmemory"
 [ -n "$bin" ] || { [ -x "$release" ] && bin=$release; }
@@ -70,10 +71,9 @@ sys.stdout.write(text)
 # pending capture are local state, so the capture half still gets them back.
 # An nSPAWN child, a workflow run or a subagent (agent_id in the payload) gets no nMEMORY
 # directives here: it gets only its own compaction snapshot back. It still reads the owner
-# rules through the CLAUDE.md imports of .nott/RULES.md and ~/.nott/RULES.md (owner
-# decision), and this hook does not rewrite them for
-# it. Without jq, any agent_id key skips. A payload that jq cannot read skips too: the
-# guard fails closed. The pin lane then prints one line that names the failure.
+# rules through the CLAUDE.md imports of the rule files.
+# Without jq, any agent_id key skips. A payload that jq cannot read skips too: the guard
+# fails closed.
 agent=''
 if command -v jq >/dev/null 2>&1; then
   agent=$(printf '%s' "$payload" | jq -r '.agent_id // empty' 2>/dev/null) || agent=unreadable
@@ -81,68 +81,8 @@ else
   case $payload in *'"agent_id"'*) agent=unknown ;; esac
 fi
 if [ "${NOTT_MEMORY_POLICY+x}" = x ] || [ -n "${NOTT_NSPAWN_RUN_ID:-}" ] || [ -n "$agent" ]; then
-  if [ "$agent" = unreadable ] && [ "${1:-}" = pins ]; then
-    printf 'OWNER RULES NOT LOADED: jq cannot read the SessionStart payload, so this session counts as inherited. It gets no owner rules and no nMEMORY directives.\n'
-  fi
-  if [ "${1:-}" != pins ] && limited=$(session_state 2>/dev/null | host_bound 2>/dev/null); then
+  if limited=$(session_state 2>/dev/null | host_bound 2>/dev/null); then
     printf '%s' "$limited"
-  fi
-  exit 0
-fi
-
-if [ "${1:-}" = pins ]; then
-  scope=() home=. root=()
-  dir=$(printf '%s' "$payload" | jq -r '.cwd // empty' 2>/dev/null) || dir=''
-  if [ -n "${NOTT_NMEMORY_PROJECT:-}" ]; then
-    scope=(--project "$NOTT_NMEMORY_PROJECT")
-  else
-    # A linked worktree has the name of its lane, so the CLI default (the slug of the
-    # working directory's name) finds no pins there. Run the CLI in the checkout that
-    # holds the shared .git, so it makes the project by its own rule (My_Repo gives
-    # my-repo). Other layouts (bare, submodule) keep the hook's directory.
-    common=$(git -C "${dir:-.}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=''
-    case $common in */.git) home=${common%/.git} ;; esac
-  fi
-  # The project file is opt-in: only a tree whose own CLAUDE.md imports it gets one, and
-  # never $HOME, whose .nott/RULES.md is the user file. A worktree has its own .nott/.
-  top=$(git -C "${dir:-.}" rev-parse --show-toplevel 2>/dev/null) || top=''
-  if [ -n "$top" ] && [ "$top" != "$(cd "$HOME" 2>/dev/null && pwd -P)" ] \
-    && grep -qxF '@.nott/RULES.md' "$top/CLAUDE.md" 2>/dev/null; then
-    root=(--root "$top")
-  fi
-  # The owner rules reach a Claude session through .nott/RULES.md and ~/.nott/RULES.md,
-  # which CLAUDE.md imports (owner decision). This lane regenerates them. A
-  # failure is not silent: the session reads that the files were not written, with the
-  # exit status and the last line of stderr. The plugin needs an nMEMORY CLI with
-  # `rule write`, so install nMEMORY first.
-  err=$(mktemp "${TMPDIR:-/tmp}/nmemory-pins.XXXXXX" 2>/dev/null) || err=/dev/null
-  [ "$err" = /dev/null ] || trap 'rm -f "$err"' EXIT
-  # The guard: bash 3.2 (macOS /bin/bash) calls an empty array unbound under set -u.
-  { cd "$home" && timeout 8 "$bin" rule write ${root[@]+"${root[@]}"} ${scope[@]+"${scope[@]}"}; } >/dev/null 2>"$err"
-  rc=$?
-  if [ "$rc" -ne 0 ]; then
-    if [ "$rc" -eq 124 ]; then
-      cause='timed out after 8 s'
-    else
-      cause=$(grep -v '^[[:space:]]*$' "$err" 2>/dev/null | tail -n 1 | LC_ALL=C tr -d '\000-\037\177' | cut -c1-200)
-    fi
-    printf "OWNER RULES NOT WRITTEN: nmemory rule write failed (exit %s: %s). .nott/RULES.md and ~/.nott/RULES.md can be stale or missing.\n" "$rc" "${cause:-no stderr}"
-  fi
-  # Codex does not expand @ imports in its instructions, so there the files are printed.
-  # The print keeps the 8,800-unit budget the pin list had, and names what it cuts.
-  if [ "${NOTT_HOOK_CLIENT:-claude}" = codex ]; then
-    for file in "$HOME/.nott/RULES.md" ${root[@]+"$top/.nott/RULES.md"}; do
-      [ -r "$file" ] && cat "$file"
-    done | python3 -c '
-import sys
-text = sys.stdin.buffer.read().decode("utf-8", errors="replace")
-units = text.encode("utf-16-le")
-note = "\nRULES CUT: {} of {} characters left out; read .nott/RULES.md and ~/.nott/RULES.md.\n"
-if len(units) > 17_600:
-    kept = units[:16_800].decode("utf-16-le", errors="ignore")
-    text = kept + note.format(len(text) - len(kept), len(text))
-sys.stdout.write(text)
-'
   fi
   exit 0
 fi
@@ -175,8 +115,40 @@ DIRECTIVES
 printf '\n'
 }
 
+# The rule files are as fresh as the nMEMORY daemon that writes them. The
+# daemon rewrites ~/.nott/rules.state after each check. This hook only stats that file
+# and calls no nMEMORY command: a missing file, or one older than 10 minutes, gets one line.
+rules_liveness() {
+  # A host whose writer never ran (no state file, nmemory-http not enabled) gets no line.
+  if [ ! -e "$HOME/.nott/rules.state" ] \
+    && ! timeout 1 systemctl --user is-enabled --quiet nmemory-http.service 2>/dev/null; then
+    return 0
+  fi
+  python3 -c '
+import json, os, sys, time
+path = sys.argv[1]
+try:
+    age = time.time() - os.stat(path).st_mtime
+except OSError:
+    print(f"RULES STALE: {path} is missing; the nMEMORY daemon may be down.")
+    sys.exit()
+if age > 600:
+    print(f"RULES STALE: {path} last checked {int(age // 60)} min ago; the nMEMORY daemon may be down.")
+    sys.exit()
+try:
+    with open(path, encoding="utf-8") as handle:
+        errors = json.load(handle).get("errors") or []
+except (OSError, ValueError, AttributeError):
+    errors = [f"{path} not written: it cannot be read"]
+if errors:
+    more = f" (and {len(errors) - 1} more)" if len(errors) > 1 else ""
+    print(f"RULES STALE: {errors[0]}{more}")
+' "$HOME/.nott/rules.state"
+}
+
 session_output() {
 fixed_guidance
+rules_liveness
 session_state
 
 # Writing-feedback falsifier, REWRITTEN by nmemory-curator U3. The old form

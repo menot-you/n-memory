@@ -42,7 +42,7 @@ QUESTION_CURATOR = "curator"
 QUESTION_CLASSIFY = "classify"
 QUESTION_TAINT = "taint"
 QUESTION_STAGED = "staged"
-QUESTION_SCOPE = "scope"
+QUESTION_SCOPE = "scope2"
 
 #: The escape option. Without it the model must choose one of the others, and the distribution
 #: lies about an input that none of them describes.
@@ -475,15 +475,27 @@ def taint_probe(
 
 
 SCOPE_CRITERIA: dict[str, str] = {
-    "user": "the rule binds the owner's work in every repository and on every host",
-    "project": "the rule binds only the work on this project, its code or its hosts",
+    "user": "the rule is the owner's personal taste and binds his work in every repository",
+    "project": "the rule is law for this project, its code, its hosts or its team",
     NENHUMA: "the rule does not allow deciding between user and project",
 }
+SCOPE_QUESTION = (
+    "About the state: is this rule the owner's personal taste for every project, "
+    "or law for this project only?"
+)
+QUESTION_SECTOR = "sector"
+SECTOR_QUESTION = (
+    "About the state: which part of the team does this lesson concern: the main "
+    "session, or one sector?"
+)
+MAIN_SESSION = "main"
 
 
 def triage_scopes(
     items: Sequence[tuple[str, str]],
     *,
+    question: str = SCOPE_QUESTION,
+    criteria: Mapping[str, str] = SCOPE_CRITERIA,
     call_seconds: float = 2.0,
     total_seconds: float = 4.0,
 ) -> tuple[dict[str, Observation], System1Unavailable | None]:
@@ -503,10 +515,6 @@ def triage_scopes(
     cfg = replace(
         configured, timeout_seconds=min(configured.timeout_seconds, call_seconds)
     )
-    question = (
-        "About the state: is this rule for the user's every project, "
-        "or for this project only?"
-    )
 
     def judge(item: tuple[str, str]) -> Observation:
         cid, content = item
@@ -514,13 +522,13 @@ def triage_scopes(
             cid: {
                 "type": "choice",
                 "instructions": question,
-                "criteria": SCOPE_CRITERIA,
+                "criteria": dict(criteria),
             }
         }
         answers = _perguntar(content, asked, cfg)
         if cid not in answers:
             raise System1Unavailable(f"the scope answer for {cid} is missing")
-        return _observacao(cid, content_subject(content), answers, set(SCOPE_CRITERIA))
+        return _observacao(cid, content_subject(content), answers, set(criteria))
 
     out: dict[str, Observation] = {}
     failure: System1Unavailable | None = None

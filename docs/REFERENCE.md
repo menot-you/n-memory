@@ -20,12 +20,13 @@ All commands use the executable from the public repository's root workspace.
 | `nmemory database snapshot` | `DEST` |
 | `nmemory capsule retrieve` | `[QUERY] [--terms T] [--limit N] [--budget N] [--project-prefix P] [--known-at T]` |
 | `nmemory capsule show` | `--id REF` |
-| `nmemory capsule list` | `--pinned [--json]` |
+| `nmemory capsule list` | `--pinned [--json \| --full]` |
 | `nmemory capsule export` | `[--no-stamp]` |
 | `nmemory capsule relate` | `--kind K --from REF --to REF [--revoke --actor A --reason R]` |
 | `nmemory capsule audit` | `[--json] [--apply]` |
 | `nmemory proposal export` | `--since DATE --until DATE` |
 | `nmemory digest show` | `[--project-prefix P]` |
+| `nmemory rule write` | `None` |
 | `nmemory context search` | `[QUERY] [--source S] [--limit N] [--budget N]` |
 | `nmemory index build` | `[--root DIR] [--source S]` |
 | `nmemory portal export` | `--project P [--digest]` |

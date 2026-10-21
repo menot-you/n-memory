@@ -40,7 +40,7 @@
         ]
       },
       {
-        "matcher": "Agent",
+        "matcher": "Agent|Workflow",
         "hooks": [
           {
             "type": "command",
@@ -223,16 +223,6 @@
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/nmemory-session.sh\"",
             "timeout": 15
-          }
-        ]
-      },
-      {
-        "matcher": "startup|resume|clear|compact|fork",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/nmemory-session.sh\" pins",
-            "timeout": 10
           }
         ]
       },

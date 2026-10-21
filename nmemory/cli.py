@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Callable
+from pathlib import Path
 from threading import Thread
 from typing import TYPE_CHECKING, Final, NamedTuple
 
@@ -67,6 +68,7 @@ from .tools.common import (
 
 if TYPE_CHECKING:
     from .curator import CuratorWorker
+    from .rules_writer import RulesWriter
 
 
 def cmd_mcp_serve(argv: list[str]) -> None:
@@ -153,11 +155,17 @@ def cmd_mcp_serve(argv: list[str]) -> None:
         read_only=args.read_only,
         viewer=args.viewer,
     )
+    rules: tuple[RulesWriter, Thread] | None = None
     try:
         if args.http:
             if server.capture_only:
                 raise ConfigError("NOTT_MEMORY_POLICY=push requires stdio")
             from .serve import DEFAULT_LISTEN, default_key_path, run_http_server
+
+            if not (args.read_only or args.viewer):
+                from .rules_writer import spawn_rules_writer
+
+                rules = spawn_rules_writer(lambda: server.store, Path.home())
 
             sys.exit(
                 run_http_server(
@@ -168,6 +176,9 @@ def cmd_mcp_serve(argv: list[str]) -> None:
             )
         run_stdio_server(server)
     finally:
+        if rules is not None:
+            rules[0].stop.set()
+            rules[1].join(timeout=1.0)
         for worker, _ in workers:
             worker.stop()
         for _, thread in workers:
@@ -244,8 +255,8 @@ COMMANDS: Final[dict[tuple[str, str], Command]] = {
         cmd_capsule_audit,
     ),
     ("rule", "write"): Command(
-        "[--root DIR]",
-        "write the live pinned rules to ~/.nott/RULES.md, and to DIR/.nott/RULES.md with --root",
+        "",
+        "write the live rules to ~/.nott/RULES.md, ~/.nott/projects/ and ~/.nott/agents/",
         cmd_rule_write,
     ),
     ("proposal", "export"): Command(
