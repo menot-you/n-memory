@@ -72,18 +72,24 @@ def roster_do_host() -> Any:
     of 64 questions. An nSPAWN process serves one configuration; if it changes,
     the server is restarted -- which is how the rest of its configuration is
     reloaded.
+
+    The roster is None when the one reader refuses with `RosterAbsent` (no
+    roster), `RosterError` (a `NOTT_NSPAWN_ROSTER` path that is not a readable
+    regular file, or a roster that does not parse) or `OSError`. These
+    refusals propagate: a `ConfigError` (a single config file that is not a
+    readable regular file, or a wrong `[store]` table) and the template refusal
+    of `NOTT_NSPAWN_ROSTER` (an `NSpawnError` with NERR_1104).
     """
     if not _ROSTER_LIDO:
-        from .owner_roster import Roster, RosterError
+        from .owner_roster import RosterAbsent, RosterError, read_roster
 
         try:
-            caminho = Roster.default_path()
-            _ROSTER_LIDO.append(Roster.read(caminho) if caminho else None)
-        except RosterError, OSError:
-            # An unreadable roster must not silence System1: the environment
-            # continues to respond, and the roster error appears, with its
-            # cause, in whatever resolves it for a dispatch. The two classes are
-            # what `Roster.read` declares; anything else bubbles up, as it should.
+            _ROSTER_LIDO.append(read_roster())
+        except RosterAbsent, RosterError, OSError:
+            # An absent, unreadable or malformed roster must not silence
+            # System1: the environment continues to respond, and the roster
+            # error appears, with its cause, in whatever resolves it for a
+            # dispatch. Each other refusal propagates.
             _ROSTER_LIDO.append(None)
     return _ROSTER_LIDO[0]
 

@@ -1,4 +1,4 @@
-"""U6: fifteen inventory groups, each judged against changing real state."""
+"""U6: fourteen inventory groups, each judged against changing real state."""
 #: `projetodeteste` and not `nmemory`: since 2026-09-19 `nmemory` is in
 #: `PROJECT_ALIASES` (owner decision) and folds to `pynott`. A fixture that
 #: seeds RAW (`Store.append`) and reads through the DOOR (which canonicalizes) would cease to
@@ -7,28 +7,81 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
-from storefile import sample_capsule_id
-from test_bootstrap import NOW, add, ok, relate
-from test_bootstrap import server as _server_fixture
+from storefile import default_store_path, sample_capsule_id
 from test_context import git, seed_repo
 from test_retrieve_envelope_honesty import UNIT_VEC, _server
-from test_tools import StdioClient
 
 import nmemory.context as context_module
+from nmemory.capsule import format_rfc3339
 from nmemory.capsule_ref import CapsuleRefResolution
+from nmemory.context import index_context
 from nmemory.embedding import EmbeddingClient
 from nmemory.embedding_index import EmbeddingWorker
 from nmemory.server import MemoryServer
 from nmemory.space import EmbeddingError
+from nmemory.store import Store
 from nmemory.tools import get as get_tool
 from nmemory.tools import retrieve as retrieve_tool
 
-db_server = _server_fixture
+NOW = datetime(2026, 9, 12, tzinfo=UTC)
+
+
+def ok(response: dict[str, Any]) -> dict[str, Any]:
+    assert "result" in response and not response["result"]["isError"], response
+    return json.loads(response["result"]["content"][0]["text"])
+
+
+@pytest.fixture
+def db_server() -> MemoryServer:
+    return MemoryServer(store=Store.open(default_store_path("engine-literals")))
+
+
+def add(server: MemoryServer, kind: str, text: str, **extra: Any) -> str:
+    result = ok(
+        server.call_tool(
+            "nmemory_capsule_ingest",
+            {
+                "items": [
+                    {
+                        "kind": kind,
+                        "content": text,
+                        "source": "session:engine-literals-test",
+                        "anchor": "test_no_engine_literals.py",
+                        "proof_hint": "fixture: the capture gate requires re-obtainable proof",
+                        "confidence": 0.9,
+                        "project_id": "nott",
+                        **extra,
+                    }
+                ]
+            },
+            now=NOW,
+        )
+    )
+    return str(result["outcomes"][0]["id"])
+
+
+def relate(server: MemoryServer, kind: str, src: str, dst: str) -> None:
+    ok(
+        server.call_tool(
+            "nmemory_relation_add", {"kind": kind, "from": src, "to": dst}, now=NOW
+        )
+    )
+
+
+def index(root: Path, server: MemoryServer, source: str) -> dict[str, Any]:
+    """`index_context` (`nmemory index build`) over `root`, the one source's entry."""
+    entry: dict[str, Any] = index_context(server.store, root, None, [source], NOW)[
+        "sources"
+    ][0]
+    return entry
+
 
 CASES = (
     "outcomes",
@@ -38,7 +91,6 @@ CASES = (
     "trims",
     "budget",
     "receipt",
-    "aliases",
     "purge",
     "digest_miss",
     "classification",
@@ -161,44 +213,27 @@ def test_engine_values_follow_state(
                 assert row is not None and row[0].split(",") == [
                     result["results"][0]["id"]
                 ]
-        case "aliases":
-            client = StdioClient({})  # inherits the test's NOTT_DATABASE_DIR
-            try:
-                first = ok(
-                    client.call_tool(
-                        "nmemory_synonym_add",
-                        {"term": "deployment", "alias": "release"},
-                    )
-                )
-                repeated = ok(
-                    client.call_tool(
-                        "nmemory_synonym_add",
-                        {"term": "deployment", "alias": "release"},
-                    )
-                )
-                other = ok(
-                    client.call_tool(
-                        "nmemory_synonym_add",
-                        {"term": "deployment", "alias": "rollout"},
-                    )
-                )
-                assert first["already_recorded"] is False
-                assert repeated["already_recorded"] is True
-                assert repeated["aliases_for_term"] == ["release"]
-                assert other["aliases_for_term"] == ["release", "rollout"]
-                listed = call(server, "nmemory_synonym_add")["aliases"]
-                assert {(r["term"], r["alias"]) for r in listed} == {
-                    ("deployment", "release"),
-                    ("deployment", "rollout"),
-                }
-            finally:
-                client.close()
         case "purge":
             server.hmac_env_key = b"test-only-key"
             standalone = add(server, "fact", "standalone record")
             linked = add(server, "fact", "linked record")
             target = add(server, "fact", "relation target")
             relate(server, "about", linked, target)
+            live = call(server, "nmemory_capsule_show", id=linked)
+            assert json.dumps(live["relations"]) == json.dumps(
+                [
+                    {
+                        "at": format_rfc3339(NOW),
+                        "from": linked,
+                        "kind": "about",
+                        "to": target,
+                    }
+                ]
+            )
+            assert list(live["handles"].items()) == [
+                (linked, "fact-2-linked-record"),
+                (target, "fact-3-relation-target"),
+            ]
             empty = call(
                 server,
                 "nmemory_capsule_purge",
@@ -214,6 +249,12 @@ def test_engine_values_follow_state(
                 reason="test disposal",
             )
             assert empty["relations"] == []
+            assert "handles" not in empty
+            assert json.dumps(edged["relations"]) == json.dumps(live["relations"])
+            assert list(edged["handles"].items()) == [
+                (linked, "fact-2"),
+                (target, "fact-3-relation-target"),
+            ]
             assert len(edged["relations"]) == 1
             assert (
                 edged["relations"]
@@ -365,17 +406,12 @@ def test_engine_values_follow_state(
             (tmp_path / "a.md").write_text("First block\n\nSecond block\n")
             git(tmp_path, ["add", "a.md"])
             git(tmp_path, ["commit", "-qm", "initial"])
-            server.anchor_root = str(tmp_path)
-            ready = call(server, "nmemory_index_build", sources=["markdown"])[
-                "sources"
-            ][0]
+            ready = index(tmp_path, server, "markdown")
             assert ready["status"] == "ready" and ready["chunks"] > 0
             monkeypatch.setattr(context_module, "MAX_CHUNKS", 1)
             (tmp_path / "b.md").write_text("Additional block\n")
             git(tmp_path, ["add", "b.md"])
-            partial = call(server, "nmemory_index_build", sources=["markdown"])[
-                "sources"
-            ][0]
+            partial = index(tmp_path, server, "markdown")
             assert partial["status"] == "unavailable"
             assert partial["chunks"] == 1 and partial["occurrences"] == 1
             assert partial["revision"] != "unknown"
@@ -383,13 +419,10 @@ def test_engine_values_follow_state(
             assert server.store.corpus.corpus_chunk_count() == ready["chunks"]
             monkeypatch.setattr(context_module, "MAX_FILE_BYTES", 1)
             (tmp_path / "b.md").unlink()
-            skipped = call(server, "nmemory_index_build", sources=["markdown"])[
-                "sources"
-            ][0]
+            skipped = index(tmp_path, server, "markdown")
             assert skipped["status"] == "unavailable" and skipped["skipped"] == 1
             assert skipped["chunks"] == 0 and skipped["occurrences"] == 0
-            server.anchor_root = str(tmp_path / "missing-root")
-            unknown = call(server, "nmemory_index_build", sources=["git"])["sources"][0]
+            unknown = index(tmp_path / "missing-root", server, "git")
             assert unknown["revision"] is None and unknown["partial"] is False
 
         case "capture_context":
@@ -436,9 +469,8 @@ def test_index_reports_skipped_files_by_source(
     )
     git(tmp_path, ["add", "."])
     git(tmp_path, ["commit", "-qm", "valid source"])
-    db_server.anchor_root = str(tmp_path)
     source = "markdown" if suffix == ".md" else "rustdoc"
-    before = call(db_server, "nmemory_index_build", sources=[source])["sources"][0]
+    before = index(tmp_path, db_server, source)
     assert before["status"] == "ready" and before["chunks"] == 1
     assert before["skipped"] == 0
     if symlink:
@@ -449,7 +481,7 @@ def test_index_reports_skipped_files_by_source(
         git(tmp_path, ["add", document.name])
     else:
         monkeypatch.setattr(context_module, "MAX_FILE_BYTES", 1)
-    after = call(db_server, "nmemory_index_build", sources=[source])["sources"][0]
+    after = index(tmp_path, db_server, source)
     assert after["status"] == "ready" and after["chunks"] == 0
     assert after["skipped"] == 1
 

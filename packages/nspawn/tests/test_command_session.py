@@ -7,7 +7,9 @@ import base64
 import errno
 import json
 import os
+import signal
 import socket
+import sys
 import threading
 import time
 from pathlib import Path
@@ -626,3 +628,97 @@ def test_a_failed_retention_write_keeps_the_command_alive(
     finally:
         supervisor.close(run_id)
         server.close()
+
+
+class BareScope:
+    """A scope that starts the launch unchanged: the test sees only the spawn."""
+
+    def command(self, argv: list[str]) -> list[str]:
+        return argv
+
+    def environment(self, target: dict[str, str] | None) -> dict[str, str]:
+        return dict(target or {})
+
+
+def test_a_terminal_child_owns_its_tty_and_gets_no_host_fd_above_stderr(
+    tmp_path: Path,
+) -> None:
+    """uv's CPython has no posix_spawn setsid and no POSIX_SPAWN_CLOSEFROM, and
+    every terminal failed to start on the live host. The child leads its session
+    with the PTY as its controlling tty, and an inheritable host fd does not reach
+    it."""
+    leaked = os.open(os.devnull, os.O_RDONLY)
+    os.set_inheritable(leaked, True)
+    check = (
+        "import os; print('fds:', [fd for fd in range(3, 1024)"
+        " if os.path.exists(f'/proc/self/fd/{fd}')], 'leader:',"
+        " os.getsid(0) == os.getpid() == os.tcgetpgrp(0)); input()"
+    )
+    target = os.stat(sys.executable)
+    identity = {
+        "device": target.st_dev,
+        "inode": target.st_ino,
+        "size": target.st_size,
+        "modifiedNs": target.st_mtime_ns,
+    }
+    try:
+        terminal = command_terminal.Terminal(
+            {
+                "cwd": str(tmp_path),
+                "argv": [sys.executable, "-c", check],
+                "cols": 80,
+                "rows": 24,
+            },
+            lambda _: None,
+            scope=BareScope(),  # type: ignore[arg-type]
+            identity=identity,
+        )
+    finally:
+        os.close(leaked)
+    try:
+        deadline = time.monotonic() + 10
+        while not any("fds:" in line for line in terminal.screen.text()):
+            assert time.monotonic() < deadline, terminal.screen.text()
+            time.sleep(0.02)
+        assert leaked > 2
+        assert "fds: [] leader: True" in terminal.screen.text(), terminal.screen.text()
+    finally:
+        terminal.close()
+
+
+def test_a_terminal_child_starts_with_sigpipe_and_sigxfsz_at_default(
+    tmp_path: Path,
+) -> None:
+    """CPython ignores SIGPIPE and SIGXFSZ at startup, and execv keeps an ignored
+    signal, so `yes | head -1` in a terminal shell printed "Broken pipe". The
+    target that command_exec executes starts with both signals at SIG_DFL."""
+    grep = "/usr/bin/grep"
+    target = os.stat(grep)
+    identity = {
+        "device": target.st_dev,
+        "inode": target.st_ino,
+        "size": target.st_size,
+        "modifiedNs": target.st_mtime_ns,
+    }
+    terminal = command_terminal.Terminal(
+        {
+            "cwd": str(tmp_path),
+            "argv": [grep, "SigIgn", "/proc/self/status"],
+            "cols": 80,
+            "rows": 24,
+        },
+        lambda _: None,
+        scope=BareScope(),  # type: ignore[arg-type]
+        identity=identity,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not any("SigIgn:" in line for line in terminal.screen.text()):
+            assert time.monotonic() < deadline, terminal.screen.text()
+            time.sleep(0.02)
+        line = next(line for line in terminal.screen.text() if "SigIgn:" in line)
+        ignored = int(line.split()[1], 16)
+        assert not ignored & (1 << (signal.SIGPIPE - 1)), line
+        assert not ignored & (1 << (signal.SIGXFSZ - 1)), line
+    finally:
+        terminal.close()

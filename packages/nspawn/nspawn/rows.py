@@ -108,19 +108,6 @@ class Backend(Enum):
         """Canonical lowercase string as stored in the `backend` column."""
         return self.value
 
-    @classmethod
-    def parse(cls, name: str) -> Backend | None:
-        """The backend a caller named, or None for a word that is not one.
-
-        The exact inverse of `as_str`, and it MUST stay that way: the column and
-        the wire spell a backend the same, so a value that round-trips the
-        database also round-trips a tool call.
-        """
-        try:
-            return cls(name)
-        except ValueError:
-            return None
-
 
 def _bounded(name: str, value: str, maximum: int, *, minimum: int = 1) -> str:
     size = len(value.encode("utf-8"))
@@ -159,6 +146,15 @@ _ACCOUNT_ALIAS_RE = re.compile(r"[a-z0-9]+([_-][a-z0-9]+)*")
 MAX_ACCOUNT_ALIAS_BYTES = 63
 
 
+def is_account_alias(value: str, maximum: int = MAX_ACCOUNT_ALIAS_BYTES) -> bool:
+    """Whether ``value`` is in the closed alias grammar, at most ``maximum`` bytes.
+
+    The grammar is ASCII, so it is matched first and a character is a byte: a
+    file name that is not UTF-8 (a surrogate escape) never reaches an encoder.
+    """
+    return _ACCOUNT_ALIAS_RE.fullmatch(value) is not None and len(value) <= maximum
+
+
 def _account_alias(name: str, value: str | None, maximum: int) -> str | None:
     """A roster account alias — never credential material.
 
@@ -168,8 +164,7 @@ def _account_alias(name: str, value: str | None, maximum: int) -> str | None:
     """
     if value is None:
         return None
-    size = len(value.encode("utf-8"))
-    if size < 1 or size > maximum or _ACCOUNT_ALIAS_RE.fullmatch(value) is None:
+    if not is_account_alias(value, maximum):
         raise ValueError(f"{name} must be a roster account alias")
     return value
 
@@ -374,6 +369,104 @@ class SessionActivation:
         ):
             raise ValueError("activation fields must be text or absent")
         return cls(**value)
+
+
+@dataclass(frozen=True, slots=True)
+class WriterRedReceipt:
+    """Only admission identities, never assertions or producer commands."""
+
+    record: str
+    record_sha256: str
+    tests: str
+    tests_sha256: str
+    unit: str
+    commit: str
+    test_ids: tuple[str, ...]
+    schema: str = "nspawn.writer-red.v1"
+
+    def __post_init__(self) -> None:
+        import re
+
+        from .red_witness import RedRefused, bundle_paths
+
+        try:
+            tests, unit = bundle_paths(self.record)
+        except (RedRefused, TypeError, ValueError) as error:
+            raise ValueError("invalid writer RED receipt path") from error
+        if (
+            self.schema != "nspawn.writer-red.v1"
+            or self.tests != tests
+            or self.unit != unit
+            or not re.fullmatch(r"[0-9a-f]{40}", self.commit)
+            or any(
+                not re.fullmatch(r"[0-9a-f]{64}", digest)
+                for digest in (self.record_sha256, self.tests_sha256)
+            )
+            or not isinstance(self.test_ids, tuple)
+            or not self.test_ids
+            or any(
+                not isinstance(i, str) or not i or any(c.isspace() for c in i)
+                for i in self.test_ids
+            )
+            or len(set(self.test_ids)) != len(self.test_ids)
+        ):
+            raise ValueError("invalid writer RED receipt")
+
+    def data(self) -> dict[str, object]:
+        return {
+            "schema": self.schema,
+            "record": self.record,
+            "record_sha256": self.record_sha256,
+            "tests": self.tests,
+            "tests_sha256": self.tests_sha256,
+            "unit": self.unit,
+            "commit": self.commit,
+            "test_ids": list(self.test_ids),
+            "test_count": len(self.test_ids),
+        }
+
+    @classmethod
+    def from_record(cls, value: object) -> WriterRedReceipt:
+        if not isinstance(value, dict) or set(value) != {
+            "schema",
+            "record",
+            "record_sha256",
+            "tests",
+            "tests_sha256",
+            "unit",
+            "commit",
+            "test_ids",
+            "test_count",
+        }:
+            raise ValueError("invalid writer RED receipt shape")
+        if (
+            not isinstance(value["test_ids"], list)
+            or type(value["test_count"]) is not int
+            or value["test_count"] != len(value["test_ids"])
+            or any(
+                not isinstance(value[k], str)
+                for k in (
+                    "schema",
+                    "record",
+                    "record_sha256",
+                    "tests",
+                    "tests_sha256",
+                    "unit",
+                    "commit",
+                )
+            )
+        ):
+            raise ValueError("invalid writer RED receipt fields")
+        return cls(
+            value["record"],
+            value["record_sha256"],
+            value["tests"],
+            value["tests_sha256"],
+            value["unit"],
+            value["commit"],
+            tuple(value["test_ids"]),
+            value["schema"],
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -808,12 +901,3 @@ class AccountUsageRow:
         _non_negative_fraction("utilization", self.utilization)
         _non_negative("resets_at", self.resets_at)
         _non_negative("observed_at", self.observed_at)
-
-
-@dataclass(frozen=True)
-class RunPage:
-    """One page of runs, and where the next page starts."""
-
-    rows: tuple[RunRow, ...]
-    next_after_run: str | None = None
-    truncated: bool = False

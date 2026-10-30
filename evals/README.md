@@ -1,12 +1,12 @@
 # nMEMORY evaluation methods
 
 Measure a specific retrieval behavior with exact inputs and an inspectable transcript.
-This harness includes synthetic recall, LongMemEval, extraction, and comparison runners.
+This harness includes synthetic recall, LongMemEval, and extraction runners.
 The [command catalog](../docs/REFERENCE.md#evaluation-cli) lists the current interface.
 
 ## Evidence status
 
-This guide publishes methods, not a measured numerical ranking.
+This guide publishes methods, not a measured score.
 This guide includes no original benchmark receipt bundle.
 Historical result files do not establish a score for the current Python engine.
 In particular, earlier LongMemEval notes can identify the retired implementation as their binary.
@@ -27,9 +27,9 @@ Run from the workspace root in a shell with no provider credentials or private c
 
 ## Safety and Governance Fences
 
-- **Disposable store**: The benchmark store is `nmemory.sqlite3` under `/var/tmp`, outside the account's live store. On Linux, children inherit an open directory descriptor through `NOTT_DATABASE_DIR`. The shared database library keeps SQLite writes and sidecars bound to that descriptor. Other systems refuse these store operations. Children keep the parent's disposable home, temporary paths, caches, and test markers.
+- **Disposable store**: The benchmark store is `nmemory.sqlite3` under `/var/tmp`, outside the account's live store. The driver creates the private store directory and checks it with `nott_database.admit_directory`. The ancestor check covers each directory and each link that resolution of the path goes through, at each step of each link expansion. Root or the account must own each one. Group and other must not write to such a directory without the sticky bit. Then children get that path through `NOTT_DATABASE_DIR`. A swap of an ancestor directory by the same account after this check is not prevented. Children keep the parent's disposable home, temporary paths, caches, and test markers.
 - **Output Confinement**: Benchmark output paths must stay under `/var/tmp/` before and after path resolution. Directory descriptors bind report writes to the selected directory. The writer refuses symlinked parents and files. It replaces regular report files without changing other hard links.
-- **Shadow Fixtures**: Fixture directories and shadow stores require unused paths under `/var/tmp/`. Fixture directories are private. Open directory descriptors bind fixture copies, deletions, and replacements to the reserved tree. Source anchors must resolve inside the source tree. The copy reads each admitted source through a directory descriptor without following new symlinks. Existing database files, journals, and lock sidecars cause refusal.
+- **Shadow Fixtures**: Fixture directories and shadow stores require unused paths under `/var/tmp/`. Fixture directories are private. After creation, `nott_database.admit_directory` admits the shadow store directory and the fixture directory, before the first store or file operation in them. Open directory descriptors bind fixture copies, deletions, and replacements to the reserved tree. Source anchors must resolve inside the source tree. The copy reads each admitted source through a directory descriptor without following new symlinks. Existing database files, journals, and lock sidecars cause refusal.
 
 The internal `open_shadow` helper is a context manager. Its context keeps the store directory open through creation, queries, writes, and cleanup.
 - **Read-Only SUT**: The SHA-256 digest of the SUT binary is captured at startup and re-verified at shutdown. Any binary mutation during execution aborts with `BinaryChanged`.
@@ -76,7 +76,7 @@ All rates are fractions. An empty denominator produces zero.
 | `false_abstain.rate` | Answerable questions whose outcome is not grounded | Answerable questions |
 
 The n1 headline is `true_abstain.rate`.
-The arena abstention helper has a separate definition that can accept an empty result.
+The `is_true_abstain` helper, which the pilot uses, has a separate definition that can accept an empty result.
 Do not combine those definitions into one reported metric.
 
 The six n1 question families cover deploy actors, causal deploys, resolvers,
@@ -103,7 +103,7 @@ An executable digest alone does not identify all imported source and dependency 
 A receipt must name the source commit, root lockfile, Python version, platform,
 processing configuration, and command in addition to these generated files.
 
-## LongMemEval and comparisons
+## LongMemEval
 
 LongMemEval needs the exact dataset and the configuration's pinned digest.
 The repository does not grant redistribution rights to that external dataset.
@@ -111,12 +111,7 @@ Its loader checks timestamps, evidence links, and the haystack arrays.
 Dataset seeding uses the capture function, rather than an English-only MCP capture of every original session.
 State this boundary when you report a result.
 
-A public comparison needs the same corpus, sample, budget, reader, judge, and processing policy for each system.
-Name each system's version and account prerequisites.
-Report errors, refusals, unavailable lanes, and collapsed equivalent budgets.
-Do not present an unconfigured provider as a measured loss.
-Use the `arena` and `synthesis` commands only with their exact preregistration inputs.
-This guide alone supports no comparative score.
+Use the `synthesis` command only with its exact preregistration input.
 
 ## Focused verification
 

@@ -53,8 +53,8 @@ def test_the_api_error_status_survives_the_stream_observation(tmp_path: Path) ->
     `_observe_streams` read that same `_TerminalResult` and kept only the
     `.text`: the number died two lines from whoever needs it, and a reader
     wanting to separate "no quota" from "broke" only had the
-    `failure_reason` string to substring on — the same sniffing that
-    `errors.classify()` already is, and that this lane named as debt.
+    `failure_reason` string to substring on, a text sniffing that this lane
+    named as debt.
 
     A route with no quota that reads as red is exactly the detector that
     screams, and the owner's order is the opposite of that.
@@ -108,6 +108,7 @@ class _Fleet:
         texts: dict[str, str | None] | None = None,
         reasons: dict[str, str] | None = None,
         warnings: dict[str, str] | None = None,
+        missing: set[str] | None = None,
     ) -> None:
         self.fast = fast
         self.admission = admission or {}
@@ -117,6 +118,7 @@ class _Fleet:
         self.texts = texts or {}
         self.reasons = reasons or {}
         self.warnings = warnings or {}
+        self.missing = missing or set()
         self.dispatched: list[dict[str, Any]] = []
         self.polled: list[tuple[str, int]] = []
 
@@ -136,6 +138,9 @@ class _Fleet:
         return _Accepted()
 
     def status(self, run_id: str, timeout_ms: int = 0) -> Any:
+        if run_id in self.missing:
+            # What the real supervisor does for a run its registry does not hold.
+            raise supervisor_module.UnknownRun(f"no run named {run_id!r}")
         name = run_id.removeprefix("run-")
         self.polled.append((run_id, timeout_ms))
         return supervisor_module.RunStatus(
@@ -208,6 +213,28 @@ def test_a_ping_follows_its_work_to_the_routes_next_account() -> None:
     row = _row(mcp_module.ping_routes(fleet, "/tmp", deadline_ms=5_000), "codex")
     assert row["code"] == 0, row
     assert [run_id for run_id, _ in fleet.polled] == ["run-codex", moved]
+
+
+def test_a_missing_successor_reddens_its_route_and_keeps_the_other_verdicts() -> None:
+    """A failed run can name a successor this supervisor cannot find. Reading
+    it must fail THAT route with the reason, never sink the whole ping: the
+    sibling routes already dispatched a child each, and a call that dies on the
+    first dangling note answers nothing about them."""
+    gone = "44444444-4444-4444-8444-444444444444"
+    fleet = _Fleet(
+        {"codex": "gpt-6.1-mini", "agy": "gemini-3-flash"},
+        phases={"codex": RunPhase.FAILED},
+        reasons={"codex": "child terminated by signal 9"},
+        warnings={"codex": f"continued as run {gone} on codex/second"},
+        missing={gone},
+    )
+    answer = mcp_module.ping_routes(fleet, "/tmp", deadline_ms=5_000)
+    row = _row(answer, "codex")
+    assert row["code"] == 3, row
+    assert gone in row["cause"], row
+    # The caller keeps the run it CAN read: its warning names the phantom.
+    assert row["run_id"] == "run-codex"
+    assert _row(answer, "agy")["code"] == 0
 
 
 def test_a_route_that_answers_the_wrong_thing_is_RED() -> None:

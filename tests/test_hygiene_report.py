@@ -208,3 +208,35 @@ def test_a_corrida_concorrente_do_mesmo_dia_NAO_escreve_duas_capsulas(
     assert store.db.get_generation() == generation
     assert not written_again
     assert second_id == first_id
+
+
+def test_hygiene_reports_the_audit_chain_that_session_start_does_not_check(
+    seeded: tuple[str, Store],
+) -> None:
+    """The daily run verifies the audit chain and names the row where it breaks.
+
+    `nmemory_session_start` replayed the full chain at each session start. The
+    daily run does that check now, and its report carries the verdict.
+    """
+    _url, store = seeded
+    healthy = _run_cli(["quality", "measure", "--json", "--dry-run"])
+    assert healthy.returncode == 0, healthy.stderr
+    journal = json.loads(healthy.stdout)["journal"]
+    assert journal["chain"] == "ok", journal
+    assert journal["verified"] == store.audit.count_audit_events(), journal
+
+    with store.db.writing() as conn:
+        first = conn.execute("SELECT min(seq) FROM audit_events").fetchone()[0]
+        conn.execute(
+            "UPDATE audit_events SET chained_hash = ? WHERE seq = ?",
+            ("0" * 64, first),
+        )
+
+    broken = _run_cli(["quality", "measure", "--json", "--dry-run"])
+    assert broken.returncode == 0, broken.stderr
+    assert json.loads(broken.stdout)["journal"] == {
+        "chain": "broken",
+        "broken_seq": first,
+    }
+    text = hygiene.render(hygiene.measure(store, datetime.now(UTC)))
+    assert f"The audit chain breaks at seq {first}" in text, text

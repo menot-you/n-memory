@@ -58,10 +58,10 @@ def test_tools_list_recusa_catalogo_vazio(
 
 
 def test_tools_list_serve_o_catalogo_real() -> None:
-    """The catalog beside the module loads all 27 tools."""
+    """The catalog beside the module loads all 18 tools."""
     tools = _servidor().get_tool_definitions()
 
-    assert len(tools) == 27, f"expected 27 tools in the catalog, got {len(tools)}"
+    assert len(tools) == 18, f"expected 18 tools in the catalog, got {len(tools)}"
     assert "nmemory_work_list" in {tool["name"] for tool in tools}
     assert "nmemory_board_show" in {tool["name"] for tool in tools}
 

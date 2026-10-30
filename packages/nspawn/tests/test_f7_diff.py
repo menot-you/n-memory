@@ -107,6 +107,8 @@ def test_mcp_child_can_load_deferred_context_and_reply(
     fake = FakeSupervisor()
     fake._lock = threading.Condition()
     fake._children = {}
+    # The launch reads the agent's `tools` from here (none in this test).
+    fake._agent_launches = {}
     fake._registry = Mock()
     fake._registry.inference_profile.return_value = None
     fake._registry.get_run.return_value = SimpleNamespace(phase=RunPhase.PENDING)
@@ -142,6 +144,8 @@ def test_mcp_child_can_load_deferred_context_and_reply(
         (run_dir / "stderr").write_text("")
         return SimpleNamespace(
             identity=ProcessIdentity(12345, "fake-boot", 1),
+            # The child has exited, so the steer loop ends at once.
+            poll=lambda: 0 if loader_available else 1,
             wait=lambda: 0 if loader_available else 1,
             write_stdin=lambda payload, timeout: written.append(payload),
             close_stdin=lambda: None,
@@ -200,7 +204,7 @@ def test_mcp_child_can_load_deferred_context_and_reply(
     )
     argv, cwd, env = received[0]
     assert "--" not in argv
-    assert written == [args["prompt"].encode()]
+    assert written == [supervisor._user_frame(args["prompt"])]
     assert cwd == str(tmp_path)
     assert env["HOME"] == str(tmp_path)
     assert env["ANTHROPIC_MODEL"] == "gemma4:e4b"

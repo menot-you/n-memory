@@ -96,17 +96,6 @@ class CaptureContext:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> CaptureContext:
-        return cls(
-            harness=data.get("harness", "unknown") or "unknown",
-            model=data.get("model", "unknown") or "unknown",
-            cwd=data.get("cwd", "unknown") or "unknown",
-            session_id=data.get("session_id", "unknown") or "unknown",
-            host=data.get("host", "unknown") or "unknown",
-            owner=data.get("owner", "unknown") or "unknown",
-        )
-
-    @classmethod
     def detect(cls, override_meta: dict[str, Any] | None = None) -> CaptureContext:
         """Derive capture context from current process environment + optional _meta."""
         host = socket.gethostname() or "unknown"

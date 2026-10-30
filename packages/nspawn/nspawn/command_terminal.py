@@ -9,6 +9,7 @@ import os
 import pty
 import select
 import signal
+import subprocess
 import sys
 import termios
 import threading
@@ -51,9 +52,6 @@ EXIT_WAIT_S = 5.0
 # Only these host variables enter the custody launcher. The scope removes its
 # control variables before execution. The target receives the Push policy below.
 KEPT = ("HOME", "USER", "LOGNAME", "SHELL", "PATH", "LANG", "XDG_RUNTIME_DIR")
-# posix_spawn here has no chdir action: sh changes to the folder, then becomes the
-# command, so the session leader's pid is the command's.
-CHDIR = 'cd -- "$1" && shift && exec "$@"'
 
 
 def number(params: dict[str, Any], key: str, low: int, high: int) -> int:
@@ -272,7 +270,7 @@ class Terminal:
         master, slave = pty.openpty()
         try:
             termios.tcsetwinsize(slave, (self.rows, self.cols))
-            target = [
+            launch = [
                 sys.executable,
                 "-P",
                 "-m",
@@ -280,30 +278,19 @@ class Terminal:
                 json.dumps(identity),
                 *argv,
             ]
-            launch = [
-                "/bin/sh",
-                "-c",
-                CHDIR,
-                "nott-terminal",
-                self.cwd,
-                *target,
-            ]
-            launch = scope.command(launch)
-            environment = scope.environment(environment)
-            self.pid = os.posix_spawn(
-                launch[0],
-                launch,
-                environment,
-                # Opened after setsid, the slave becomes the controlling tty; no
-                # other host fd reaches the child.
-                file_actions=[
-                    (os.POSIX_SPAWN_OPEN, 0, os.ttyname(slave), os.O_RDWR, 0),
-                    (os.POSIX_SPAWN_DUP2, 0, 1),
-                    (os.POSIX_SPAWN_DUP2, 0, 2),
-                    (os.POSIX_SPAWN_CLOSEFROM, 3),
-                ],
-                setsid=True,
+            # uv's CPython has neither posix_spawn's setsid nor its closefrom
+            # action. Popen makes the session and closes every host fd above 2;
+            # command_exec then takes the slave as the controlling tty.
+            self.process = subprocess.Popen(
+                scope.command(launch),
+                stdin=slave,
+                stdout=slave,
+                stderr=slave,
+                cwd=self.cwd,
+                env=scope.environment(environment),
+                start_new_session=True,
             )
+            self.pid = self.process.pid
         except BaseException:
             os.close(master)
             raise
@@ -522,7 +509,6 @@ class Terminal:
                 finally:
                     os.close(handle)
             time.sleep(0.05)
-        with suppress(ChildProcessError):
-            os.waitpid(self.pid, 0)
+        self.process.wait()
         self.reader.join(1.0)
         self.waiter.join(1.0)

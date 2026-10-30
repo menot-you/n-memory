@@ -11,7 +11,7 @@ from ..capsule import (
 )
 from ..database import writes
 from ..project import glob_subtree_pattern
-from ..substrate import OutcomeRecord, RecallReceipt
+from ..substrate import OutcomeRecord
 from .base import Repository
 
 
@@ -120,8 +120,10 @@ class SubstrateRepository(Repository):
         *,
         session_id: str | None = None,
         project_prefix: str | None = None,
-    ) -> RecallReceipt:
-        """Record the receipt, with the two columns the INSERT used to omit.
+    ) -> str:
+        """Record the receipt and return its id.
+
+        The INSERT now writes the two columns that it used to omit.
 
         `session_id` and `project_prefix` have existed since the table did while
         this INSERT named neither: 1545 of 1549 live rows carry a NULL session. A
@@ -163,10 +165,4 @@ class SubstrateRepository(Repository):
                 ),
             )
 
-            return RecallReceipt(
-                id=rcpt_id,
-                query=terms,
-                returned_ids=returned_ids,
-                project_id=project_id,
-                at=now,
-            )
+            return rcpt_id

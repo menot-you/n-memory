@@ -450,13 +450,13 @@ _SYSTEM1_FAILURES = [
 
 
 @pytest.mark.parametrize("shape", _SYSTEM1_FAILURES)
-def test_every_failure_of_the_system1_falls_closed_to_unclassified(
+def test_every_failure_of_the_system1_keeps_the_declared_class(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shape: dict[str, Any]
 ) -> None:
     roster = _roster_at(tmp_path, _STRENGTH_ROSTER)
     monkeypatch.setattr(system1, "ask", _answering(**shape))
     effective, warning, _ = classify.resolve_execution_class("judgment", "p", roster)
-    assert effective == "unclassified"
+    assert effective == "judgment"
     assert warning is not None and "judgment" in warning
     seen = _recorder(monkeypatch)
     _dispatch(
@@ -467,8 +467,8 @@ def test_every_failure_of_the_system1_falls_closed_to_unclassified(
         provider=None,
         ask=_answering(**shape),
     )
-    assert seen["kwargs"]["execution_class"] == "unclassified"
-    assert seen["picked"].executed_provider.name == "glm"
+    assert seen["kwargs"]["execution_class"] == "judgment"
+    assert seen["picked"].executed_provider.name == "claude"
 
 
 @pytest.mark.parametrize(
@@ -564,6 +564,9 @@ def _dispatch_to_row(
         )
 
     monkeypatch.setattr(supervisor, "create_run_directory", create_run_directory)
+    # The row is measured here, not the credential: `/never-read/secrets` holds
+    # none, and admission would leave the route out (test_unset_credential.py).
+    monkeypatch.setattr(supervisor.child, "credential_refusal", lambda *a: None)
     instance = object.__new__(supervisor.Supervisor)
     instance._lock = RLock()
     instance._run_root = tmp_path

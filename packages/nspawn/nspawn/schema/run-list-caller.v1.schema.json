@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nott.ing/schema/run-list-caller.v1",
+  "title": "nspawn run list --caller <socket> --json, version 1",
+  "description": "The runs that one Claude Code session started, newest first. nSPAWN reads them from the notice rows that name the messaging socket of the session. It removes a notice row after 7 days, and the run leaves the list with its row. A closed run can leave sooner, when nSPAWN removes its run row.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["runs"],
+  "properties": {
+    "runs": {"type": "array", "items": {"$ref": "#/$defs/run"}}
+  },
+  "$defs": {
+    "epochMs": {"type": "integer", "minimum": 0},
+    "runId": {"type": "string", "minLength": 1},
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runId", "phase", "createdAt", "group", "lastOutputAt", "continuedAs"],
+      "properties": {
+        "runId": {"$ref": "#/$defs/runId"},
+        "phase": {
+          "description": "The terminal phases are orphaned, completed, failed and closed. A run that failed stays failed after nSPAWN closes it.",
+          "enum": [
+            "pending", "spawning", "running", "waiting_approval", "idle",
+            "interrupted", "recovering", "orphaned", "completed", "failed", "closed"
+          ]
+        },
+        "createdAt": {"$ref": "#/$defs/epochMs"},
+        "group": {"type": ["string", "null"], "minLength": 1},
+        "lastOutputAt": {
+          "description": "The modification time of the stdout file of the run. Null when that file does not exist.",
+          "anyOf": [{"$ref": "#/$defs/epochMs"}, {"type": "null"}]
+        },
+        "continuedAs": {
+          "description": "The run that continues the work of this failed or closed run. Null when no run continues it.",
+          "anyOf": [{"$ref": "#/$defs/runId"}, {"type": "null"}]
+        }
+      }
+    }
+  }
+}

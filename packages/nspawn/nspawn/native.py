@@ -12,7 +12,7 @@ import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, ClassVar, Final
+from typing import Any, Final
 
 import nott_database
 from nott_system1 import SCOPES, route_variables
@@ -25,7 +25,6 @@ from .claude_child import (
 )
 from .errors import NERR_1105, NSpawnError
 from .inference import CodexInference, StructuredInference
-from .limits import MAX_DURABLE_IDENTIFIER_BYTES
 from .owner_roster import (
     NativeAccount,
     Provider,
@@ -93,6 +92,7 @@ _HOME_SELECTORS = frozenset(
 )
 _MCP_SCOPE_ENV = {
     "nspawn": (
+        RUN_ID_ENV,
         "NOTT_NSPAWN_CONFIG",
         "NOTT_NSPAWN_ROSTER",
         "NOTT_DATABASE_DIR",
@@ -164,47 +164,6 @@ class NativePreparationError(NSpawnError):
         Exception.__init__(self, message)
 
 
-#: The private orchestrator MCP as one turn sees it: one server name, the module
-#: `nott_harness/orchestrator_mcp.py` is launched as, and the five tools it
-#: offers. A tool this table does not name is not a tool of an orchestrator turn.
-ORCHESTRATOR_MCP_NAME: Final = "nott_orchestrator"
-ORCHESTRATOR_MCP_MODULE: Final = "nott_harness.orchestrator_mcp"
-ORCHESTRATOR_MCP_TOOLS: Final = (
-    "nott_capsule_show",
-    "nott_proposal_create",
-    "nott_session_show",
-    "nott_workflow_list",
-    "nott_workflow_show",
-)
-#: That server's disposable needs, as leaf names under one root. NOT the store:
-#: `--database-dir` states it on the launch, and the server refuses a configured
-#: `NOTT_DATABASE_DIR` naming another one -- so planting it here would only turn
-#: a bound turn into a refused one.
-ORCHESTRATOR_DISPOSABLE: Final = {
-    "HOME": "home",
-    "TMPDIR": "tmp",
-    "XDG_CACHE_HOME": "cache",
-}
-#: The flags that decide WHICH `nott_harness.orchestrator_mcp` is launched.
-#: `python -m` prepends the working directory to `sys.path` before any installed
-#: package, and the app-server's working directory IS the snapshot this turn
-#: reads -- so a snapshot carrying `nott_harness/orchestrator_mcp.py` would be
-#: the private MCP, project code launched as the one server the turn trusts and
-#: offering exactly the five names the contract check looks for. `-I` (isolated:
-#: no working directory, no user site, no `PYTHON*` variable) is the whole
-#: defence, because `--runtime-root` is read by the module import already chose.
-ORCHESTRATOR_MCP_ISOLATION: Final = ("-I",)
-#: The names the codex app-server hands every MCP child of its own accord
-#: (`HOME LANG PATH SHELL USER`, as `_MCP_FORWARD_ENV` above records), named with
-#: fixed literals where they are not a path of this turn's own: a per-server
-#: `env` is applied OVER those, so a dictionary that leaves one out is not that
-#: child's whole environment, it is an overlay on this process's. `USER` is not
-#: among them because the launch upstream carries none to forward.
-ORCHESTRATOR_MCP_LITERALS: Final = {
-    "LANG": "C.UTF-8",
-    "LC_ALL": "C.UTF-8",
-    "SHELL": "/bin/sh",
-}
 #: The vendor child's own disposable state tree, as leaf names under the same
 #: run-private root: the account home is read for a credential, never written to
 #: or inherited from (`orchestrator_launch_environment`).
@@ -240,18 +199,16 @@ ORCHESTRATOR_LAUNCH_CERTIFICATES: Final = (
 #: Every hook and plugin an account home would contribute to a turn, closed by
 #: the vendor's OWN key names: the three capability features that gate hooks and
 #: plugins, and the account's `[plugins]` table emptied, so no plugin is
-#: installed to carry a hook in the first place. The launch states these
-#: (`orchestrator_startup_arguments`) and the composed thread states them again
-#: (`app_server.orchestrator_thread_params`), from here, because the vendor reads
+#: installed to carry a hook in the first place. The structured inference launch
+#: states these (`orchestrator_startup_arguments`), because the vendor reads
 #: configuration at two times and one of them is before its own startup.
 #:
 #: `projects = {}` AND `mcp_servers = {}` ARE NOT HERE, AND MUST NOT COME BACK.
 #: Measured against codex 0.159.2 (M-a, 2026-10-01): an empty inline table is a
 #: MERGE NO-OP. With both overrides on the argv the snapshot's project layer still
-#: loaded, an `[mcp_servers.X]` it declared still started host-side, and its
-#: `[mcp_servers.nott_orchestrator.env]` still merged into the one server the turn
-#: trusts; an explicit `trust_level = "untrusted"` for the same tree, at launch or
-#: on the thread, did not stop the merge either. The project layer is closed by
+#: loaded and an `[mcp_servers.X]` it declared still started host-side; an
+#: explicit `trust_level = "untrusted"` for the same tree, at launch or on the
+#: thread, did not stop the merge either. The project layer is closed by
 #: `orchestrator_neutral_cwd` -- the app-server runs where there is no project to
 #: load -- and the server table is DECLARED rather than emptied
 #: (`orchestrator_mcp_arguments`), which is also what makes the vendor's own
@@ -262,12 +219,6 @@ ORCHESTRATOR_STARTUP_CLOSURE: Final[dict[str, Any]] = {
     "features.plugins": False,
     "plugins": {},
 }
-#: The fields of a composed MCP server that ONE orchestrator launch declares with
-#: `-c`, and the fields `config/read` reports back for comparison (M-e: command,
-#: args, env AS MERGED, and enabled). The composed thread's two tool-contract keys
-#: are not among them: a key the vendor's own effective view does not represent
-#: could not be validated there, and this list is exactly what is validated.
-ORCHESTRATOR_LAUNCH_MCP_FIELDS: Final = ("command", "args", "env", "enabled")
 #: The leaf of a run's disposable root the app-server RUNS IN, and the markers
 #: that disqualify a directory from being it: `.git` anywhere on its path, and
 #: `.codex` in the directory itself (see `orchestrator_neutral_refusal`).
@@ -283,37 +234,6 @@ _TOML_BARE_KEY: Final = frozenset(
 )
 #: The leaf of a run's directory that holds every disposable need above.
 ORCHESTRATOR_DISPOSABLE_DIRECTORY: Final = "disposable"
-#: The prefix of an orchestrator turn's permission profile; its run id completes
-#: it, so the profile admission RECORDS is the profile the turn starts with, and
-#: not a fresh identifier minted later where nothing can compare the two.
-ORCHESTRATOR_PROFILE_PREFIX: Final = "nott-nspawn-orchestrator-"
-
-#: A binding field is bounded printable text; a path field is also absolute and
-#: canonical, because the profile grants what it says and nothing normalizes it.
-#: THE REGISTRY'S OWN IDENTIFIER CEILING, not a number of this module's: every
-#: field of a binding is recorded in the admission's `run_events` payload, and a
-#: field this module admitted past 512 bytes would be a turn whose own binding
-#: the store then refuses to record -- or, worse, to read back on a resume.
-_ORCHESTRATOR_FIELD_BYTES: Final = MAX_DURABLE_IDENTIFIER_BYTES
-
-
-def orchestrator_mcp_environment(disposable_root: str) -> dict[str, str]:
-    """The private MCP's WHOLE environment: the sandbox tool PATH and this turn's
-    own disposable HOME, TMPDIR and cache under `disposable_root`.
-
-    Nothing else, and that is the point. The server reads its session, project,
-    repository, runtime and store off its argv, and the memory it binds takes the
-    birth fields of everything it captures from whatever started it -- so an
-    account home, a live store, an owner or controller socket or a session bus
-    inherited here would decide where a proposal is written and whose it looks
-    like, without one argument of one call having claimed either.
-    """
-    root = Path(disposable_root)
-    return {
-        "PATH": SANDBOX_TOOL_PATH,
-        **{name: str(root / leaf) for name, leaf in ORCHESTRATOR_DISPOSABLE.items()},
-        **ORCHESTRATOR_MCP_LITERALS,
-    }
 
 
 def orchestrator_disposable_root(run_dir: Path) -> str:
@@ -327,13 +247,12 @@ def orchestrator_disposable_root(run_dir: Path) -> str:
 
 
 def orchestrator_disposable_leaves() -> tuple[str, ...]:
-    """Every leaf under that root: the vendor child's state tree, the private
-    MCP's own, and the NEUTRAL directory the app-server runs in, which the drive
-    creates 0700 before either process starts."""
+    """Every leaf under that root: the vendor child's state tree and the NEUTRAL
+    directory the app-server runs in, which the drive creates 0700 before the
+    process starts."""
     return tuple(
         sorted(
             {
-                *ORCHESTRATOR_DISPOSABLE.values(),
                 *ORCHESTRATOR_LAUNCH_DISPOSABLE.values(),
                 ORCHESTRATOR_NEUTRAL_LEAF,
             }
@@ -342,27 +261,19 @@ def orchestrator_disposable_leaves() -> tuple[str, ...]:
 
 
 def orchestrator_neutral_cwd(disposable_root: str) -> str:
-    """The NEUTRAL directory an orchestrator turn's app-server process and its
-    thread both run in: one leaf of the RUN's own disposable root.
+    """The NEUTRAL directory a structured inference turn's app-server process
+    and its thread both run in: one leaf of the RUN's own disposable root.
 
-    NOT THE SNAPSHOT, and this is the whole closure of the project configuration
-    layer. Measured against codex 0.159.2 (M-a, 2026-10-01): with the project
-    trusted, `-c projects={}` and `-c mcp_servers={}` merge nothing -- the
-    snapshot's `.codex/config.toml` still loaded as a project layer, an
-    `[mcp_servers.X]` it declared still started host-side, and an
-    `[mcp_servers.nott_orchestrator.env]` it declared still merged into the one
-    server the turn trusts; `trust_level = "untrusted"` for the same tree did not
-    stop it either, at launch or on the thread. What DOES stop it (M-b) is giving
-    the vendor no project: a cwd inside no git repository, carrying no `.codex` of
-    its own, under the run's own trusted per-run parent. `config/read` from that cwd
-    answered `[sessionFlags, user, system]` and the private MCP's environment
-    carried nothing of the snapshot.
-
-    The snapshot remains the tree this turn READS and is not weakened by this:
-    it is the recorded `snapshot` and the explicit sandbox read root
-    (`OrchestratorBinding.read_roots`). It is simply not the directory the vendor
-    reads configuration from -- and it is not the private MCP's `--repository`
-    either, which is the session's own editable repository, bound and never read.
+    NOT THE DISPATCHED TREE, and this is the whole closure of the project
+    configuration layer. Measured against codex 0.159.2 (M-a, 2026-10-01): with
+    the project trusted, `-c projects={}` and `-c mcp_servers={}` merge nothing --
+    the tree's `.codex/config.toml` still loaded as a project layer and an
+    `[mcp_servers.X]` it declared still started host-side; `trust_level =
+    "untrusted"` for the same tree did not stop it either, at launch or on the
+    thread. What DOES stop it (M-b) is giving the vendor no project: a cwd inside
+    no git repository, carrying no `.codex` of its own, under the run's own
+    trusted per-run parent. `config/read` from that cwd answered
+    `[sessionFlags, user, system]`.
     """
     return str(Path(disposable_root) / ORCHESTRATOR_NEUTRAL_LEAF)
 
@@ -409,29 +320,23 @@ def orchestrator_neutral_refusal(cwd: str) -> str | None:
 def orchestrator_launch_environment(
     prepared: Mapping[str, str], *, disposable_root: str, auth_env: str | None = None
 ) -> dict[str, str]:
-    """The WHOLE environment one orchestrator turn's vendor child is launched
-    with: not a filter over this process's, a dictionary built here.
+    """The WHOLE environment one structured inference turn's vendor child is
+    launched with: not a filter over this process's, a dictionary built here.
 
-    A read-only turn whose one tool is a private MCP has no use for the owner's
-    home or user name, the session bus, the controller's runtime directory or the
-    live store -- and the memory that MCP binds takes the birth fields of
-    everything it captures from whatever started it, so a name forwarded here
-    would decide whose a proposal looks like without one argument of one call
-    having claimed it.
+    A tool-free read-only turn has no use for the owner's home or user name, the
+    session bus, the controller's runtime directory or the live store.
 
     Four classes and nothing else: the sandbox tool PATH; a disposable state tree
-    under the RUN's own directory, never under the snapshot it only reads; the
-    fixed literals above; and the paths the vendor binary itself cannot do
-    without -- the certificate bundles, the credential the route declared, and
-    `CODEX_HOME`. THAT HOME IS THE ONE ACCOUNT PATH THAT STAYS: the vendor reads
-    its OAuth credential and its Responses provider binding from there and has no
-    other way to be given either, and a private home would have to hold a copy of
-    that credential, which the vendor's own refresh then rotates away from the
-    account's. What the home may CONTRIBUTE is closed rather than copied: every
-    server it declares is named closed (`orchestrator_inherited_servers`), its
-    plugins and skills are not among the read roots, and its hooks and plugins
-    are closed at startup by the launch itself
-    (`orchestrator_startup_arguments`) as well as by the composed thread.
+    under the RUN's own directory; the fixed literals above; and the paths the
+    vendor binary itself cannot do without -- the certificate bundles, the
+    credential the route declared, and `CODEX_HOME`. THAT HOME IS THE ONE ACCOUNT
+    PATH THAT STAYS: the vendor reads its OAuth credential and its Responses
+    provider binding from there and has no other way to be given either, and a
+    private home would have to hold a copy of that credential, which the vendor's
+    own refresh then rotates away from the account's. What the home may
+    CONTRIBUTE is closed rather than copied: every server it declares is named
+    closed (`CodexInference.config`), and its hooks and plugins are closed at
+    startup by the launch itself (`orchestrator_startup_arguments`).
     """
     root = Path(disposable_root)
     environment = {
@@ -460,8 +365,8 @@ def orchestrator_launch_environment(
 
 
 def orchestrator_startup_arguments() -> tuple[str, ...]:
-    """The two closures above as the arguments ONE orchestrator launch carries
-    where every other codex launch carries the hook-trust bypass.
+    """The closure above as the arguments ONE structured inference launch
+    carries where every other codex launch carries the hook-trust bypass.
 
     It is not the same statement in another place. The thread's configuration is
     merged after the process has started, and by then the account's plugins are
@@ -471,9 +376,8 @@ def orchestrator_startup_arguments() -> tuple[str, ...]:
     does not close a hook the account itself already trusts, and naming one server
     on a thread does not unstart another one. A `-c` override belongs to the
     configuration the vendor loads BEFORE all of it, which is where a launch can
-    still close them -- so a turn whose only tool is one private MCP loads,
-    enables, starts and fires nothing the account home or the snapshot
-    contributes, and the private MCP's own environment is the composed one alone.
+    still close them -- so a tool-free turn loads, enables, starts and fires
+    nothing the account home contributes.
 
     `false` and `{}` are one literal in JSON and in TOML, which is why the
     closure above is rendered rather than spelled twice.
@@ -514,46 +418,6 @@ def _toml_inline(value: object) -> str:
     )
 
 
-def orchestrator_launch_mcp_servers(
-    servers: Mapping[str, Mapping[str, Any]],
-) -> dict[str, dict[str, Any]]:
-    """Every MCP server ONE orchestrator launch DECLARES, from the same mapping the
-    composed thread carries: the private server's whole launch -- command,
-    arguments, environment, enabled -- and `enabled = false` for every name the
-    account declared.
-
-    THE LAUNCH IS WHERE THIS BELONGS, and not because a thread cannot say it. An
-    empty `[mcp_servers]` override merges nothing (M-a), so emptying the table was
-    never a closure at all; and the one place the vendor states the launch it will
-    perform, before it has performed any of it, is the effective configuration of
-    the PROCESS (M-e: `config/read` answered the private server's command, args and
-    merged env with no MCP child started yet). Declaring the server here is what
-    makes that answer comparable to this composition, field by field.
-    """
-    if ORCHESTRATOR_MCP_NAME not in servers:
-        raise NativePreparationError(
-            f"an orchestrator launch declares {ORCHESTRATOR_MCP_NAME!r} itself"
-        )
-    declaration: dict[str, dict[str, Any]] = {}
-    for name, server in sorted(servers.items()):
-        if name != ORCHESTRATOR_MCP_NAME:
-            if dict(server) != {"enabled": False}:
-                raise NativePreparationError(
-                    f"an inherited MCP {name!r} carries more than its own closure"
-                )
-            declaration[name] = {"enabled": False}
-            continue
-        for required in ORCHESTRATOR_LAUNCH_MCP_FIELDS:
-            if required not in server:
-                raise NativePreparationError(
-                    f"the private orchestrator MCP declares no {required!r}"
-                )
-        declaration[name] = {
-            required: server[required] for required in ORCHESTRATOR_LAUNCH_MCP_FIELDS
-        }
-    return declaration
-
-
 def orchestrator_mcp_arguments(
     declaration: Mapping[str, Mapping[str, Any]],
 ) -> tuple[str, ...]:
@@ -562,11 +426,7 @@ def orchestrator_mcp_arguments(
     Each override is ROUND-TRIPPED through the vendor's own parser before it is
     handed over: an override that does not come back as the value composed refuses
     the launch, naming the server, instead of reaching the app-server as something
-    else. The interpreter is spelled exactly as the binding spelled it -- absolute
-    and canonical, never symlink-resolved -- because `-I` is the whole defence that
-    keeps a snapshot's own `nott_harness/orchestrator_mcp.py` from being the private
-    MCP, and resolving a venv's `bin/python` would run an interpreter whose prefix
-    cannot import the staged real one.
+    else.
     """
     arguments: list[str] = []
     for name, server in declaration.items():
@@ -587,34 +447,6 @@ def orchestrator_mcp_arguments(
             )
         arguments += ["-c", override]
     return tuple(arguments)
-
-
-def orchestrator_inherited_servers(account: NativeAccount) -> dict[str, dict[str, Any]]:
-    """Every MCP an orchestrator turn INHERITS, each named closed.
-
-    Composing only the private server would be an OVERLAY: the vendor merges a
-    thread's configuration over the file its `CODEX_HOME` holds, so an inherited
-    name this mapping never mentions keeps its own definition and starts -- and
-    it starts before any live catalog check can refuse the turn. So each one is
-    carried, closed, and a name that collides with the private server's is
-    refused rather than quietly won by one of two definitions.
-
-    Only the account's own names are carried. A name the installed plugin alone
-    declares has no definition in that file, and the launch loads no plugin
-    (`features.plugins = false` in `ORCHESTRATOR_STARTUP_CLOSURE`; its empty
-    `plugins` table merges nothing): closing it would be a server with no
-    transport, which codex 0.159.3 refuses at startup (`invalid transport in
-    mcp_servers.<name>`, measured 2026-10-02). The plugin's own claim on the
-    private name is refused where its raw declarations are read
-    (`_codex_mcp_servers`).
-    """
-    account_names = _account_declared_servers(account)
-    if ORCHESTRATOR_MCP_NAME in account_names:
-        raise NativePreparationError(
-            f"an inherited MCP declares the private orchestrator name "
-            f"{ORCHESTRATOR_MCP_NAME!r}"
-        )
-    return {name: {"enabled": False} for name in sorted(account_names)}
 
 
 def _account_declared_servers(account: NativeAccount) -> set[str]:
@@ -661,238 +493,6 @@ def _account_declared_servers(account: NativeAccount) -> set[str]:
             "native orchestrator inherited MCP declarations could not be read"
         ) from None
     return names
-
-
-#: The snapshot `request_refusal` probes with: absolute, canonical, and never a
-#: field the caller states, so a refusal it returns is always the caller's own.
-_ORCHESTRATOR_PROBE_SNAPSHOT: Final = "/"
-
-
-def orchestrator_profile_id(run_id: str) -> str:
-    """The permission profile of one orchestrator turn, named by its own run."""
-    return ORCHESTRATOR_PROFILE_PREFIX + run_id
-
-
-@dataclass(frozen=True)
-class OrchestratorBinding:
-    """One orchestrator turn's conversation session, memory project and paths.
-
-    TWO TREES, and they are not the same one. The `repository` is the session's
-    REAL repository root, which the caller states: it is the private MCP's
-    `--repository`, so it is where a proposal this turn makes is bound, and the
-    turn never reads it and never runs in it. The `snapshot` is the admission's
-    own cwd -- the clean INSPECTION COPY the turn reads -- and is never a request
-    field, because a caller free to name its own read root would name a tree the
-    admission never caged.
-
-    A binding that took the repository from the cwd bound every proposal of the
-    conversation to that inspection copy: a directory the run deletes, which no
-    later session can act on, while the tree the session actually edits was named
-    nowhere on record.
-    """
-
-    session: str
-    project: str
-    repository: str
-    snapshot: str
-    runtime: str
-    database_dir: str
-    interpreter: str
-
-    #: Exactly the keys a run start request may carry under `orchestrator`.
-    REQUEST_FIELDS: ClassVar[tuple[str, ...]] = (
-        "session",
-        "project",
-        "repository",
-        "runtime",
-        "database_dir",
-        "interpreter",
-    )
-    #: The fields the permission profile and the argv spell as filesystem paths.
-    PATH_FIELDS: ClassVar[tuple[str, ...]] = (
-        "repository",
-        "snapshot",
-        "runtime",
-        "database_dir",
-        "interpreter",
-    )
-
-    def __post_init__(self) -> None:
-        for name in ("session", "project", *self.PATH_FIELDS):
-            value = getattr(self, name)
-            if (
-                not isinstance(value, str)
-                or not value
-                or not value.isprintable()
-                or len(value.encode("utf-8")) > _ORCHESTRATOR_FIELD_BYTES
-            ):
-                raise NativePreparationError(
-                    f"orchestrator {name} must be bounded printable text"
-                )
-        for name in self.PATH_FIELDS:
-            value = getattr(self, name)
-            if not Path(value).is_absolute() or value != os.path.normpath(value):
-                raise NativePreparationError(
-                    f"orchestrator {name} must be an absolute canonical path"
-                )
-        for name in ("session", "project"):
-            value = getattr(self, name)
-            if value.strip() != value or any(c in value for c in " \t"):
-                raise NativePreparationError(
-                    f"orchestrator {name} carries no whitespace"
-                )
-
-    @classmethod
-    def from_request(
-        cls, request: Mapping[str, Any], *, snapshot: str
-    ) -> OrchestratorBinding:
-        """The caller's six coordinates, refused one field name at a time.
-
-        A key beside the six is refused BY ITS NAME rather than ignored, and one
-        of the six that is missing is refused by its name too: an argument a
-        binding does not declare is a coordinate the caller believes it set, and
-        silence there is the whole class of defect this unit closes. In
-        particular NOTHING stands in for `repository` -- not this `snapshot`, not
-        the cwd it came from. A repository nobody stated is a refusal.
-        """
-        if not isinstance(request, Mapping):
-            raise NativePreparationError("orchestrator binding must be an object")
-        undeclared = sorted(set(request) - set(cls.REQUEST_FIELDS))
-        if undeclared:
-            raise NativePreparationError(
-                f"orchestrator binding declares no field {undeclared[0]!r}"
-            )
-        for name in cls.REQUEST_FIELDS:
-            if name not in request:
-                raise NativePreparationError(f"orchestrator binding requires {name!r}")
-        return cls(
-            snapshot=snapshot,
-            **{name: request[name] for name in cls.REQUEST_FIELDS},
-        )
-
-    @classmethod
-    def request_refusal(cls, request: object) -> str | None:
-        """What is wrong with a caller's `orchestrator` argument, as one sentence
-        naming the field, or `None` for an argument this admission can bind.
-
-        The MCP door answers with this BEFORE it dispatches anything, so a
-        coordinate that is too long, empty, blank, not printable, not a path or
-        not even a string is invalid input refused as invalid input -- not a run
-        that reaches a store write or a launch and fails there. The snapshot is
-        not a request field (it is the admission's own cwd), so this probes with
-        one that cannot itself be the reason: the six fields the caller states,
-        `repository` among them, are the only ones it can refuse.
-        """
-        if not isinstance(request, Mapping):
-            return "orchestrator binding must be an object"
-        try:
-            cls.from_request(request, snapshot=_ORCHESTRATOR_PROBE_SNAPSHOT)
-        except NativePreparationError as refusal:
-            return refusal.message
-        return None
-
-    def resume_refusal(self, recorded: Mapping[str, Any]) -> str | None:
-        """The name of the first field in which this binding differs from the one
-        an origin RECORDED, or `None` where the two are identical.
-
-        A resume continues a conversation the store already names. It may
-        therefore restate the recorded binding and nothing else: `repository` IS
-        the tree a proposal is bound to, `database_dir` IS the store it is written
-        to and `interpreter` IS the program the private MCP runs, so a resume free
-        to change any of them continues a recorded orchestration somewhere its
-        admission never bound it to, with the session and the tool contract
-        matching to the byte. The `snapshot` is compared for the same reason, even
-        though it is the admission's own cwd: it is the one tree the turn reads.
-        The profile is not compared: it names the RUN
-        (`orchestrator_profile_id`), and a resume is another run.
-        """
-        for name in ("session", *self.PATH_FIELDS):
-            if recorded.get(name) != getattr(self, name):
-                return name
-        # The project is a field of the caller's own request, so it answers by its
-        # own name; the contract around it answers for everything else in it.
-        contract = recorded.get("tool_contract")
-        if isinstance(contract, Mapping) and contract.get("project") != self.project:
-            return "project"
-        if contract != self.tool_contract():
-            return "tool_contract"
-        return None
-
-    @property
-    def read_roots(self) -> tuple[str, ...]:
-        """The two trees this turn reads by name: its snapshot and its runtime.
-
-        THE REPOSITORY IS NOT ONE OF THEM, read or write. It is the tree the
-        private MCP binds a proposal to, and the whole reason this turn is given
-        a clean snapshot is that it must not read the working copy its own
-        session is editing.
-        """
-        return tuple(sorted({self.snapshot, self.runtime}))
-
-    def tool_contract(self) -> dict[str, Any]:
-        """The one MCP this turn may call, the project it is bound to, its tools."""
-        return {
-            "mcp": ORCHESTRATOR_MCP_NAME,
-            "project": self.project,
-            "tools": list(ORCHESTRATOR_MCP_TOOLS),
-        }
-
-    def payload(self, profile: str) -> dict[str, Any]:
-        """The lifecycle run event payload admission writes beside the run row:
-        THE WHOLE BINDING, the profile and the tool contract.
-
-        Every coordinate, because a resume is checked against this record and
-        nothing else (`resume_refusal`): a record of the session and the contract
-        alone cannot answer whether a resume names the same repository, the same
-        store or the same interpreter, and that silence is what let a bound
-        conversation be continued against another `--database-dir`. Both trees are
-        written down under their own names -- the `repository` that is bound and
-        the `snapshot` that is read -- so the record says which was which.
-        """
-        return {
-            "orchestrator_binding": {
-                "session": self.session,
-                "profile": profile,
-                "tool_contract": self.tool_contract(),
-                **{name: getattr(self, name) for name in self.PATH_FIELDS},
-            }
-        }
-
-    def mcp_servers(self, disposable_root: str) -> dict[str, dict[str, Any]]:
-        """Exactly the private orchestrator MCP, bound to this session and project.
-
-        Its argv states the session, the project, the REAL repository, the runtime
-        and the store, because that server reads its own argv and no environment
-        variable. `--repository` is the session's own editable tree and never the
-        inspection snapshot this turn reads: it is where a proposal lands, so a
-        snapshot spelled here bound every proposal to a copy that is deleted.
-        `env_vars` is empty: not one name of this process is forwarded to it by
-        the launcher.
-        """
-        return {
-            ORCHESTRATOR_MCP_NAME: {
-                "command": self.interpreter,
-                "args": [
-                    *ORCHESTRATOR_MCP_ISOLATION,
-                    "-m",
-                    ORCHESTRATOR_MCP_MODULE,
-                    "--session",
-                    self.session,
-                    "--project",
-                    self.project,
-                    "--repository",
-                    self.repository,
-                    "--runtime-root",
-                    self.runtime,
-                    "--database-dir",
-                    self.database_dir,
-                ],
-                "env": orchestrator_mcp_environment(disposable_root),
-                "env_vars": [],
-                "enabled": True,
-                "enabled_tools": list(ORCHESTRATOR_MCP_TOOLS),
-            }
-        }
 
 
 @dataclass(frozen=True)
@@ -995,7 +595,7 @@ def agy_confined(
     A session's `customization` overlays the home's `.gemini` read-only, and
     its `read_paths` and `sockets` are shown read-only at their own paths.
     """
-    from .agy_restricted import compose_restricted_launch
+    from .agy_restricted import compose_node_launch
 
     scratch = run_dir / "scratch"
     scratch.mkdir(mode=0o700, exist_ok=True)
@@ -1026,7 +626,7 @@ def agy_confined(
         aliases = ((resolver.resolve(strict=True), resolver),)
     elif resolver.is_file():
         runtime.append(resolver)
-    composed = compose_restricted_launch(
+    composed = compose_node_launch(
         argv=launch.argv,
         env={**launch.env, "TMPDIR": str(scratch)},
         checkout=cwd,
@@ -1434,7 +1034,6 @@ def _codex_mcp_servers(
     needles: SecretNeedles,
     source: Mapping[str, str],
     *,
-    orchestrated: bool = False,
     read_only: bool = False,
 ) -> tuple[dict[str, dict[str, Any]], SecretNeedles]:
     """Bind optional credentials only in per-server RPC config, never argv/env."""
@@ -1448,14 +1047,6 @@ def _codex_mcp_servers(
         raise NativePreparationError(
             "native MCP declarations could not be read safely"
         ) from None
-    # Before the http filter below, which would hide a pure http entry from any
-    # check made on the projection. Only an orchestrator turn has a private
-    # server for the name to collide with.
-    if orchestrated and ORCHESTRATOR_MCP_NAME in servers:
-        raise NativePreparationError(
-            f"an installed plugin declares the private orchestrator name "
-            f"{ORCHESTRATOR_MCP_NAME!r}"
-        )
     # The plugin ships nmemory over http for remote hosts as well; a native child
     # runs on the stdio host, so a pure http entry is not projected. An http entry
     # that also names a command is malformed and still refused below.
@@ -1679,7 +1270,6 @@ def prepare_native(
     effort: str | None = None,
     ambient: Mapping[str, str] | None = None,
     run_id: str | None = None,
-    orchestrator: OrchestratorBinding | None = None,
     disposable_root: str | None = None,
     inference_profile: StructuredInference | None = None,
 ) -> NativeLaunch:
@@ -1689,11 +1279,10 @@ def prepare_native(
     in its env, and for codex also into its shells, whose environment policy
     inherits nothing — so a hook inside the run knows it is one.
 
-    With an `orchestrator` binding the launch is that turn's: it reads its clean
-    snapshot and its trusted runtime and nothing else, its environment is the
-    closed one `orchestrator_launch_environment` builds over `disposable_root`,
-    and every MCP it would otherwise inherit is carried CLOSED beside the private
-    server the binding composes.
+    With an `inference_profile` the launch is a tool-free structured inference
+    turn: its environment is the closed one `orchestrator_launch_environment`
+    builds over `disposable_root`, and every MCP the account declares is carried
+    CLOSED.
     """
     if provider.kind not in ("codex", "agy"):
         raise NativePreparationError("native preparation requires kind codex or agy")
@@ -1701,7 +1290,6 @@ def prepare_native(
         if (
             provider.kind != "codex"
             or not read_only
-            or orchestrator is not None
             or read_paths
             or system_prompt is not None
             or disposable_root is None
@@ -1718,50 +1306,9 @@ def prepare_native(
             raise NativePreparationError(
                 "native inference carries no ambient route environment"
             )
-    if orchestrator is not None:
-        if provider.kind != "codex" or not read_only:
-            raise NativePreparationError(
-                "an orchestrator binding requires a read-only codex turn"
-            )
-        if read_paths:
-            raise NativePreparationError(
-                "an orchestrator turn grants no read_paths beside its binding"
-            )
-        if disposable_root is None:
-            raise NativePreparationError(
-                "an orchestrator turn names the disposable root of its own run"
-            )
-        if not Path(
-            disposable_root
-        ).is_absolute() or disposable_root != os.path.normpath(disposable_root):
-            raise NativePreparationError(
-                "an orchestrator turn's disposable root must be an absolute "
-                "canonical path"
-            )
-        # The app-server runs in a NEUTRAL directory of this run, not in the
-        # snapshot: refused here by the marker's own name, so a run root planted
-        # under a `.git`, or one whose neutral directory carries a `.codex` of its
-        # own, is a refusal and never a launch. The drive asserts it again once
-        # the directory exists.
-        if (
-            refusal := orchestrator_neutral_refusal(
-                orchestrator_neutral_cwd(disposable_root)
-            )
-        ) is not None:
-            raise NativePreparationError(refusal)
-        # A route literal is the OWNER's, so one this environment may not carry
-        # is refused rather than dropped: `NATIVE_ENV_NAMES` admits
-        # `DBUS_SESSION_BUS_ADDRESS` and `XDG_RUNTIME_DIR` among others, and
-        # discarding one would leave a declaration that reads as honoured.
-        beside = sorted(set(provider.env) - set(ORCHESTRATOR_LAUNCH_CERTIFICATES))
-        if beside:
-            raise NativePreparationError(
-                f"an orchestrator turn carries no route environment literal "
-                f"{beside[0]!r} beside its certificates"
-            )
-    elif disposable_root is not None and inference_profile is None:
+    elif disposable_root is not None:
         raise NativePreparationError(
-            "a disposable root belongs to an orchestrator turn and to no other"
+            "a disposable root belongs to a structured inference turn and to no other"
         )
     if refusal := request_refusal(
         provider, read_paths=read_paths, system_prompt=system_prompt
@@ -1837,20 +1384,9 @@ def prepare_native(
     binary = _path(provider.bin, directory=False)
     plugin_skill_roots = {}
     if provider.kind == "codex" and read_only and inference_profile is None:
-        # An orchestrator turn reads the two trees its binding names. The vendor's
-        # own skill trees are not among them: a turn whose tools are one private
-        # MCP has nothing to read them with, and a root nobody uses is a root
-        # granted for nothing.
-        plugin_skill_roots = (
-            {} if orchestrator is not None else _codex_skill_roots(roster, account)
-        )
+        plugin_skill_roots = _codex_skill_roots(roster, account)
         try:
             roots = {str(cwd.resolve(strict=True)), str(binary)}
-            if orchestrator is not None:
-                roots.update(
-                    str(Path(root).resolve(strict=True))
-                    for root in orchestrator.read_roots
-                )
             roots.update(str(Path(path).resolve(strict=True)) for path in granted_paths)
             roots.update(
                 installed for installed, _source in plugin_skill_roots.values()
@@ -1963,12 +1499,12 @@ def prepare_native(
         env["CODEX_HOME"] = str(account.home)
         if account.sqlite_home is not None:
             env["CODEX_SQLITE_HOME"] = str(account.sqlite_home)
-        if orchestrator is not None or inference_profile is not None:
+        if inference_profile is not None:
             assert disposable_root is not None
             env = orchestrator_launch_environment(
                 env, disposable_root=disposable_root, auth_env=account.auth_env
             )
-            if inference_profile is not None and account.sqlite_home is not None:
+            if account.sqlite_home is not None:
                 env["CODEX_SQLITE_HOME"] = str(account.sqlite_home)
         # https://learn.chatgpt.com/docs/config-file/config-reference
         # Codex runs a plugin's hooks only once TRUSTED per version (hooks.state) or
@@ -1976,13 +1512,13 @@ def prepare_native(
         # 2026-09-14 in a live `codex exec`: without it `git push origin fix/x:main`
         # landed with every NOTT guard "installed". nSPAWN is the automation that
         # vets the hook source (the bundle it installs), which is what the flag is for.
-        # AN ORCHESTRATOR TURN IS THE ONE LAUNCH THAT ASKS FOR NEITHER: it states
-        # the startup closure instead, where the flag would stand.
+        # A STRUCTURED INFERENCE TURN IS THE ONE LAUNCH THAT ASKS FOR NEITHER: it
+        # states the startup closure instead, where the flag would stand.
         argv: tuple[str, ...] = (
             str(binary),
             *(
                 orchestrator_startup_arguments()
-                if orchestrator is not None or inference_profile is not None
+                if inference_profile is not None
                 else ("--dangerously-bypass-hook-trust",)
             ),
             "-c",
@@ -2088,35 +1624,8 @@ def prepare_native(
             *argv[-3:],
         )
     elif provider.kind == "codex":
-        declared, needles = _codex_mcp_servers(
-            roster,
-            account,
-            needles,
-            source,
-            orchestrated=orchestrator is not None,
-            read_only=read_only,
-        )
-        mcp_servers = (
-            declared
-            if orchestrator is None
-            else orchestrator_inherited_servers(account)
-        )
-    if orchestrator is not None:
-        assert disposable_root is not None
-        # The whole MCP table of this turn, DECLARED at startup: the private
-        # server in full and every inherited name disabled. Before the subcommand
-        # -- `argv[:-3]` is `app-server --listen stdio://` -- because a `-c`
-        # override belongs to the configuration the vendor loads before its own
-        # startup, which is the configuration `config/read` then reports and
-        # `app_server.orchestrator_config_violation` validates.
-        argv = (
-            *argv[:-3],
-            *orchestrator_mcp_arguments(
-                orchestrator_launch_mcp_servers(
-                    {**mcp_servers, **orchestrator.mcp_servers(disposable_root)}
-                )
-            ),
-            *argv[-3:],
+        mcp_servers, needles = _codex_mcp_servers(
+            roster, account, needles, source, read_only=read_only
         )
     return NativeLaunch(
         argv,

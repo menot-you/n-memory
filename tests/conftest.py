@@ -5,7 +5,7 @@ its own `NOTT_DATABASE_DIR`, and `nott_database` refuses the live store director
 under pytest.
 
 `NOTT_NMEMORY_CONFIG` points to a path that does NOT exist, so the owner's
-`~/.nott/memory.toml` (System1 endpoint, github-sync fence) never reaches a test. A
+`~/.nott/memory.toml` (System1 endpoint, curator route) never reaches a test. A
 non-existent path is the only correct way to say "no file" — `/dev/null` exists
 and parses as an empty document.
 """

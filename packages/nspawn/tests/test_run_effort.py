@@ -634,6 +634,10 @@ def test_run_show_keeps_every_field_it_had_and_every_print_it_made() -> None:
         "exit_code",
         "cost_usd",
         "model",
+        # The turn count of the run (#1849).
+        "turn_count",
+        # The M6 operation-admission plan adds its checked or unchecked evidence.
+        "operation_admission",
     )
     rendered = _to_jsonable(
         RunStatus(
@@ -658,8 +662,10 @@ def test_run_show_keeps_every_field_it_had_and_every_print_it_made() -> None:
         "exit_code",
         "cost_usd",
         "model",
+        "turn_count",
     )
     assert rendered["model"] is None
+    assert rendered["turn_count"] == 0
     assert rendered["session"] is None
     assert rendered["transport"] is None
     assert rendered["exit_code"] is None
@@ -688,3 +694,29 @@ def test_run_show_keeps_every_field_it_had_and_every_print_it_made() -> None:
             strict=False,
         ),
     }
+
+
+def test_a_claude_admission_records_the_home_the_journal_reads(
+    registry: Registry,
+    tmp_path: Path,
+    roster_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The session journal finds the run's session in the account's own home."""
+    home = tmp_path / "acct-home"
+    picked = _picked(None, "high")
+    picked = dataclasses.replace(
+        picked,
+        executed_provider=dataclasses.replace(
+            picked.executed_provider, accounts={"acct-1": NativeAccount(home=home)}
+        ),
+    )
+    _wired(monkeypatch, picked)
+    sv = _sv(registry, tmp_path)
+    accepted = sv.execute("hi", str(tmp_path), read_only=True)
+    assert sv.status(accepted.run_id, timeout_ms=5000).phase.is_terminal()
+    assert [
+        payload["journal_context"]
+        for payload in _payloads(registry, accepted.run_id)
+        if "journal_context" in payload
+    ] == [{"home": str(home.resolve())}]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import signal
 import subprocess
@@ -10,6 +11,7 @@ import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from registry_reset import reset_registry, store
@@ -76,6 +78,18 @@ def _drain_worker_threads(
             thread.join(timeout=10)
 
 
+def worker_plugin(tmp_path: Path) -> Path:
+    """A plugin root holding only `agents/worker.md`, the agent a child runs as
+    when its start names none: a start on a plugin root without it is refused."""
+    root = tmp_path / "plugin-root"
+    (root / "agents").mkdir(parents=True, exist_ok=True)
+    (root / "agents" / "worker.md").write_text(
+        "---\nname: worker\ndescription: The default child.\n---\n\nDo the brief.\n",
+        encoding="utf-8",
+    )
+    return root
+
+
 @pytest.fixture
 def roster_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A minimal real roster: only `defaults.plugins` matters to L7 here.
@@ -88,7 +102,8 @@ def roster_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home = tmp_path / "home"
     (home / ".nott").mkdir(parents=True)
     (home / ".nott" / "spawn.toml").write_text(
-        '[defaults]\nplugins = ["/tmp/plugin-root"]\n', encoding="utf-8"
+        f"[defaults]\nplugins = [{json.dumps(str(worker_plugin(tmp_path)))}]\n",
+        encoding="utf-8",
     )
     monkeypatch.delenv("NOTT_NSPAWN_ROSTER", raising=False)
     monkeypatch.setenv("NOTT_NSPAWN_ROSTER", str(home / ".nott/spawn.toml"))
@@ -131,6 +146,8 @@ class FakeSpawnedChild:
         self.process = popen
         self._identity = capture_process_identity(popen.pid)
         self.stop_calls: list[ProcessIdentity] = []
+        # The steer loop looks at both pumps; a stand-in has none that fail.
+        self.stdout_pump = self.stderr_pump = SimpleNamespace(finished=False)
 
     @property
     def identity(self) -> ProcessIdentity:

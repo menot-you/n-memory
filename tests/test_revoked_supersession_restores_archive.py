@@ -8,8 +8,7 @@ added, and a revoke would not have returned them to default recall.
 
 Every step runs through the path a session uses, each with an injected clock:
 the tools capture, relate, show and retrieve, the CLI revokes (the MCP tool
-cannot), and the elected embedding worker consolidates, as
-`nmemory_capsule_consolidate` does when it applies its tier moves.
+cannot), and the elected embedding worker consolidates: it applies the tier moves.
 """
 
 from __future__ import annotations
@@ -38,7 +37,6 @@ from nmemory.embedding import EmbeddingClient
 from nmemory.embedding_index import EmbeddingWorker
 from nmemory.server import MemoryServer
 from nmemory.store import Store
-from nmemory.tools import consolidate as consolidate_tool
 
 T0 = datetime(2026, 9, 6, tzinfo=UTC)
 #: Past the archive window of a capsule captured at T0.
@@ -115,18 +113,13 @@ def _by_worker(s: _Store, now: datetime) -> None:
             assert s.worker.cycle() == 0
 
 
-def _by_tool(s: _Store, now: datetime) -> None:
-    """`nmemory_capsule_consolidate`, applying its tier moves."""
-    _call(s.server, "nmemory_capsule_consolidate", {"apply_tiers": True}, now)
-
-
 def _retrieved(server: MemoryServer, term: str, now: datetime) -> set[str]:
     """Default recall: no flag but the term."""
     payload = _call(server, "nmemory_capsule_retrieve", {"terms": [term]}, now)
     return {str(r["id"]) for r in payload.get("results", [])}
 
 
-@pytest.mark.parametrize("consolidate", [_by_worker, _by_tool])
+@pytest.mark.parametrize("consolidate", [_by_worker])
 def test_revoking_the_edge_returns_the_archive_to_default_recall(
     consolidate: Callable[[_Store, datetime], None],
     capsys: pytest.CaptureFixture[str],
@@ -242,10 +235,9 @@ def _overtaken(module: object, planner: str, write: Callable[[], None]) -> Any:
     return patch.object(module, planner, plan_then_write)
 
 
-#: Each applier, and the planner it calls between its read and its write lock.
+#: The applier, and the planner it calls between its read and its write lock.
 APPLIERS = [
     pytest.param(_by_worker, embedding_index, "protective_tier_moves", id="worker"),
-    pytest.param(_by_tool, consolidate_tool, "plan_consolidation", id="tool"),
 ]
 
 
@@ -325,20 +317,11 @@ def test_a_reconstructed_archive_stays(capsys: pytest.CaptureFixture[str]) -> No
     assert s.store.tiers.get_tier(old) is Tier.ARCHIVED
 
 
-@pytest.mark.parametrize(
-    ("consolidate", "module", "planner", "recall"),
-    [
-        *(pytest.param(*a.values, "context", id=f"{a.id}-context") for a in APPLIERS),
-        # A retrieve moves the generation, on which the worker's settle defers
-        # its whole pass; the tool has only the move's own re-read.
-        pytest.param(*APPLIERS[1].values, "retrieve", id="tool-retrieve"),
-    ],
-)
+@pytest.mark.parametrize(("consolidate", "module", "planner"), APPLIERS)
 def test_a_recall_written_after_the_plan_keeps_its_capsule_active(
     consolidate: Callable[[_Store, datetime], None],
     module: object,
     planner: str,
-    recall: str,
 ) -> None:
     """Another server recalls a capsule between the plan and its write lock.
 
@@ -355,9 +338,6 @@ def test_a_recall_written_after_the_plan_keeps_its_capsule_active(
     rival = Store.open(s.store.db.path)
 
     def recalls() -> None:
-        if recall == "retrieve":
-            rival.traffic.record_recall(recalled, LATE)
-            return
         # The bookkeeping row a context read leaves once its answer is out.
         rival.db.record_read_traffic(
             surface="context",
@@ -440,7 +420,7 @@ def test_a_restore_another_writer_overtook_is_dropped(
     first = _capture(s.server, "the first replacement of the potoroo rule", T0)
     second = _capture(s.server, "the second replacement of the potoroo rule", T0)
     _supersede(s.server, first, old, T0 + timedelta(minutes=1))
-    _by_tool(s, LATE)
+    _by_worker(s, LATE)
     assert s.store.tiers.get_tier(old) is Tier.ARCHIVED
     _revoke(first, old, LATE + timedelta(hours=1), capsys)
     now = LATE + timedelta(hours=2)

@@ -46,11 +46,6 @@ def file_sha256(path: Path | str) -> str:
     return hasher.hexdigest()
 
 
-def hex_digest(digest: bytes) -> str:
-    """Lowercase hex string representation of bytes."""
-    return digest.hex()
-
-
 def _to_serializable(obj: Any) -> Any:
     """Recursively convert dataclasses and enums to JSON-serializable primitives."""
     if isinstance(obj, Enum):

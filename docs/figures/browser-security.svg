@@ -179,12 +179,6 @@
 
         <rect x="74" y="0" width="68" height="20" rx="3" fill="#24201A" stroke="#3D3524" stroke-width="0.8" />
         <text x="108" y="14" text-anchor="middle" font-family="monospace" font-size="8.5" fill="#E8A33D">Firecrawl</text>
-
-        <rect x="150" y="0" width="64" height="20" rx="3" fill="#24201A" stroke="#3D3524" stroke-width="0.8" />
-        <text x="182" y="14" text-anchor="middle" font-family="monospace" font-size="8.5" fill="#E8A33D">Z.AI</text>
-
-        <rect x="222" y="0" width="70" height="20" rx="3" fill="#24201A" stroke="#3D3524" stroke-width="0.8" />
-        <text x="257" y="14" text-anchor="middle" font-family="monospace" font-size="8.5" fill="#E8A33D">MiniMax</text>
       </g>
 
       <text x="12" y="94" font-family="Arial, sans-serif" font-size="9.5" fill="#B5AEA3">

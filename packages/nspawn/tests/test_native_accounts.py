@@ -205,7 +205,10 @@ def test_explicit_alias_cannot_belong_to_two_providers(tmp_path: Path) -> None:
 def test_explicit_alias_cannot_collide_with_a_legacy_account(tmp_path: Path) -> None:
     secrets = tmp_path / "secrets"
     secrets.mkdir()
-    (secrets / "shared.token").touch()
+    secrets.chmod(0o700)  # whatever the umask
+    # A token file in the fence: one that holds a token (2026-10-21).
+    (secrets / "shared.token").write_text("sk\n")
+    (secrets / "shared.token").chmod(0o600)  # whatever the umask
     with pytest.raises(RosterError, match="alias.*shared"):
         _read(
             tmp_path,

@@ -477,7 +477,7 @@ def test_ordinary_modes_keep_their_read_and_write_boundaries(tmp_path: Path) -> 
         capsule_id = ordinary.call("nmemory_capsule_ingest", item(PRIVATE))["outcomes"][
             0
         ]["id"]
-        assert "store_health" in ordinary.call("nmemory_session_start", {})
+        assert "session_id" in ordinary.call("nmemory_session_start", {})
         assert "outcomes" in ordinary.call("nmemory_outcome_record", {})
     with client(tmp_path, None, "--viewer") as viewer:
         assert (

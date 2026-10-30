@@ -2,24 +2,7 @@
 
 from __future__ import annotations
 
-import json
-from typing import Any
-
-from storefile import fresh_store_path
-
-from nmemory.server import MemoryServer
-from nmemory.store import Store
-
-
-def fresh_server() -> MemoryServer:
-    url = fresh_store_path("efftop")
-    return MemoryServer(store=Store.open(url))
-
-
-def ok(res: dict[str, Any]) -> dict[str, Any]:
-    assert "result" in res and res["result"]["isError"] is False, res
-    payload: dict[str, Any] = json.loads(res["result"]["content"][0]["text"])
-    return payload
+from mcp_helpers import fresh_server, ok
 
 
 def test_effort_id_fences_to_epic_and_members() -> None:
@@ -112,6 +95,8 @@ def test_effort_id_fences_to_epic_and_members() -> None:
     )
     assert res_effort["outcome"] == "grounded", res_effort
     assert len(res_effort["results"]) == 2
+    for item in res_effort["results"]:
+        assert item["effort_role"] in ("epic", "member")
     ids = [r["id"] for r in res_effort["results"]]
     assert epic_id in ids
     assert t1_id in ids
@@ -198,6 +183,8 @@ def test_topic_id_fences_across_projects() -> None:
     )
     assert res_top["outcome"] == "grounded", res_top
     assert len(res_top["results"]) == 2
+    for item in res_top["results"]:
+        assert item["topic_role"] in ("topic", "member")
     ids = [r["id"] for r in res_top["results"]]
     assert topic_id in ids
     assert f1_id in ids

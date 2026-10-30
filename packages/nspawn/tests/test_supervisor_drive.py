@@ -451,16 +451,16 @@ def test_drive_run_uses_a_private_ephemeral_system_prompt_file(
     ids=["roster-prompt", "dispatch-prompt", "dispatch-quotes-the-title"],
 )
 @pytest.mark.parametrize(
-    ("global_prompt", "silenced"),
+    "global_prompt",
     [
-        (b"# **NOTT** System Prompt v9\n\nThe law.\n", True),
-        (b"A persona.\n", False),
-        (b"A persona that quotes:\n# **NOTT** System Prompt v9\n", False),
-        (None, False),
+        b"# **NOTT** System Prompt v9\n\nThe law.\n",
+        b"A persona.\n",
+        b"A persona that quotes:\n# **NOTT** System Prompt v9\n",
+        None,
     ],
     ids=["law", "no-law", "roster-quotes-the-title", "no-append"],
 )
-def test_a_child_that_appends_the_law_silences_the_plugin_copy(
+def test_every_child_silences_the_plugin_copy_of_the_law(
     registry: Registry,
     tmp_path: Path,
     roster_home: Path,
@@ -468,13 +468,10 @@ def test_a_child_that_appends_the_law_silences_the_plugin_copy(
     fake_picked: picker.PickerResult,
     system_prompt: str | None,
     global_prompt: bytes | None,
-    silenced: bool,
 ) -> None:
-    """The plugin's law-session.sh prints the whole law at SessionStart; a child whose
-    appended system prompt already holds it would read it twice. Off only then: a child
-    appending other text keeps the plugin's copy, its only one. The roster's own file
-    decides, never the dispatch's text, which is combined IN FRONT of it: a dispatch
-    that quotes the law's title must not silence the only copy a child would get."""
+    """The plugin's law-session.sh prints the whole law at SessionStart. A child
+    runs with its agent, never the law: whatever the roster appends and whatever
+    the dispatch says, its SessionStart prints no copy."""
     plugin_root = tmp_path / "plugin"
     plugin_root.mkdir()
     roster = f'[defaults]\nplugins = ["{plugin_root}"]\n'
@@ -521,7 +518,7 @@ def test_a_child_that_appends_the_law_silences_the_plugin_copy(
 
     env = seen["env"]
     assert isinstance(env, dict)
-    assert (env.get("NOTT_LAW_SESSION") == "off") is silenced
+    assert env.get("NOTT_LAW_SESSION") == "off"
 
 
 def test_drive_run_refuses_a_preexisting_system_prompt_symlink(
@@ -1026,15 +1023,16 @@ def test_a_completed_run_appends_a_usage_event_to_the_journal(
     events = registry.read_run_events(run_id)
     assert [(event.seq, event.kind) for event in events] == [
         (1, "lifecycle"),
-        (2, "usage"),
+        (2, "lifecycle"),
+        (3, "usage"),
     ]
     assert events[0].payload == {
         "usage_pending": "exec",
         "usage_managed": False,
         "usage_identity": None,
     }
-    assert isinstance(events[1].payload, dict)
-    assert events[1].payload["cost_usd"] == "0.05"
+    assert isinstance(events[2].payload, dict)
+    assert events[2].payload["cost_usd"] == "0.05"
     assert registry.verify_run_event_chain(run_id) is True
 
 
@@ -1051,8 +1049,12 @@ def test_a_telemetry_refusal_never_kills_the_run(
     )
     sv = _sv(registry, tmp_path)
 
+    append = registry.append_run_event
+
     def _refuse(*args: object, **kwargs: object) -> None:
-        raise RegistryError("the run event could not be appended: planted")
+        if kwargs.get("kind") == "usage":
+            raise RegistryError("the run event could not be appended: planted")
+        append(*args, **kwargs)
 
     monkeypatch.setattr(registry, "append_run_event", _refuse)
     run_id = _drive_once(sv, registry, tmp_path, fake_picked)
@@ -1073,8 +1075,12 @@ def test_a_telemetry_refusal_is_named_in_the_runs_own_warning(
     )
     sv = _sv(registry, tmp_path)
 
+    append = registry.append_run_event
+
     def _refuse(*args: object, **kwargs: object) -> None:
-        raise RegistryError("planted refusal")
+        if kwargs.get("kind") == "usage":
+            raise RegistryError("planted refusal")
+        append(*args, **kwargs)
 
     monkeypatch.setattr(registry, "append_run_event", _refuse)
     run_id = _drive_once(sv, registry, tmp_path, fake_picked)
@@ -1251,10 +1257,11 @@ def test_c3_a_failed_review_never_releases_the_claim_of_another_run(
 
 _READS_STDIN = """
 import json, sys
-seen = sys.stdin.read()
+frame = json.loads(sys.stdin.readline())
+seen = frame["message"]["content"][0]["text"]
 print(json.dumps({"type": "assistant"}))
 print(json.dumps({"type": "result", "is_error": False, "terminal_reason": "completed",
-                  "result": str(len(seen)), "usage": {"input_tokens": 1, "output_tokens": 1}}))
+                  "result": str(len(seen)), "usage": {"input_tokens": 1, "output_tokens": 1}}), flush=True)
 """
 
 

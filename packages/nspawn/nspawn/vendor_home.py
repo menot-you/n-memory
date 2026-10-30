@@ -43,6 +43,47 @@ class CredentialInFlightError(VendorHomeError):
     """
 
 
+def open_owner_path(home: Path, path: Path) -> int:
+    """A read-only descriptor of `path`, a file under `home`, opened by a walk
+    that follows no link: each directory from `home` down is this user's and
+    not group or other writable, and the last entry is opened `O_NOFOLLOW`.
+    The caller checks what the descriptor holds and closes it.
+
+    Raises:
+        ValueError: the path leaves `home`, a step is a link or not the
+            user's, or an open fails.
+    """
+    try:
+        parts = path.relative_to(home).parts
+        if not parts or any(part in {".", ".."} for part in parts):
+            raise ValueError
+        directory = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            for part in parts[:-1]:
+                metadata = os.fstat(directory)
+                if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
+                    raise ValueError
+                child = os.open(
+                    part,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=directory,
+                )
+                os.close(directory)
+                directory = child
+            metadata = os.fstat(directory)
+            if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
+                raise ValueError
+            return os.open(
+                parts[-1],
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | _CLOEXEC,
+                dir_fd=directory,
+            )
+        finally:
+            os.close(directory)
+    except OSError, ValueError:
+        raise ValueError(f"{path} is not an owner file under {home}") from None
+
+
 def read_owner_credential(path: Path) -> bytes:
     """Read an existing native account; its directory may be publicly traversable.
 

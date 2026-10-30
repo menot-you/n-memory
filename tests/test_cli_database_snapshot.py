@@ -1,4 +1,4 @@
-"""`nmemory database snapshot`: the copy the backup timer takes of the store every hour.
+"""`nmemory database snapshot` creates the backup timer's copy of the store.
 
 nMEMORY's snapshot has no `--group-read`: its backup directory belongs to `nott`
 alone, so the copy is always private and any flag is refused.

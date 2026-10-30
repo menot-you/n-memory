@@ -95,8 +95,7 @@ def test_the_abstention_counts_are_frozen() -> None:
 def test_calculate_matches_rust_oracle_only_explicit_abstain_counts() -> None:
     """n1 has a parity contract with the owner's LIVE Rust oracle
     (monorepo mcps/nmemory/evals/src/score.rs:105, checked by the reviewer):
-    true_abstain counts ONLY `outcome == abstain`. The empty return counts in
-    ARENA A.3 (run_abstain_cell), which is a different definition — never here."""
+    true_abstain counts ONLY `outcome == abstain`. An empty return never counts."""
     from nmemory_evals.score import RecallObservation, RecallOutcome, calculate
 
     class _Probe:

@@ -18,7 +18,7 @@ import stat
 import sys
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
@@ -33,25 +33,21 @@ from .admission import (
 from .agy_acp import ACCOUNT_ENV as AGY_ACCOUNT_ENV
 from .app_server import AppServerError, _account_error
 from .child import CLAUDE_OAUTH_TOKEN_ENV, ROUTE_ENV_NAMES
-from .config import ConfigError
-from .errors import NERR_1103, NERR_1116, NSpawnError
+from .errors import NERR_1103, NERR_1116, ErrorEntry, NSpawnError
 from .native import NativePreparationError
 from .native import _path as native_path
 from .owner_roster import (
     ANTHROPIC_BASE_URL_KEY,
     Provider,
     Roster,
-    RosterError,
+    TokenFileRefused,
+    account_notes,
     claude_config_dir,
+    read_token_file,
+    roster_refusal,
 )
-from .picker import (
-    AllProvidersWalled,
-    PickerError,
-    _select_account,
-    exclusion_check,
-    key_refusal,
-    keyless,
-)
+from .owner_roster import read_roster as read_owner_roster
+from .picker import AllProvidersWalled, PickerError, _select_account
 from .registry import STORE_ERRORS, Registry, RegistryError
 from .rows import AccountWallRow
 from .terminal import AccountWallRecord, WallSource, subscription_limit
@@ -145,6 +141,26 @@ def profile_read(path: Path, digest: str, *, grant_root: Path) -> PrelaunchProfi
             os.close(directory)
 
 
+#: The Linux values of linux/fcntl.h. The uv Python on SERVER (python-build-standalone
+#: 3.14.7) has no fcntl name for them, although the kernel seals memfds (measured 2026-10-22).
+F_ADD_SEALS = 1033
+F_SEAL_SEAL, F_SEAL_SHRINK, F_SEAL_GROW, F_SEAL_WRITE = 0x0001, 0x0002, 0x0004, 0x0008
+
+
+def _seal(descriptor: int) -> None:
+    """Seal a memfd against writes, growth, shrinking and further seals."""
+    import fcntl
+
+    fcntl.fcntl(
+        descriptor,
+        getattr(fcntl, "F_ADD_SEALS", F_ADD_SEALS),
+        getattr(fcntl, "F_SEAL_WRITE", F_SEAL_WRITE)
+        | getattr(fcntl, "F_SEAL_GROW", F_SEAL_GROW)
+        | getattr(fcntl, "F_SEAL_SHRINK", F_SEAL_SHRINK)
+        | getattr(fcntl, "F_SEAL_SEAL", F_SEAL_SEAL),
+    )
+
+
 @contextmanager
 def profile_seal(profile: PrelaunchProfileV1) -> Iterator[int]:
     """Hand the consumer an immutable read-only descriptor of the verified bytes."""
@@ -157,8 +173,6 @@ def descriptor_seal(encoded: bytes) -> Iterator[int]:
     """Seal launch bytes, including bubblewrap's bounded argument stream."""
     if sys.platform != "linux" or not hasattr(os, "memfd_create"):
         raise AdmissionRefusal("sealed private profile descriptors require Linux")
-    import fcntl
-
     writable = readonly = None
     try:
         try:
@@ -173,14 +187,7 @@ def descriptor_seal(encoded: bytes) -> Iterator[int]:
                         "private profile descriptor write made no progress"
                     )
                 view = view[written:]
-            fcntl.fcntl(
-                writable,
-                fcntl.F_ADD_SEALS,
-                fcntl.F_SEAL_WRITE
-                | fcntl.F_SEAL_GROW
-                | fcntl.F_SEAL_SHRINK
-                | fcntl.F_SEAL_SEAL,
-            )
+            _seal(writable)
             readonly = os.open(f"/proc/self/fd/{writable}", os.O_RDONLY)
             os.set_inheritable(readonly, True)
         except OSError as error:
@@ -205,8 +212,6 @@ def identity_seal(path: Path, digest: str) -> Iterator[int]:
     """
     if not path.is_absolute() or path.resolve() != path:
         raise AdmissionRefusal("selected file identity is linked or noncanonical")
-    import fcntl
-
     source = writable = readonly = None
     try:
         try:
@@ -240,14 +245,7 @@ def identity_seal(path: Path, digest: str) -> Iterator[int]:
             ) or "sha256:" + observed.hexdigest() != digest:
                 raise AdmissionRefusal("selected file content identity differs")
             os.fchmod(writable, 0o555 if before.st_mode & 0o111 else 0o444)
-            fcntl.fcntl(
-                writable,
-                fcntl.F_ADD_SEALS,
-                fcntl.F_SEAL_WRITE
-                | fcntl.F_SEAL_GROW
-                | fcntl.F_SEAL_SHRINK
-                | fcntl.F_SEAL_SEAL,
-            )
+            _seal(writable)
             readonly = os.open(f"/proc/self/fd/{writable}", os.O_RDONLY)
             os.set_inheritable(readonly, True)
         except OSError as error:
@@ -397,7 +395,7 @@ def profile_prepare(
     data = profile.data()
     if data["route_ref"] != recorded or cwd is not None and cwd != data["cwd"]:
         raise AdmissionRefusal("selected route or working directory differs")
-    found, environment, _ = route_start(read_roster(), provider, recorded)
+    found, environment, _ = route_start(node_roster(), provider, recorded)
     if (
         found != recorded
         or environment.get(ANTHROPIC_BASE_URL_KEY)
@@ -526,26 +524,29 @@ class RouteRefused(NSpawnError):
         Exception.__init__(self, message)
 
 
-def read_roster() -> Roster:
-    """The roster a node runs on: `NOTT_NSPAWN_ROSTER`, else `~/.nott/spawn.toml`.
+def node_roster() -> Roster:
+    """The roster a node runs on, from the one reader (`owner_roster.read_roster`).
 
-    A roster the loader refuses is refused without its path, which names this host.
+    A route verb, a node and the app show this refusal. The refusal of the reader
+    names a host path, so this refusal keeps only its catalog entry.
     """
-    path = os.environ.get("NOTT_NSPAWN_ROSTER") or str(
-        Path.home() / ".nott" / "spawn.toml"
-    )
     try:
-        return Roster.read(Path(path))
-    except (RosterError, ConfigError) as error:
-        raise RosterUnreadable("the provider roster could not be read") from error
+        return read_owner_roster()
+    except NSpawnError as error:
+        raise RosterUnreadable(*roster_refusal(error)) from error
+
+
+#: `harness/nott_harness/acp/node.py` imports this name. The next unit moves that
+#: import to `node_roster` and deletes this name.
+read_roster = node_roster
 
 
 class RosterUnreadable(NSpawnError):
     """The roster could not be read; the message names no host path."""
 
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str, entry: ErrorEntry = NERR_1103) -> None:
         self.message = message
-        self.entry = NERR_1103
+        self.entry = entry
         Exception.__init__(self, message)
 
 
@@ -559,14 +560,10 @@ CLAUDE_CLEARED = (
 )
 
 #: Route names a qwen child must never inherit from the service's environment:
-#: the endpoint and credential belong to the roster's account alone.
-QWEN_CLEARED = (
-    "ANTHROPIC_API_KEY",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "ANTHROPIC_BASE_URL",
-    "ANTHROPIC_AUTH_TOKEN",
-    "CLAUDE_CODE_USE_BEDROCK",
-    "CLAUDE_CODE_USE_VERTEX",
+#: the endpoint and credential belong to the roster's account alone. The same
+#: names as a claude node, but the small fast model.
+QWEN_CLEARED = tuple(
+    name for name in CLAUDE_CLEARED if name != "ANTHROPIC_SMALL_FAST_MODEL"
 )
 
 
@@ -580,6 +577,41 @@ def account_route(alias: str, where: object) -> str:
 #: How a new node's account is picked: the provider in, the alias out (`route show`
 #: gives nSPAWN's own picker, on its walls, load, quota windows and last runs).
 Pick = Callable[[Provider], str | None]
+
+
+def key_refusal(provider: Provider, alias: str) -> str | None:
+    """Why a canvas node may not run on `alias`, or None.
+
+    An account that sends ANTHROPIC_API_KEY to Anthropic serves nSPAWN runs
+    only. A canvas node stays on OAuth: the node host gives an
+    OAuth route its SDK consumer, and a spent key on a node walls nothing. A
+    base url sends the key to another endpoint (a local qwen), so that account
+    is not one.
+    """
+    account = provider.accounts.get(alias)
+    auth = (account.auth_env if account is not None else None) or provider.auth_env
+    base = (account.base_url if account is not None else None) or (
+        provider.env or {}
+    ).get("ANTHROPIC_BASE_URL")
+    if auth != "ANTHROPIC_API_KEY" or base:
+        return None
+    return (
+        f'account "{alias}" sends an Anthropic API key, which serves nSPAWN runs '
+        "only, not a canvas node"
+    )
+
+
+def keyless(provider: Provider) -> Provider:
+    """`provider` with the accounts that `key_refusal` refuses excluded: the view
+    a node's account is picked on, so a node walks to OAuth and never to a key."""
+    keyed = [
+        alias
+        for alias in provider.ordered_accounts()
+        if alias not in provider.excluded_accounts and key_refusal(provider, alias)
+    ]
+    if not keyed:
+        return provider
+    return replace(provider, excluded_accounts=[*provider.excluded_accounts, *keyed])
 
 
 def route_account(
@@ -601,8 +633,7 @@ def route_account(
     if recorded is None:
         if pick is None:
             try:
-                # The node's model is chosen later: `keyless` keeps it off an API key.
-                picked = _select_account(keyless(provider, None), None, {}, {}, 0)
+                picked = _select_account(keyless(provider), None, {}, {}, 0)
             except (AllProvidersWalled, PickerError) as error:
                 raise RouteRefused(error.message) from error
         else:
@@ -636,9 +667,8 @@ def route_account(
             f"the {provider.name} account this node was made on is excluded in the "
             "roster"
         )
-    # A node switches model at any time, so it never starts on the key; a wall
-    # or a switch still records on it, so the host can move the node off it.
-    if not leaving and (refusal := key_refusal(provider, found, None)):
+    # A wall or a switch still records on the key, so the host can move the node.
+    if not leaving and (refusal := key_refusal(provider, found)):
         raise RouteRefused(f"{refusal}; move this node to another account")
     return str(found)
 
@@ -656,8 +686,10 @@ def roster_provider(
 def account_token(provider: Provider, alias: str, label: str, unreadable: str) -> str:
     """The one line `alias`'s token file holds; refused as `label`, never by path."""
     try:
-        token = provider.resolve_token_file(alias).read_text().strip()
-    except (OSError, ValueError) as error:
+        token = read_token_file(provider.resolve_token_file(alias)).decode().strip()
+    except TokenFileRefused as refused:
+        raise RouteRefused(f"{label}: {refused.message}") from refused
+    except ValueError as error:
         raise RouteRefused(unreadable) from error
     if not token or "\n" in token:
         raise RouteRefused(f"{label} token file holds no single token")
@@ -690,10 +722,6 @@ def route_list(
     tokens: set[str] = set()
     routes: list[dict[str, Any]] = []
     accounts = provider.ordered_accounts()
-    try:
-        exclusion_check(provider, accounts)
-    except PickerError as error:
-        raise RouteRefused(error.message) from error
     for alias in accounts:
         account = provider.accounts.get(alias)
         recorded = account_route(alias, claude_config_dir(account))
@@ -1020,10 +1048,11 @@ def route_wall(
     )
     if observed is None:
         raise RouteRefused("account wall postcondition is inconclusive")
-    warning = None
+    notes = account_notes(provider)
+    warning = "; ".join(notes) if notes else None
     try:
         _select_account(
-            keyless(provider, None),
+            keyless(provider),
             None,
             registry.get_provider_walls(now),
             registry.get_account_walls(now),
@@ -1033,7 +1062,9 @@ def route_wall(
         reset = walled.nearest_reset
     except PickerError as refusal:
         reset = None
-        warning = refusal.message
+        warning = (
+            refusal.message if warning is None else f"{warning}; {refusal.message}"
+        )
     else:
         reset = None
     return {
@@ -1480,7 +1511,7 @@ def route_launch(
     """The adapter argv and the environment over this process's own that start a
     ``provider`` node on the account ``recorded`` names (`nspawn route start`)."""
     route, environment, arguments = route_start(
-        read_roster(), provider, recorded, codex_adapter=codex_adapter
+        node_roster(), provider, recorded, codex_adapter=codex_adapter
     )
     if recorded is not None and route != recorded:
         raise RouteRefused(

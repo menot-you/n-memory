@@ -24,7 +24,7 @@ from uuid import uuid4
 
 from . import agy, native
 from .errors import NSpawnError
-from .owner_roster import Provider, Roster
+from .owner_roster import Provider, Roster, read_roster, roster_refusal
 from .redact import SecretNeedles, overlap
 from .registry import STORE_ERRORS, Registry, store_path
 
@@ -76,10 +76,14 @@ ACCOUNT_ENV = "NOTT_NSPAWN_AGY_ACCOUNT"
 
 
 def roster_provider() -> tuple[Roster, Provider]:
-    path = os.environ.get("NOTT_NSPAWN_ROSTER") or str(
-        Path.home() / ".nott" / "spawn.toml"
-    )
-    roster = Roster.read(Path(path))
+    """The roster from the one reader, so the shim runs the account that
+    `route_launch` selected from the same file."""
+    try:
+        roster = read_roster()
+    except NSpawnError as error:
+        # The node host shows this refusal: it names no host path, with the
+        # words of `route.node_roster`. The full refusal stays the cause.
+        raise Refused(roster_refusal(error)[0]) from error
     provider = next((p for p in roster.providers if p.kind == "agy"), None)
     if provider is None or provider.model is None:
         raise Refused("roster declares no agy provider with a model")

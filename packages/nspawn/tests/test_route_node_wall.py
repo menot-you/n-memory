@@ -428,25 +428,81 @@ def test_the_move_never_takes_a_named_only_provider(
     assert 'no other provider serves: agy: provider "antigravity" is named_only' in err
 
 
-def test_the_fallback_never_takes_an_api_key_account(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
+def keyed_roster(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *oauth: str) -> Path:
+    """One Codex account, and a `fill_first` Claude provider that declares its
+    Anthropic API-key accounts first and then the `oauth` accounts.
+    Returns the Claude home of the node routes."""
     for name in ("NOTT_NODE_CODEX_ADAPTER", "CODEX_PATH", "CODEX_CONFIG"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-home"))
+    home = tmp_path / "claude-home"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
     secrets = tmp_path / "secrets"
-    secrets.mkdir()
-    (secrets / "keyed.token").write_text("not-a-real-key\n")
+    secrets.mkdir(mode=0o700)
+    keys = ("key-a", "key-b")
+    for alias in (*keys, *oauth):
+        (secrets / f"{alias}.token").write_text("not-a-real-credential\n")
+        (secrets / f"{alias}.token").chmod(0o600)
     roster = tmp_path / "spawn.toml"
     roster.write_text(
         f'[bins]\ncodex = "{tmp_path / "codex"}"\n\n'
         '[[provider]]\nname = "codex"\nkind = "codex"\nmodel = "gpt-m"\n'
         f'[provider.accounts.codex-a]\nhome = "{tmp_path / "codex-a"}"\n\n'
         '[[provider]]\nname = "claude"\nkind = "claude"\n'
-        f'model = "claude-opus-5"\nsecrets = "{secrets}"\n'
-        '[provider.accounts.keyed]\nauth_env = "ANTHROPIC_API_KEY"\n'
+        f'model = "claude-opus-5"\nsecrets = "{secrets}"\nfill_first = true\n'
+        + "".join(
+            f'[provider.accounts.{alias}]\nauth_env = "ANTHROPIC_API_KEY"\n'
+            for alias in keys
+        )
+        + "".join(
+            f'[provider.accounts.{alias}]\nauth_env = "CLAUDE_CODE_OAUTH_TOKEN"\n'
+            for alias in oauth
+        )
     )
     monkeypatch.setenv("NOTT_NSPAWN_ROSTER", str(roster))
+    store()
+    return home
+
+
+def test_route_show_gives_a_new_claude_node_the_oauth_account_not_a_key(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = keyed_roster(tmp_path, monkeypatch, "oauth")
+    code, shown, err = run(capsys, monkeypatch, ["route", "show", "claude"])
+    assert code == 0, err
+    assert shown is not None and shown["route"] == f"oauth@{home}"
+
+
+def test_route_show_refuses_a_node_pinned_to_a_key_account(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    keyed_roster(tmp_path, monkeypatch, "oauth")
+    arguments = ["route", "show", "claude", "--account", "key-a"]
+    code, shown, err = run(capsys, monkeypatch, arguments)
+    assert code == 2 and shown is None
+    assert 'account "key-a" sends an Anthropic API key' in err
+
+
+def test_the_move_takes_the_oauth_account_not_a_key(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = keyed_roster(tmp_path, monkeypatch, "oauth")
+    wall("codex-a", int(time.time()) + 600)
+    code, shown, err = run(
+        capsys,
+        monkeypatch,
+        ["route", "show", "codex", "--move", "claude,codex,qwen,agy"],
+    )
+    assert code == 0, err
+    assert shown is not None
+    assert shown["provider"] == "claude"
+    assert shown["route"] == f"oauth@{home}"
+    assert shown["alert"].endswith("this node runs on claude, on its default model")
+
+
+def test_the_fallback_never_takes_an_api_key_account(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    keyed_roster(tmp_path, monkeypatch)
     wall("codex-a", int(time.time()) + 600)
     code, shown, err = run(
         capsys,
@@ -456,6 +512,24 @@ def test_the_fallback_never_takes_an_api_key_account(
     assert code == 2 and shown is None
     assert 'every allowed account of provider "codex" is cooling down' in err
     assert "no other provider serves: claude: " in err
+
+
+def test_route_wall_reports_the_oauth_reset_when_only_key_accounts_are_open(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = keyed_roster(tmp_path, monkeypatch, "oauth")
+    now = int(time.time())
+    code, shown, err = run(
+        capsys,
+        monkeypatch,
+        ["route", "wall", "claude", "--route", f"oauth@{home}"],
+        {"observed_at": now, "error": recorded("auth-required")},
+    )
+    assert code == 0, err
+    assert shown is not None
+    assert shown["wall"]["account_alias"] == "oauth"
+    # The open key accounts serve no node, so the node has no account to walk to.
+    assert shown["reset"] == shown["wall"]["cooling_until"] == now + 300
 
 
 def test_an_agy_provider_is_found_by_its_kind(
@@ -534,11 +608,13 @@ def test_an_excluded_account_is_never_picked(
             assert "excluded" in err
 
 
-def test_an_unknown_excluded_alias_is_refused(
+def test_an_unknown_excluded_alias_is_ignored_with_a_warning(
     root: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """It excludes nothing, and it refused every route until 2026-10-21. The
+    owner sees it in the answer, not only on stderr."""
     roster = root / "spawn.toml"
     roster.write_text(
         roster.read_text().replace(
@@ -548,8 +624,8 @@ def test_an_unknown_excluded_alias_is_refused(
     )
     store()
     code, shown, err = run(capsys, monkeypatch, ["route", "show", "codex"])
-    assert code == 2 and shown is None
-    assert "codex-typo" in err and "excluded_accounts" in err
+    assert code == 0 and shown is not None, err
+    assert "codex-typo" in shown["warning"] and "excluded_accounts" in shown["warning"]
 
 
 def test_a_recorded_wall_survives_a_bad_exclusion_alias(

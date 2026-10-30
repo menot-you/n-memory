@@ -227,11 +227,20 @@ def _run_memory_context() -> str:
     except FileNotFoundError as error:
         raise RuntimeError("the nmemory MCP operation could not run") from error
     operation = next((frame for frame in responses if frame.get("id") == 2), None)
-    if returncode != 0 or operation is None or "error" in operation:
+    if returncode != 0 or operation is None:
         raise RuntimeError(
             "nmemory_context_show did not answer successfully through the real MCP"
         )
-    return "NMEMORY_OPERATION_OK"
+    if "error" not in operation:
+        return "NMEMORY_OPERATION_OK"
+    from nmemory.tools.common import INHERITED_REFUSAL
+
+    failure = operation["error"]
+    if not isinstance(failure, dict) or failure.get("message") != INHERITED_REFUSAL:
+        raise RuntimeError(
+            "nmemory_context_show did not answer successfully through the real MCP"
+        )
+    return "NMEMORY_INHERITED_REFUSED"
 
 
 def _spawn_grandchild(prompt: str) -> None:

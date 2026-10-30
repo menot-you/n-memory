@@ -186,7 +186,10 @@ def test_the_knob_reaches_admission_and_review_is_never_writable(
     # A writable dispatch that is not a native write never reaches admission.
     with pytest.raises(sup.InvalidRunRequest, match="native_write"):
         sup.Supervisor.execute(bare, "do it", "/tmp")
-    sup.Supervisor.execute(bare, "do it", checkout, native_write=True)
+    # This admission probe does no implementation. C1 requires an explicit writer role.
+    sup.Supervisor.execute(
+        bare, "do it", checkout, native_write=True, execution_class="verification"
+    )
     sup.Supervisor.execute(bare, "audit it", "/tmp", read_only=True)
 
     assert seen == [True, False, True]
@@ -212,8 +215,10 @@ def test_a_reader_does_not_hold_the_writer_lease(
     bare = sup.Supervisor.__new__(sup.Supervisor)
     checkout = _native_checkout(tmp_path, monkeypatch)
 
-    # The writer is a native write: the one writable mode admission takes.
-    sup.Supervisor.execute(bare, "build it", checkout, native_write=True)
+    # This lease probe does no implementation. An unresolved writer is no longer valid.
+    sup.Supervisor.execute(
+        bare, "build it", checkout, native_write=True, execution_class="verification"
+    )
     sup.Supervisor.execute(bare, "audit it", "/tmp", read_only=True)
     sup.Supervisor.review(bare, "lane/x", "/tmp")
 
@@ -258,14 +263,14 @@ def test_d3_the_cage_admits_no_shell_by_allowlist_and_says_so() -> None:
     assert argv[argv.index("--permission-mode") + 1] == "dontAsk"
     execute = _contract("nspawn_run_start")["properties"]
     assert isinstance(execute, dict)
-    for text in (
-        execute["read_only"]["description"],
-        _description("nspawn_review_start"),
-        child.compose_child_argv.__doc__,
+    for text, limit in (
+        (execute["read_only"]["description"], "not read-only"),
+        (_description("nspawn_review_start"), "not read-only"),
+        (child.compose_child_argv.__doc__, "not caged"),
     ):
         assert isinstance(text, str)
         assert "never runs a script" in text
-        assert "not caged" in text
+        assert limit in text
 
 
 def test_the_cage_denies_git_by_name() -> None:
@@ -279,7 +284,8 @@ def test_the_cage_denies_git_by_name() -> None:
     argv = child.compose_child_argv("/bin/claude", read_only=True)
     denied = argv[argv.index("--disallowedTools") + 1].split(",")
     assert "Bash(git:*)" in denied
-    assert "--disallowedTools" not in child.compose_child_argv("/bin/claude")
+    writer = child.compose_child_argv("/bin/claude")
+    assert "Bash(git:*)" not in writer[writer.index("--disallowedTools") + 1].split(",")
     for text in (
         _contract("nspawn_run_start")["properties"]["read_only"]["description"],  # type: ignore[index]
         child.compose_child_argv.__doc__,
@@ -294,3 +300,35 @@ def test_roster_args_cannot_touch_the_git_deny(flag: str) -> None:
         child.compose_child_argv(
             "/bin/claude", read_only=True, declared_args=[flag, "Read"]
         )
+
+
+@pytest.mark.parametrize(
+    ("agent_tools", "tools", "allowed"),
+    [
+        (None, list(child.READ_ONLY_TOOLS), list(child.READ_ONLY_MCP_TOOLS)),
+        (["Read", "Grep", "Glob"], ["Read", "Grep", "Glob"], None),
+        (["Read", "Bash(grep:*)", "Write", "Edit"], ["Read"], None),
+        (
+            ["Read", NMEMORY_CONTEXT_TOOL, "Bash"],
+            ["Bash", "Read"],
+            [NMEMORY_CONTEXT_TOOL],
+        ),
+    ],
+    ids=["no-tools-key", "adversarial", "patterns-and-writers", "bash-declared"],
+)
+def test_an_agents_tools_narrow_the_cage_and_never_widen_it(
+    agent_tools: list[str] | None, tools: list[str], allowed: list[str] | None
+) -> None:
+    """Run 16dc5d14 (2026-10-24): an agent with `tools: Read, Grep, Glob` ran
+    `python -I -` in the cage. Its `tools` now narrows the cage: only a bare name
+    the cage holds stays, and a name outside the cage adds nothing."""
+    argv = child.compose_child_argv(
+        "/bin/claude", read_only=True, agent_tools=agent_tools
+    )
+    assert argv[argv.index("--tools") + 1].split(",") == tools
+    if allowed is None:
+        assert "--allowedTools" not in argv
+    else:
+        assert argv[argv.index("--allowedTools") + 1].split(",") == allowed
+    assert argv[argv.index("--permission-mode") + 1] == "dontAsk"
+    assert "Bash(git:*)" in argv[argv.index("--disallowedTools") + 1]

@@ -82,6 +82,7 @@ def test_the_table_holds_exactly_the_declared_commands() -> None:
     assert set(cli.COMMANDS) == {
         ("mcp", "serve"),
         ("dispatch", "run"),
+        ("review", "admit"),
         ("notice", "drain"),
         ("notice", "take"),
         ("notice", "renew"),
@@ -94,9 +95,13 @@ def test_the_table_holds_exactly_the_declared_commands() -> None:
         ("admission", "resume"),
         ("admission", "bind"),
         ("learning", "export"),
+        ("run", "start"),
+        ("review", "start"),
         ("run", "list"),
         ("run", "close"),
         ("run", "show"),
+        ("run", "wait"),
+        ("slice", "reconcile"),
         ("result", "show"),
         ("transcript", "show"),
         ("quota", "show"),
@@ -109,6 +114,10 @@ def test_the_table_holds_exactly_the_declared_commands() -> None:
         ("route", "wall"),
         ("thread", "list"),
         ("thread", "show"),
+        ("session", "serve"),
+        ("session", "list"),
+        ("session", "show"),
+        ("turn", "send"),
         ("skill", "install"),
         ("plugin", "install"),
     }
@@ -180,3 +189,69 @@ def test_mcp_serve_as_a_real_process_serves_the_catalogue_and_its_calls(
             client.call("nspawn_no_such_tool", {})
         assert refused.value.message == "nSPAWN has no tool named 'nspawn_no_such_tool'"
         assert "providers" in client.call("nspawn_provider_list", {})
+
+
+def test_review_admit_shares_the_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import io
+    from types import SimpleNamespace
+
+    from registry_reset import store
+
+    from nspawn import supervisor as sup
+    from nspawn.registry import Registry
+
+    path = store()
+    for n in range(1, 4):
+        monkeypatch.setattr(
+            sys, "stdin", io.StringIO(f"Candidate: repo/topic@{n:040x}\n")
+        )
+        code = cli.main(["review", "admit", "--stdin"])
+        captured = capsys.readouterr()
+        assert code == 0, f"The review CLI must admit a valid head: {captured.err}"
+        assert json.loads(captured.out)["heads"] == n, (
+            "The CLI must return the shared budget."
+        )
+    monkeypatch.setattr(sup, "_validate_review_worktree_branch", lambda *args: None)
+
+    def counted(cwd: str) -> None:
+        raise RuntimeError("head counted")
+
+    monkeypatch.setattr(sup, "read_roster", counted)
+    with (
+        Registry(path, "consumer") as registry,
+        pytest.raises(RuntimeError, match="head counted"),
+    ):
+        sup.Supervisor.review(
+            SimpleNamespace(_registry=registry),
+            "topic",
+            str(tmp_path),
+            subject="repo/topic",
+            candidate=f"{4:040x}",
+            prompt=f"{4:040x}",
+        )
+    monkeypatch.setattr(sys, "stdin", io.StringIO(f"Candidate: repo/topic@{4:040x}\n"))
+    assert cli.main(["review", "admit", "--stdin"]) == 0
+    answer = json.loads(capsys.readouterr().out)
+    assert (answer["heads"], answer["counted"]) == (4, False), (
+        "The MCP door must admit a fourth head into the CLI's ledger."
+    )
+
+
+@pytest.mark.parametrize(
+    "brief",
+    ["", "Candidate: x@bad", "Candidate: x@" + "a" * 40 + "\nCandidate: x@" + "b" * 40],
+)
+def test_review_admit_rejects_invalid_lines(
+    brief: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import io
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO(brief))
+    assert cli.main(["review", "admit", "--stdin"]) == 2, (
+        "Invalid candidate lines must be refused."
+    )
+    assert "ReviewCandidateInvalid" in capsys.readouterr().err, (
+        "CLI refusals must name their type."
+    )

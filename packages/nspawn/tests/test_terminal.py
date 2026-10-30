@@ -555,13 +555,180 @@ def test_per_line_limit_is_enforced(
         _classify(tmp_path, stdout_value, stderr_value)
 
 
-def test_durable_result_limit_is_enforced(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(terminal_module, "MAX_DURABLE_OBSERVATION_BYTES", 4)
+def _result_2_1_308(text: str) -> dict[str, object]:
+    """An invented `result` frame with the key set Claude Code 2.1.308 writes.
 
-    with pytest.raises(TerminalClassificationError, match="result text exceeds"):
-        _classify(tmp_path, _ndjson(_result(text="12345")))
+    Measured on run ace03488 (2026-10-22): a valid success with an answer
+    over the row cap was refused, and the run ended failed with no answer.
+    """
+    return {
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "api_error_status": None,
+        "duration_ms": 412_000,
+        "duration_api_ms": 398_000,
+        "num_turns": 39,
+        "result": text,
+        "stop_reason": "end_turn",
+        "session_id": "00000000-0000-4000-8000-000000000001",
+        "uuid": "00000000-0000-4000-8000-000000000002",
+        "total_cost_usd": 1.25,
+        "terminal_reason": "completed",
+        "safety_stops": [],
+        "result_index": 0,
+        "fast_mode_state": "off",
+        "fast_mode_disabled_reason": None,
+        "first_content_frame_ms": 900,
+        "ttft_ms": 850,
+        "ttft_stream_ms": 870,
+        "time_to_request_ms": 30,
+        "queued_turn_count": 0,
+        "subagent_stats": {"spawned": 2, "completed": 2},
+        "permission_denials": [],
+        "usage": {
+            "input_tokens": 120,
+            "cache_creation_input_tokens": 3_000,
+            "cache_read_input_tokens": 90_000,
+            "output_tokens": 7_000,
+            "output_tokens_details": {"thinking_tokens": 2_000},
+            "server_tool_use": {"web_search_requests": 0},
+            "service_tier": "standard",
+            "cache_creation": {"ephemeral_1h_input_tokens": 3_000},
+            "inference_geo": "global",
+            "iterations": [],
+            "speed": "standard",
+            "fallback_credit": None,
+        },
+        "modelUsage": {
+            "claude-opus-5-5": {
+                "inputTokens": 120,
+                "outputTokens": 7_000,
+                "cacheReadInputTokens": 90_000,
+                "cacheCreationInputTokens": 3_000,
+                "costUSD": 1.25,
+                "costBasis": "list",
+                "canonicalModel": "claude-opus-5-5",
+                "provider": "anthropic",
+                "contextWindow": 1_000_000,
+                "maxOutputTokens": 64_000,
+                "thinkingTokens": 2_000,
+                "webSearchRequests": 0,
+            }
+        },
+    }
+
+
+def test_a_success_over_the_row_cap_keeps_its_whole_answer(tmp_path: Path) -> None:
+    """The row cap is the supervisor's: it keeps the whole answer beside the row."""
+    answer = "plan line\n" * 2_000
+
+    observed = _classify(tmp_path, _ndjson(_result_2_1_308(answer)))
+
+    assert observed.phase is RunPhase.COMPLETED
+    assert observed.final_text == answer
+    assert observed.tokens == 7_120
+    assert observed.warning is None
+    assert observed.telemetry is not None
+    assert observed.telemetry.num_turns == 39
+    assert observed.telemetry.output_tokens == 7_000
+
+
+def test_a_failure_over_the_row_cap_keeps_its_answer_for_the_supervisor(
+    tmp_path: Path,
+) -> None:
+    answer = "x" * 20_000
+    frame = _result_2_1_308(answer)
+    frame.update(is_error=True, subtype="error_during_execution")
+    frame["terminal_reason"] = "max_turns"
+
+    observed = _classify(tmp_path, _ndjson(frame))
+
+    assert observed.phase is RunPhase.FAILED
+    assert observed.final_text == answer
+    assert observed.tokens == 7_120
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "name"),
+    [
+        ("ttft_ms", "fast", "result.ttft_ms"),
+        ("duration_ms", -1, "result.duration_ms"),
+        ("num_turns", None, "result.num_turns"),
+        ("total_cost_usd", "free", "result.total_cost_usd"),
+        ("stop_reason", "", "result.stop_reason"),
+        ("subagent_stats", [], "result.subagent_stats"),
+        ("permission_denials", {}, "result.permission_denials"),
+        ("modelUsage", [], "result.modelUsage"),
+    ],
+)
+def test_a_malformed_telemetry_field_is_named_and_the_answer_is_kept(
+    tmp_path: Path, field: str, value: object, name: str
+) -> None:
+    frame = _result_2_1_308("the answer")
+    frame[field] = value
+
+    observed = _classify(tmp_path, _ndjson(frame))
+
+    assert observed.phase is RunPhase.COMPLETED
+    assert observed.final_text == "the answer"
+    assert observed.tokens == 7_120
+    assert observed.warning is not None
+    assert name in observed.warning
+
+
+@pytest.mark.parametrize(
+    "fallback",
+    [True, False],
+    ids=["assistant-fallback", "result-text"],
+)
+def test_a_lone_surrogate_in_the_answer_is_replaced_and_named(
+    tmp_path: Path, fallback: bool
+) -> None:
+    """A `\\ud83d` escape survives the pump. The answer must stay valid UTF-8,
+    or the supervisor's later encode fails the run with no answer."""
+    answer = "before \ud83d after"
+    frame = _result_2_1_308(answer)
+    frames: list[object] = [frame]
+    if fallback:
+        frame["result"] = None
+        frames.insert(0, _assistant_text(answer))
+
+    observed = _classify(tmp_path, _ndjson(*frames))
+
+    assert observed.phase is RunPhase.COMPLETED
+    # ascii(): a lone surrogate in a failure report crashes the xdist worker.
+    assert ascii(observed.final_text) == ascii("before \ufffd after")
+    assert observed.tokens == 7_120
+    assert observed.warning is not None
+    assert "lone surrogate" in observed.warning
+
+
+@pytest.mark.parametrize(
+    ("place", "name"),
+    [
+        ("total_cost_usd", "result.total_cost_usd"),
+        ("costUSD", "result.modelUsage.costUSD"),
+    ],
+)
+def test_an_overflowing_cost_is_unknown_and_named(
+    tmp_path: Path, place: str, name: str
+) -> None:
+    """`float()` of a 310-digit integer raises OverflowError, not a refusal."""
+    frame = _result_2_1_308("the answer")
+    if place == "total_cost_usd":
+        frame["total_cost_usd"] = 10**310
+    else:
+        usage = cast(dict[str, dict[str, object]], frame["modelUsage"])
+        usage["claude-opus-5-5"]["costUSD"] = 10**310
+
+    observed = _classify(tmp_path, _ndjson(frame))
+
+    assert observed.phase is RunPhase.COMPLETED
+    assert observed.final_text == "the answer"
+    assert observed.tokens == 7_120
+    assert observed.warning is not None
+    assert name in observed.warning
 
 
 @pytest.mark.parametrize(
@@ -849,15 +1016,6 @@ def test_exact_line_limit_is_accepted(
     observed = _classify(tmp_path, stderr_value=b"1234")
 
     assert observed.phase is RunPhase.FAILED
-
-
-def test_exact_result_limit_is_accepted(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(terminal_module, "MAX_DURABLE_OBSERVATION_BYTES", 4)
-    observed = _classify(tmp_path, _ndjson(_result(text="1234")))
-
-    assert observed.final_text == "1234"
 
 
 @pytest.mark.parametrize(
@@ -1647,3 +1805,19 @@ def test_classification_without_api_error_status_stays_none(tmp_path: Path) -> N
 
     assert observed.phase is RunPhase.COMPLETED
     assert observed.api_error_status is None
+
+
+def test_an_overflowing_utilization_is_a_refusal_that_names_the_field(
+    tmp_path: Path,
+) -> None:
+    windows = {"five_hour": {"utilization": 10**310, "resetsAt": 1}}
+
+    with pytest.raises(
+        TerminalClassificationError,
+        match=r"rate_limit_info\.unifiedWindows\.five_hour\.utilization",
+    ):
+        _classify(
+            tmp_path,
+            _ndjson(_rate_limit(status="allowed", windows=windows))
+            + _ndjson(_result()),
+        )

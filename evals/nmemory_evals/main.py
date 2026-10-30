@@ -6,13 +6,11 @@ import argparse
 import json
 import re
 import shutil
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import NoReturn
 
 from nmemory_evals import (
     artifacts,
-    comparison,
     driver,
     e1,
     llm_proposer,
@@ -387,70 +385,6 @@ def run_capture_gap(args: argparse.Namespace) -> int:
     return 3 if report.invalid_items else 0
 
 
-def run_compare(args: argparse.Namespace) -> Path:
-    binary = args.binary or default_binary()
-    store_dir = benchmark_store_dir()
-    scratch_dir = Path("/var/tmp/nmemory-bench/compare-run")
-    scratch_dir.mkdir(parents=True, exist_ok=True)
-
-    requested = [
-        sys_name.strip().lower()
-        for sys_name in args.systems.split(",")
-        if sys_name.strip()
-    ]
-    # Two runs on the SAME vendor instance cannot share a store: the second
-    # would read what the first wrote and recall would come out perfect by
-    # contamination. What tells them apart is the instant, which differs on
-    # every run.
-    run_id = args.run_id or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-
-    adapters: list[comparison.BaseMemoryAdapter] = []
-    for name in requested:
-        if name == "nmemory":
-            adapters.append(
-                comparison.NMemoryAdapter(
-                    binary=binary, store_dir=store_dir, run_dir=scratch_dir
-                )
-            )
-        else:
-            # N1: the simulated competitors died, and that is why a third
-            # party only comes back over HTTP with a receipt from its own
-            # server. The constructor refuses naming the missing variable —
-            # LOCK 3 is «all or nothing», and «unknown memory system» would
-            # send the operator looking for an adapter that exists.
-            try:
-                adapters.append(comparison.build_http_adapter(name, run_id=run_id))
-            except EvalRefusal as refusal:
-                raise BenchError(str(refusal)) from refusal
-
-    report = comparison.run_comparison_benchmark(adapters=adapters, k=args.k)
-    md_table = comparison.render_markdown_matrix(report)
-
-    if args.out is not None:
-        out_dir: Path = Path(args.out)
-        if not is_var_tmp_descendant(out_dir):
-            raise BenchError(
-                f"output path must be a new descendant of /var/tmp: {out_dir}"
-            )
-        res_json = out_dir / "comparison-results.json"
-        res_md = out_dir / "COMPARISON.md"
-        _report_write(
-            out_dir,
-            {
-                res_json.name: json.dumps(
-                    report.to_dict(), indent=2, ensure_ascii=False
-                )
-                + "\n",
-                res_md.name: md_table + "\n",
-            },
-        )
-        print(f"Comparison report written to {res_md} and {res_json}")
-        return res_md
-    else:
-        print(md_table)
-        return Path("/dev/stdout")
-
-
 def run_verify_bundle(bundle_dir: Path) -> None:
     bundle_json_path = bundle_dir / "bundle.json"
     if bundle_json_path.is_file():
@@ -700,39 +634,9 @@ def build_parser() -> argparse.ArgumentParser:
     e1_p.add_argument("-k", type=int, default=5, help="Recall cut-off limit")
     e1_p.add_argument("--out", type=Path, default=None, help="Output directory")
 
-    # compare
-    compare_p = subparsers.add_parser(
-        "arena compare",
-        help="Run comparative benchmark over Gold Set (nmemory; third-party products need a receipt-bearing adapter)",
-    )
-    compare_p.add_argument("--database-url", action=_RejectDatabaseUrl)
-    compare_p.add_argument(
-        "--run-id",
-        default=None,
-        help=(
-            "Identifier that separates this run's memories inside each vendor "
-            "(session in Zep, user_id in mem0). Defaults to the UTC timestamp."
-        ),
-    )
-    compare_p.add_argument(
-        "--binary", type=Path, default=None, help="Path to nmemory binary under test"
-    )
-    compare_p.add_argument(
-        "--systems",
-        type=str,
-        default="nmemory",
-        help="Comma-separated list of memory systems to evaluate",
-    )
-    compare_p.add_argument(
-        "-k", type=int, default=5, help="Recall cut-off limit (default: 5)"
-    )
-    compare_p.add_argument(
-        "--out", type=Path, default=None, help="Output directory under /var/tmp"
-    )
-
     ext_p = subparsers.add_parser(
         "proposal score",
-        help="Evaluate precision and recall of deterministic nmemory_turn_extract against gold set",
+        help="Evaluate precision and recall of the deterministic extractor (nmemory.extract) against gold set",
     )
     ext_p.add_argument(
         "--dataset",
@@ -826,38 +730,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     vb_p.add_argument("bundle", type=Path, help="Bundle directory to verify")
 
-    av_p = subparsers.add_parser(
-        "arena judge",
-        help='Compute the pre-registered loss verdict ("nMEMORY is NOT the first") '
-        "from PRE-REGISTERED-LOSS.txt and a results table",
-    )
-    av_p.add_argument(
-        "--loss", type=Path, required=True, help="PRE-REGISTERED-LOSS.txt"
-    )
-    av_p.add_argument(
-        "--results",
-        type=Path,
-        default=None,
-        help='JSON list of {"system", "metric", "budget", "value"} cells',
-    )
-    av_p.add_argument(
-        "--precision-report",
-        type=Path,
-        action="append",
-        default=None,
-        metavar="RELATORIO",
-        help=(
-            "PrecisionMemBench harness report with the `nott_budget` block "
-            "(repeatable). The `precision_A` cells come from the reader, with "
-            "its refusals, instead of a hand-written table"
-        ),
-    )
-    av_p.add_argument(
-        "--expected-sha256",
-        default=None,
-        help="sha256 of the pre-registration text from the first run; a different text refuses",
-    )
-
     sv_p = subparsers.add_parser(
         "synthesis judge",
         help="Compute the three rules of PRE-REGISTERED-SYNTHESIS.txt over one run",
@@ -879,51 +751,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="sha256 of the first run's text; a different text refuses",
     )
-
-    acc_p = subparsers.add_parser(
-        "arena run",
-        help="One accuracy_B cell: seeding → window → fixed reader → fixed judge",
-    )
-    acc_p.add_argument(
-        "--benchmark",
-        choices=["longmemeval", "locomo"],
-        default="longmemeval",
-    )
-    acc_p.add_argument(
-        "--system", required=True, choices=["nmemory", "zep", "letta", "mem0"]
-    )
-    acc_p.add_argument("--budget", type=int, required=True)
-    acc_p.add_argument("--corpus", type=Path, required=True)
-    acc_p.add_argument("--expected-sha256", type=str, default=None)
-    acc_p.add_argument("--expected-conversations", type=int, default=10)
-    acc_p.add_argument("--expected-total", type=int, default=1986)
-    acc_p.add_argument("--out", type=Path, required=True)
-    acc_p.add_argument("--checkpoint", type=Path, default=None)
-
-    loc_p = subparsers.add_parser(
-        "locomo",
-        help="Run the official LoCoMo benchmark across all 5 categories",
-    )
-    loc_p.add_argument(
-        "--system", required=True, choices=["nmemory", "zep", "letta", "mem0"]
-    )
-    loc_p.add_argument("--budget", type=int, default=4096)
-    loc_p.add_argument("--corpus", type=Path, required=True)
-    loc_p.add_argument("--expected-sha256", type=str, default=None)
-    loc_p.add_argument("--expected-conversations", type=int, default=10)
-    loc_p.add_argument("--expected-total", type=int, default=1986)
-    loc_p.add_argument("--out", type=Path, required=True)
-    loc_p.add_argument("--checkpoint", type=Path, default=None)
-
-    abs_p = subparsers.add_parser(
-        "arena probe",
-        help="The A.3 arm: _abs probes against the seeded store",
-    )
-    abs_p.add_argument(
-        "--system", required=True, choices=["nmemory", "zep", "letta", "mem0"]
-    )
-    abs_p.add_argument("--corpus", type=Path, required=True)
-    abs_p.add_argument("--out", type=Path, required=True)
 
     diff_p = subparsers.add_parser(
         "artifact diff", help="Diff two evaluation result bundles"

@@ -6,7 +6,7 @@ import json
 import math
 import os
 import re
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
@@ -14,7 +14,7 @@ from typing import Final, cast
 
 from .admission import AttemptKey
 from .errors import NERR_1117, NSpawnError
-from .limits import MAX_DURABLE_IDENTIFIER_BYTES, MAX_DURABLE_OBSERVATION_BYTES
+from .limits import MAX_DURABLE_IDENTIFIER_BYTES
 from .pump import MAX_OUTPUT_LINE_BYTES, MAX_RUN_OUTPUT_BYTES
 from .rows import MARKER_VALUES, RunPhase
 
@@ -47,6 +47,23 @@ def _utf8(name: str, value: str) -> bytes:
         return value.encode("utf-8")
     except UnicodeEncodeError as error:
         raise TerminalClassificationError(f"{name} is not valid UTF-8 text") from error
+
+
+#: A UTF-16 surrogate half: a lone `\ud83d` escape decodes to one, and no
+#: UTF-8 encode accepts it.
+_SURROGATE: Final = re.compile("[\ud800-\udfff]")
+
+
+def _answer(name: str, value: str) -> tuple[str, str | None]:
+    """The answer as valid UTF-8 text, and a note when a character was replaced.
+
+    The supervisor encodes the answer after the classifier. A refusal here,
+    or an encode error there, lost a valid answer.
+    """
+    repaired, count = _SURROGATE.subn("\ufffd", value)
+    if not count:
+        return value, None
+    return repaired, f"{name} carried {count} lone surrogate(s), replaced by U+FFFD"
 
 
 def _identifier(name: str, value: object) -> str:
@@ -96,7 +113,12 @@ def _utilization(name: str, value: object) -> float:
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TerminalClassificationError(f"{name} is not a number")
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError as error:
+        # An integer of 310 digits or more: a bare OverflowError passed every
+        # reader's TerminalClassificationError boundary.
+        raise TerminalClassificationError(f"{name} is not finite") from error
     if not math.isfinite(number):
         raise TerminalClassificationError(f"{name} is not finite")
     if number < 0.0:
@@ -340,9 +362,9 @@ class RunTelemetry:
     output_tokens: int | None
     cache_read_input_tokens: int | None
     cache_creation_input_tokens: int | None
-    duration_ms: int
+    duration_ms: int | None
     duration_api_ms: int | None
-    num_turns: int
+    num_turns: int | None
     ttft_ms: int | None
     ttft_stream_ms: int | None
     time_to_request_ms: int | None
@@ -450,6 +472,9 @@ class TerminalClassification:
     #: The error the CLI names on its own API-error message, such as
     #: `oauth_org_not_allowed`: an identifier, never vendor prose.
     vendor_error: str | None = None
+    #: What the classifier replaced or did not keep. It is also in `warning`,
+    #: and a caller that replaces `warning` keeps it.
+    defect_note: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -463,6 +488,18 @@ class _TerminalResult:
     api_error_status: int | None = None
     structured_output: dict[str, object] | None = None
     vendor_error: str | None = None
+    #: Each telemetry field the frame carried malformed, by name. The field
+    #: is not kept; the run's answer, tokens and phase are.
+    defects: tuple[str, ...] = ()
+    #: Each change made to keep the answer valid UTF-8 text.
+    repairs: tuple[str, ...] = ()
+
+    @property
+    def defect_note(self) -> str | None:
+        notes = list(self.repairs)
+        if self.defects:
+            notes.append("result telemetry not kept: " + "; ".join(self.defects))
+        return "; ".join(notes) or None
 
 
 @dataclass(frozen=True, slots=True)
@@ -542,7 +579,10 @@ def _money(name: str, value: object) -> str:
     """Custo como texto decimal, NUNCA float carregado adiante."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TerminalClassificationError(f"{name} is not a number")
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError as error:
+        raise TerminalClassificationError(f"{name} is not a finite number") from error
     if not math.isfinite(number):
         raise TerminalClassificationError(f"{name} is not a finite number")
     if number < 0:
@@ -570,6 +610,20 @@ def _optional_identifier(frame: dict[str, object], name: str) -> str | None:
     if value is None:
         return None
     return _identifier(f"result.{name}", value)
+
+
+def _permission_denials(frame: dict[str, object]) -> int:
+    raw = frame.get("permission_denials", [])
+    if not isinstance(raw, list):
+        raise TerminalClassificationError("result.permission_denials is not a list")
+    return len(raw)
+
+
+def _subagent_spawned(frame: dict[str, object]) -> int:
+    raw = frame.get("subagent_stats", {})
+    if not isinstance(raw, dict):
+        raise TerminalClassificationError("result.subagent_stats is not an object")
+    return _counter(cast(dict[str, object], raw), "spawned")
 
 
 def _model_usage(frame: dict[str, object]) -> tuple[ModelUsage, ...]:
@@ -618,6 +672,9 @@ def _marker(text: str | None) -> str | None:
     return found[0] if found else None
 
 
+_CREDIT_REFUSAL = re.compile(r"credit balance is too low", re.IGNORECASE)
+
+
 def _terminal_result(frame: dict[str, object]) -> _TerminalResult:
     is_error = frame.get("is_error")
     if not isinstance(is_error, bool):
@@ -626,14 +683,14 @@ def _terminal_result(frame: dict[str, object]) -> _TerminalResult:
     if not isinstance(reason, str) or not reason:
         raise TerminalClassificationError("result.terminal_reason is not a string")
     raw_text = frame.get("result")
+    repair: str | None = None
     if raw_text is None:
         text = None
     elif isinstance(raw_text, str):
-        if len(_utf8("result.result", raw_text)) > MAX_DURABLE_OBSERVATION_BYTES:
-            raise TerminalClassificationError(
-                f"result text exceeds {MAX_DURABLE_OBSERVATION_BYTES} bytes"
-            )
-        text = raw_text
+        # No row cap here: `final_text` is bounded at the one phase write, and
+        # a completed answer over it is kept whole beside the row. A refusal
+        # here lost a valid answer (run ace03488, 2026-10-22).
+        text, repair = _answer("result.result", raw_text)
     else:
         raise TerminalClassificationError("result.result is neither text nor null")
     raw_usage = frame.get("usage", {})
@@ -648,12 +705,6 @@ def _terminal_result(frame: dict[str, object]) -> _TerminalResult:
     cache_creation = _optional_token(usage, "cache_creation_input_tokens")
     if input_tokens > _MAX_U64 - cache_read - cache_creation:
         raise TerminalClassificationError("result input total exceeds unsigned 64-bit")
-    raw_denials = frame.get("permission_denials", [])
-    if not isinstance(raw_denials, list):
-        raise TerminalClassificationError("result.permission_denials is not a list")
-    raw_subagents = frame.get("subagent_stats", {})
-    if not isinstance(raw_subagents, dict):
-        raise TerminalClassificationError("result.subagent_stats is not an object")
     raw_status = frame.get("api_error_status")
     if raw_status is None:
         api_error_status = None
@@ -663,12 +714,34 @@ def _terminal_result(frame: dict[str, object]) -> _TerminalResult:
         )
     else:
         api_error_status = raw_status
+    vendor_status = api_error_status
+    if (
+        is_error
+        and reason == "api_error"
+        and api_error_status in (None, 400)
+        and text is not None
+        and _CREDIT_REFUSAL.search(text) is not None
+    ):
+        api_error_status = 402
+
+    defects: list[str] = []
+
+    def kept[T](parse: Callable[[], T], unknown: T) -> T:
+        """A telemetry field only observes the run: malformed, it is named."""
+        try:
+            return parse()
+        except TerminalClassificationError as error:
+            defects.append(error.message)
+            return unknown
 
     telemetry = RunTelemetry(
-        cost_usd=(
-            _money("result.total_cost_usd", frame["total_cost_usd"])
-            if "total_cost_usd" in frame
-            else None
+        cost_usd=kept(
+            lambda: (
+                _money("result.total_cost_usd", frame["total_cost_usd"])
+                if "total_cost_usd" in frame
+                else None
+            ),
+            None,
         ),
         input_tokens=input_tokens + cache_read + cache_creation
         if "input_tokens" in usage
@@ -676,17 +749,19 @@ def _terminal_result(frame: dict[str, object]) -> _TerminalResult:
         output_tokens=output_tokens if "output_tokens" in usage else None,
         cache_read_input_tokens=cache_read,
         cache_creation_input_tokens=cache_creation,
-        duration_ms=_counter(frame, "duration_ms"),
-        duration_api_ms=_counter(frame, "duration_api_ms"),
-        num_turns=_counter(frame, "num_turns"),
-        ttft_ms=_optional_counter(frame, "ttft_ms"),
-        ttft_stream_ms=_optional_counter(frame, "ttft_stream_ms"),
-        time_to_request_ms=_optional_counter(frame, "time_to_request_ms"),
-        stop_reason=_optional_identifier(frame, "stop_reason"),
-        api_error_status=api_error_status,
-        permission_denials=len(raw_denials),
-        subagent_spawned=_counter(cast(dict[str, object], raw_subagents), "spawned"),
-        model_usage=_model_usage(frame),
+        duration_ms=kept(lambda: _counter(frame, "duration_ms"), None),
+        duration_api_ms=kept(lambda: _counter(frame, "duration_api_ms"), None),
+        num_turns=kept(lambda: _counter(frame, "num_turns"), None),
+        ttft_ms=kept(lambda: _optional_counter(frame, "ttft_ms"), None),
+        ttft_stream_ms=kept(lambda: _optional_counter(frame, "ttft_stream_ms"), None),
+        time_to_request_ms=kept(
+            lambda: _optional_counter(frame, "time_to_request_ms"), None
+        ),
+        stop_reason=kept(lambda: _optional_identifier(frame, "stop_reason"), None),
+        api_error_status=vendor_status,
+        permission_denials=kept(lambda: _permission_denials(frame), None),
+        subagent_spawned=kept(lambda: _subagent_spawned(frame), None),
+        model_usage=kept(lambda: _model_usage(frame), ()),
     )
     return _TerminalResult(
         is_error=is_error,
@@ -701,6 +776,8 @@ def _terminal_result(frame: dict[str, object]) -> _TerminalResult:
             if isinstance(frame.get("structured_output"), dict)
             else None
         ),
+        defects=tuple(defects),
+        repairs=() if repair is None else (repair,),
     )
 
 
@@ -790,7 +867,8 @@ def _stdout_evidence(
 ]:
     terminal: _TerminalResult | None = None
     rate_limit: _RateLimit | None = None
-    last_assistant_text: str | None = None
+    answer_blocks: list[str] = []
+    answer_at_result: str | None = None
     vendor_error: str | None = None
     broken_hooks: list[BrokenHook] = []
     for line_number, line in _bounded_lines(value, "stdout"):
@@ -802,20 +880,49 @@ def _stdout_evidence(
             )
         if frame_type == "result":
             terminal = _terminal_result(frame)
+            answer_at_result = "".join(answer_blocks) if answer_blocks else None
+            if not terminal.is_error and answer_blocks and terminal.text is not None:
+                whole, repair = _answer("assistant text", "".join(answer_blocks))
+                last, _ = _answer("assistant text", answer_blocks[-1])
+                if terminal.text in (last, whole):
+                    terminal = replace(
+                        terminal,
+                        text=whole,
+                        repairs=terminal.repairs
+                        if repair is None
+                        else (*terminal.repairs, repair),
+                    )
+            answer_blocks.clear()
         elif frame_type == "rate_limit_event":
             rate_limit = _rate_limit(frame)
-        elif frame_type == "assistant":
-            text = _last_assistant_text(frame)
-            if text is not None:
-                last_assistant_text = text
-            vendor_error = _vendor_error(frame) or vendor_error
+        elif (
+            frame_type in ("assistant", "user")
+            and frame.get("parent_tool_use_id") is None
+        ):
+            message = frame.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if isinstance(content, list) and any(
+                isinstance(block, dict)
+                and block.get("type") in ("tool_use", "tool_result")
+                for block in content
+            ):
+                answer_blocks.clear()
+            elif frame_type == "assistant":
+                answer_blocks.extend(_assistant_texts(frame))
+            if frame_type == "assistant":
+                vendor_error = _vendor_error(frame) or vendor_error
         elif frame_type == "system" and frame.get("subtype") == "hook_response":
             broken = _broken_hook(frame)
             if broken is not None:
                 broken_hooks.append(broken)
     if terminal is not None and vendor_error is not None:
         terminal = replace(terminal, vendor_error=vendor_error)
-    return terminal, rate_limit, last_assistant_text, tuple(broken_hooks)
+    return (
+        terminal,
+        rate_limit,
+        "".join(answer_blocks) if answer_blocks else answer_at_result,
+        tuple(broken_hooks),
+    )
 
 
 #: The shape of an error name the CLI writes: anything else is not kept.
@@ -853,15 +960,15 @@ def _broken_hook(frame: dict[str, object]) -> BrokenHook | None:
     )
 
 
-def _last_assistant_text(frame: dict[str, object]) -> str | None:
-    """Return the last text content of an assistant frame, or None."""
+def _assistant_texts(frame: dict[str, object]) -> tuple[str, ...]:
+    """Return every text block of an assistant frame in order."""
     message = frame.get("message")
     if not isinstance(message, dict):
-        return None
+        return ()
     content = message.get("content")
     if not isinstance(content, list):
-        return None
-    last: str | None = None
+        return ()
+    texts: list[str] = []
     for block in content:
         if not isinstance(block, dict):
             continue
@@ -869,8 +976,8 @@ def _last_assistant_text(frame: dict[str, object]) -> str | None:
             continue
         text = block.get("text")
         if isinstance(text, str):
-            last = text
-    return last
+            texts.append(text)
+    return tuple(texts)
 
 
 LIVE_PROGRESS_TAIL_BYTES: Final = 512 * 1024
@@ -889,11 +996,19 @@ def observe_live_progress(stdout: Path) -> LiveProgress:
         with stdout.open("rb") as handle:
             handle.seek(0, os.SEEK_END)
             size = handle.tell()
-            handle.seek(max(0, size - LIVE_PROGRESS_TAIL_BYTES))
+            offset = max(0, size - LIVE_PROGRESS_TAIL_BYTES)
+            starts_line = True
+            if offset:
+                handle.seek(offset - 1)
+                starts_line = handle.read(1) == b"\n"
+            else:
+                handle.seek(0)
             blob = handle.read()
     except OSError:
         return LiveProgress()
-    lines = blob.split(b"\n")
+    lines = blob.split(b"\n")[:-1]
+    if not starts_line:
+        lines = lines[1:]
     tokens = 0
     turns = 0
     for line in lines:
@@ -901,7 +1016,7 @@ def observe_live_progress(stdout: Path) -> LiveProgress:
             continue
         try:
             frame = json.loads(line)
-        except ValueError:
+        except ValueError, RecursionError:
             continue
         if frame.get("type") != "assistant":
             continue
@@ -909,10 +1024,13 @@ def observe_live_progress(stdout: Path) -> LiveProgress:
         usage = message.get("usage") if isinstance(message, dict) else None
         if not isinstance(usage, dict):
             continue
+        try:
+            total = _optional_token(usage, "input_tokens") + _optional_token(
+                usage, "output_tokens"
+            )
+        except TerminalClassificationError:
+            continue
         turns += 1
-        total = _optional_token(usage, "input_tokens") + _optional_token(
-            usage, "output_tokens"
-        )
         if total > 0:
             tokens = total
     return LiveProgress(tokens=tokens, turns=turns)
@@ -1000,10 +1118,11 @@ def _failed(
 ) -> TerminalClassification:
     telemetry = _stamped(terminal, provider_wall, account_wall, failure)
     status = None if terminal is None else terminal.api_error_status
+    note = None if terminal is None else terminal.defect_note
     return TerminalClassification(
         phase=RunPhase.FAILED,
         final_text=None if terminal is None else terminal.text,
-        warning=warning,
+        warning=warning if note is None else f"{warning}; {note}",
         marker=None if terminal is None else terminal.marker,
         provider_wall=provider_wall,
         account_wall=account_wall,
@@ -1014,6 +1133,7 @@ def _failed(
         broken_hooks=broken_hooks,
         failure_reason=failure_reason(status, telemetry.failure),
         vendor_error=None if terminal is None else terminal.vendor_error,
+        defect_note=note,
     )
 
 
@@ -1129,19 +1249,20 @@ def classify_terminal_run(
         )
         text: str | None = terminal.text
         marker: str | None = terminal.marker
-        if text is None:
-            text = last_assistant_text
+        if text is None and last_assistant_text is not None:
+            text, repair = _answer("assistant text", last_assistant_text)
+            if repair is not None:
+                terminal = replace(terminal, repairs=(*terminal.repairs, repair))
         if text is None:
             raise TerminalClassificationError(
                 "terminal success carries no final result text"
             )
-        text = text.encode("utf-8", errors="ignore")[
-            :MAX_DURABLE_OBSERVATION_BYTES
-        ].decode("utf-8", errors="ignore")
+        # Whole: the supervisor cuts the row and keeps the whole answer beside it.
         return TerminalClassification(
             phase=RunPhase.COMPLETED,
             final_text=text,
-            warning=None,
+            warning=terminal.defect_note,
+            defect_note=terminal.defect_note,
             marker=marker,
             provider_wall=None,
             account_wall=None,

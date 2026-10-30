@@ -29,8 +29,6 @@ PROBE_S: Final = 3.0
 CURATOR_S: Final = 5.0
 #: A health check served to a caller expecting an immediate response.
 HEALTH_S: Final = 2.0
-#: A call to `gh`, which crosses the network and vendor authentication.
-NETWORK_S: Final = 30.0
 
 
 @overload

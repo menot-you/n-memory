@@ -50,7 +50,7 @@ def test_a_review_tries_the_reviewer_role_first_with_its_profile() -> None:
         role_profiles={"reviewer": {"model": "gpt-sol", "effort": "high"}},
     )
     assert picker.preferences(roster, REVIEW) == [
-        picker.Preference("codex", "gpt-sol", "high"),
+        picker.Preference("codex", "gpt-sol", "high", role="reviewer"),
         picker.Preference("claude"),
         picker.Preference("codex"),
         picker.Preference("qwen"),
@@ -84,7 +84,7 @@ def test_the_declared_preference_comes_before_the_role_and_the_rank() -> None:
     assert picker.preferences(roster, REVIEW) == [
         picker.Preference("b"),
         picker.Preference("codex", "gpt-main"),
-        picker.Preference("codex", "gpt-sol"),
+        picker.Preference("codex", "gpt-sol", role="reviewer"),
         picker.Preference("claude"),
         picker.Preference("codex"),
         picker.Preference("qwen"),

@@ -518,8 +518,8 @@ class Pilot:
 
         The sessions are the dataset's bytes, not prose an agent wrote, so they
         enter as nMEMORY's own tests seed a store: through its capture function
-        `nmemory.ingest.ingest`, the one `nmemory_capsule_import` uses for external
-        files, and not through `nmemory_capsule_ingest`, whose English check for
+        `nmemory.ingest.ingest`, the one the curator uses for text that no agent
+        wrote, and not through `nmemory_capsule_ingest`, whose English check for
         agent captures refuses 20 of the dataset's 23,867 sessions.
         Every capsule, new or deduplicated, then gets what that tool wrote after
         each capture: kind `fact` and this session's proof, so a store REUSE kept

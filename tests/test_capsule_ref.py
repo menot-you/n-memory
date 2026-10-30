@@ -4,7 +4,6 @@ import pytest
 from storefile import sample_capsule_id
 
 from nmemory.capsule_ref import (
-    CapsuleHandle,
     CapsuleRefSyntaxError,
     ParsedCapsuleRef,
     contains_exact_ref,
@@ -35,6 +34,9 @@ def test_slug_and_reference_grammar_are_deterministic() -> None:
     with pytest.raises(CapsuleRefSyntaxError):
         ParsedCapsuleRef.parse("unknown-12")
 
+    with pytest.raises(CapsuleRefSyntaxError):
+        ParsedCapsuleRef.parse("task-42-Invalid_Slug!")
+
     assert contains_exact_ref(
         ("see (" + sample_capsule_id(12) + "), now"), sample_capsule_id(12)
     )
@@ -44,25 +46,6 @@ def test_slug_and_reference_grammar_are_deterministic() -> None:
     assert not contains_exact_ref(
         ("see task-" + sample_capsule_id(12) + "-old"), sample_capsule_id(12)
     )
-
-
-def test_capsule_handle_display_and_validation() -> None:
-    h = CapsuleHandle.new(sample_capsule_id(42), "task", "index-project-context")
-    assert h is not None
-    assert str(h) == "task-42-index-project-context"
-    assert h.sequence == 42
-    assert h.prefix == "task"
-    assert h.slug == "index-project-context"
-
-    h2 = CapsuleHandle.new(sample_capsule_id(42), "cap", None)
-    assert h2 is not None
-    assert str(h2) == sample_capsule_id(42)
-    assert h2.slug is None
-
-    # Invalid handle
-    assert CapsuleHandle.new("invalid-42", "task", "slug") is None
-    assert CapsuleHandle.new(sample_capsule_id(42), "invalid_prefix", "slug") is None
-    assert CapsuleHandle.new(sample_capsule_id(42), "task", "Invalid_Slug!") is None
 
 
 def test_prefix_for_kind_mappings() -> None:
@@ -80,3 +63,52 @@ def test_prefix_for_kind_mappings() -> None:
     assert prefix_for_kind("dod") == "dod"
     assert prefix_for_kind("unknown") is None
     assert prefix_for_kind(None) is None
+
+
+@pytest.mark.parametrize(
+    "kind,prefix",
+    [
+        ("fact", "fact"),
+        ("procedure", "procedure"),
+        ("decision", "decision"),
+        ("task", "task"),
+        ("epic", "epic"),
+        ("plan", "plan"),
+        ("brainstorm", "brainstorm"),
+        ("doc", "doc"),
+        ("constraint", "constraint"),
+        ("capability", "capability"),
+        ("failure_pattern", "failure-pattern"),
+        ("dod", "dod"),
+    ],
+)
+def test_birth_classification_keeps_exact_persisted_handle(
+    kind: str, prefix: str
+) -> None:
+    from datetime import UTC, datetime
+
+    from nmemory.capsule import Capsule, Freshness, Provenance, Scope, sha256_hex
+    from nmemory.store import Store
+
+    now = datetime(2026, 8, 21, tzinfo=UTC)
+    store = Store.open_disposable_test_store()
+    capsule = Capsule(
+        content="Stable handle",
+        provenance=Provenance("test", "test:1", sha256_hex(b"Stable handle")),
+        confidence=0.9,
+        freshness=Freshness(valid_from=now),
+        scope=Scope(project_id="test"),
+        authority_class="observed-fact",
+        instruction_taint=False,
+    )
+    cid, created = store.append(capsule, now)
+    assert (cid, created) == ("cap-1", True)
+    store.set_birth_classification(cid, " " + kind.upper() + " ", "project", now)
+    with store.db.connection() as conn, conn.cursor() as cur:
+        row = cur.execute(
+            "SELECT capsule_id, prefix, slug FROM capsule_handles"
+        ).fetchone()
+        assert row == ("cap-1", prefix, "stable-handle")
+    assert store.capsules.get_handle(cid) == prefix + "-1-stable-handle"
+    store.set_birth_classification(cid, "task", "project", now)
+    assert store.capsules.get_handle(cid) == prefix + "-1-stable-handle"

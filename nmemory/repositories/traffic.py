@@ -58,7 +58,7 @@ class TrafficRepository(Repository):
         diagnoses that lock 4 wanted ("the fence was wrong", "the capsule exists
         and the index did not reach it") are invisible on that row, and the
         metric "the same query now succeeds" was satisfiable with an INSERT,
-        because `nmemory_synonym_add` expands every term during retrieval.
+        because the synonyms table expands every term during retrieval.
 
         The context lives in `recall_miss_context`, a SISTER table rather than a
         column: see the DDL (`database.py`).
@@ -116,11 +116,3 @@ class TrafficRepository(Repository):
                 }
                 for r in rows
             ]
-
-    def recall_miss_terms(self) -> list[tuple[str, int]]:
-        with self.db.connection() as conn, conn.cursor() as cur:
-            cur.execute(
-                "SELECT term, COUNT(*) FROM recall_misses GROUP BY term ORDER BY term ASC"
-            )
-            rows = cur.fetchall()
-            return [(str(r[0]), int(r[1])) for r in rows]

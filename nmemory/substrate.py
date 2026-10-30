@@ -1,4 +1,4 @@
-"""Substrate records: outcomes and recall receipts (u6h, u6i).
+"""Substrate records: outcomes (u6h).
 
 Observation tracking.
 """
@@ -39,12 +39,3 @@ class OutcomeRecord:
         if self.score is not None:
             d["score"] = self.score
         return d
-
-
-@dataclass(frozen=True)
-class RecallReceipt:
-    id: str
-    query: str
-    returned_ids: list[str]
-    project_id: str | None
-    at: datetime

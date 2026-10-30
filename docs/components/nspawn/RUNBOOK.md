@@ -111,6 +111,7 @@ A changed request is not an idempotent retry.
 | Registry missing | Create only a new registry, or restore its backup |
 | Native policy conflict | Resolve the named plugin or MCP conflict |
 | Unknown process identity | Preserve custody and diagnose privately |
+| Many empty `nottcontroller-*.slice` units, or a slow daemon-reload | Run `nspawn slice reconcile --dry-run`, read it, then `nspawn slice reconcile` |
 
 Close through `nspawn_run_close`. Read its checked identities and survivors.
 Do not signal a bare PID or release a claim without death proof.

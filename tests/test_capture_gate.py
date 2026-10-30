@@ -14,8 +14,8 @@ of the owner turn is refusing memory of decisions, which is the only proof
 a decision can have. Therefore `#N` and long quotes are included.
 
 The door lives in `nmemory.tools.ingest` and NOT in `ingest()`: curator
-(`curator.py`), GitHub sync (`github.py`) and bridge call `ingest()`
-directly. Lowering it would trade zero exceptions for three.
+(`curator.py`) and bridge call `ingest()` directly. Lowering it would trade
+zero exceptions for two.
 """
 
 from __future__ import annotations

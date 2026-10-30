@@ -146,62 +146,6 @@ def valid_slug(slug: str) -> bool:
     return True
 
 
-class CapsuleHandle:
-    """The persisted immutable handle components for one canonical capsule id."""
-
-    def __init__(self, sequence: int, prefix: str, slug: str | None = None) -> None:
-        self._sequence = sequence
-        self._prefix = prefix
-        self._slug = slug
-
-    @classmethod
-    def new(
-        cls, canonical_id: str, prefix: str, slug: str | None = None
-    ) -> CapsuleHandle | None:
-        """Build a validated handle from a canonical cap-<n> id and persisted components."""
-        try:
-            parsed = ParsedCapsuleRef.parse(canonical_id)
-        except CapsuleRefSyntaxError:
-            return None
-        if not parsed.is_canonical() or prefix not in HANDLE_PREFIXES:
-            return None
-        if slug is not None and not valid_slug(slug):
-            return None
-        return cls(parsed.sequence, prefix, slug)
-
-    @property
-    def prefix(self) -> str:
-        """The immutable birth-kind prefix (task, plan, cap, ...)."""
-        return self._prefix
-
-    @property
-    def slug(self) -> str | None:
-        """The immutable birth-content slug."""
-        return self._slug
-
-    @property
-    def sequence(self) -> int:
-        """The sequence number shared with the canonical id."""
-        return self._sequence
-
-    def __str__(self) -> str:
-        if self._slug:
-            return f"{self._prefix}-{self._sequence}-{self._slug}"
-        return f"{self._prefix}-{self._sequence}"
-
-    def __repr__(self) -> str:
-        return f"CapsuleHandle(sequence={self._sequence}, prefix={self._prefix!r}, slug={self._slug!r})"
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, CapsuleHandle):
-            return False
-        return (
-            self._sequence == other._sequence
-            and self._prefix == other._prefix
-            and self._slug == other._slug
-        )
-
-
 class ParsedCapsuleRef:
     """One syntactically valid capsule reference supplied at a public boundary."""
 

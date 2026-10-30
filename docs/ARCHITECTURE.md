@@ -94,33 +94,29 @@ The retrieval code owns the exact fence order and score formula.
 
 ---
 
-### 2. The 24 Real MCP Tools
+### 2. The MCP tools
 
-The server exposes exactly the 24 tools specified in the canon (`src/server/mod.rs`):
+The server exposes the tools in `nmemory/tools_schema.json`. The registry is
+`TOOLS` in `nmemory/tools/__init__.py`:
 
-1. `nmemory_session_start`: Start a session, detect store health, and return session status.
+1. `nmemory_session_start`: Start a session and return its ID and start time.
 2. `nmemory_capsule_ingest`: Ingest structured facts, decisions, constraints, tasks, and procedures.
 3. `nmemory_capsule_show`: Retrieve a capsule by ID or handle with provenance and anchor status.
 4. `nmemory_kind_classify`: Deterministic kind derivation, scope assignment, and taint detection.
-5. `nmemory_turn_extract`: Pure non-LLM candidate extraction from free-text blobs.
-6. `nmemory_capsule_retrieve`: Dual-lane hybrid recall with RRF fusion times an exponential decay (the writer's confidence does not rank), exclusions, and receipts.
-7. `nmemory_relation_add`: Record directional ontological graph edges (`supersedes`, `derived_from`, `blocks`, `dod_of`, etc.).
-8. `nmemory_capsule_pin`: Pin or unpin critical memories against consolidation demotion.
-9. `nmemory_capsule_reanchor`: Rebind anchor paths after file moves or refactors.
-10. `nmemory_synonym_add`: Teach domain synonyms and abbreviations for expanded lexical recall.
-11. `nmemory_capsule_consolidate`: Deterministic consolidation planning (exact dupes, token containment, tier moves).
-12. `nmemory_outcome_record`: Record real observed execution outcomes linked to capsules and receipts.
-13. `nmemory_outcome_list`: List the newest outcomes, newest first (`limit` 1 to 500, default 50, and an optional `project_prefix`). It writes nothing.
-14. `nmemory_capsule_list`: List capsules filtered by project, kind, or pagination limits.
-15. `nmemory_digest_show`: Generate verified store summary with audit chain status.
-16. `nmemory_capsule_export`: Render deterministic generated Markdown store projection.
-18. `nmemory_project_bootstrap`: Bootstrap working context with constraints, decisions, and pitfalls.
-19. `nmemory_context_show`: Extract and index active session context.
-20. `nmemory_index_build`: Explicitly index files or git commits.
-21. `nmemory_capsule_import`: Batch import external memories with provenance and taint tracking.
-22. `nmemory_capsule_purge`: Cryptographically tombstone and redact or purge capsule content.
-23. `nmemory_dod_set`: Manage Definition-of-Done lifecycle across status and verdict axes.
-24. `nmemory_session_finish`: Close a session and persist summary handoff capsule.
+5. `nmemory_capsule_retrieve`: Dual-lane hybrid recall with RRF fusion times an exponential decay (the writer's confidence does not rank), exclusions, and receipts.
+6. `nmemory_relation_add`: Record directional ontological graph edges (`supersedes`, `derived_from`, `blocks`, `dod_of`, etc.).
+7. `nmemory_capsule_pin`: Pin or unpin critical memories against consolidation demotion.
+8. `nmemory_outcome_record`: Record real observed execution outcomes linked to capsules and receipts.
+9. `nmemory_outcome_list`: List the newest outcomes, newest first (`limit` 1 to 500, default 50, and an optional `project_prefix`). It writes nothing.
+10. `nmemory_capsule_list`: List capsules filtered by project, kind, or pagination limits.
+11. `nmemory_digest_show`: Generate verified store summary with audit chain status.
+12. `nmemory_context_show`: Extract and index active session context.
+13. `nmemory_capsule_purge`: Cryptographically tombstone and redact or purge capsule content.
+14. `nmemory_dod_set`: Manage Definition-of-Done lifecycle across status and verdict axes.
+15. `nmemory_session_finish`: Close a session and persist summary handoff capsule.
+16. `nmemory_proposal_review`: Review staged proposals.
+17. `nmemory_board_show`: Show a project's live tasks as a board of five columns.
+18. `nmemory_work_list`: Page through canonical open work (next section).
 
 #### Enumerating open work
 
@@ -216,13 +212,12 @@ exact. `capsule_id` returns only the card of that task, and the tool refuses a
 capsule that is not a task of the project. A card gives `id`, `handle`, `headline`,
 `session` (the `capture_context` session, or null), `blocked_by`, `doing`,
 `closed_by` and `outcome`. A tainted task or closer gives its bare id and no
-text. `pending` lists the staged GitHub changes that wait on the owner, by
-proposal id and task id only.
+text.
 
 #### Protocol Compliance & Teaching Error
 Unrecognized tools return JSON-RPC error code `-32602` (`INVALID_PARAMS`) with teaching error:
 ```
-unknown tool "<name>" — tools/list names the 24 valid tools
+unknown tool "<name>" — tools/list names the 18 valid tools
 ```
 
 ---
@@ -264,80 +259,17 @@ usage: nmemory <noun> <verb> [arguments]   (nmemory --help lists every command)
       low-friction unified context search (markdown, code, git and rustdoc)
   nmemory index build [--root DIR] [--source S] [--retire-root DIR]
       explicit context indexing; retire an earlier checkout after a complete build
-  nmemory github sync [--verify] [--config F] [--repo R] [--label L] [--max-writes N] [--effort REF]
-      mirror the nMEMORY planning graph to GitHub issues
   nmemory anchor list
       print the live capsule anchor index
   nmemory anchor check [--drain | --all] [--root DIR] [--spool DIR] [--json]
       judge code anchors against the working tree and record verification events
   nmemory quality measure [--json] [--dry-run]
-      measure store hygiene and capture the result as a capsule
+      measure store hygiene and the audit chain, and capture the result as a capsule
   nmemory review run --daily
       the daily curator review
   nmemory embedding show [--json]
       embedding status
 ```
-
-#### `github sync`: the declared fence
-
-GitHub issues are a window onto the planning graph, written from it.
-**Which** capsules enter through the window is declared in
-`~/.nott/memory.toml`:
-
-```toml
-[github]
-repo = "<owner>/<repository>"
-label = "nmemory"
-project = "<project>"
-efforts = ["cap-<id>"]     # the mirrored epics
-```
-
-`efforts` is the key that matters. Each entry is the cap-id of a live
-epic with members; the sync mirrors that subtree and **leaves the rest of
-the graph alone** — it neither creates, nor closes, nor reports. A capsule
-that already has an issue and fell outside the fence is left intact, on
-purpose.
-
-Without `efforts` and without `--effort`, the **application refuses**.
-Measured on 2026-09-21: an unfenced run against this store proposed 2080
-creations. `--verify` still runs without a fence — it writes nothing and
-is how the whole graph gets measured.
-
-The configuration lives here, and not in `.nott/nmemory/config.toml`,
-because this path is **absolute**: the repository's is relative to the
-working directory and only loads if it exists, so a process started in
-the wrong place would find no configuration, gain no fence, and silently
-propose the whole graph. `--config` still serves as an explicit override,
-and flags win over both files. An `--effort` **replaces** the declared
-list, never merges into it.
-
-#### `github sync`: the pull
-
-The mirror is two-way for task issues only. Before an apply run
-writes, it pulls: each change that another GitHub user made to a task issue
-becomes a staged, tainted proposal about that task. The owner approves or rejects
-it in the NOTT app board. Until then, the proposal does not change the board.
-
-- The pull ignores the events, edits and comments of the sync's own login
-  (`gh api user`).
-- It reads the timeline and the body editor only of issues that changed after the
-  watermark: `pulled_at=` in the newest complete `github-sync` audit line. Comments
-  come from one `issues/comments?since=` read. Only a complete run moves the
-  watermark.
-- Each change is one ingest: `kind: fact`, `authority_class:
-  externally-imported`, `staged: true`, `source: github-pull`, `anchor:
-  github:<repo>#<n>`, then an `about` edge to the task. Proposals count against
-  `--max-writes`.
-- The content is one line of tokens that GitHub validates:
-  `GitHub change: <repo>#<n> <field> <action> by @<login> at <time> (<event|comment|edit> <id>)`.
-  The new value (title, label, comment, body without the sync footer, or the
-  close reason) goes only in `source_quote` and `derived_from`. A body whose sync
-  footer is not exact has the action `edited-footer` and keeps the whole body.
-- While a change to the state, title, body or sync-owned labels waits, the sync
-  does not write that field of that issue, and the report prints
-  `held #<n> <field>`. After a rejection, the next run writes the board back:
-  it reopens or closes the issue, and retitles, rebodies or relabels it.
-- `--verify` stages nothing.
 
 ---
 

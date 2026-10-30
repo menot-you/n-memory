@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 import sys
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 
 RENAMED: dict[str, str] = {
     "NOTT_NMEMORY_BIN": "NMEMORY_BIN",
@@ -60,15 +60,19 @@ def old_names(name: str) -> tuple[str, ...]:
     return renamed + tuple(old for old, new in RETIRED.items() if new == name)
 
 
-def refuse(environ: Mapping[str, str], names: Iterable[str]) -> None:
-    """Refuse the first old spelling set in `environ` of one of `names`."""
+def refuse(present: frozenset[str], names: Iterable[str]) -> None:
+    """Refuse the first old spelling of one of `names` that is in `present`.
+
+    `present` holds the names set in the environment, never a value. A failing frame
+    prints its arguments, so an argument that held a value would print it.
+    """
     for name in names:
         for old in old_names(name):
-            if old in environ:
+            if old in present:
                 raise RenamedVariableError(old, name)
 
 
 def env(name: str) -> str | None:
     """The value of `name`, refusing a set old spelling of it."""
-    refuse(os.environ, (name,))
+    refuse(frozenset(os.environ), (name,))
     return os.environ.get(name)

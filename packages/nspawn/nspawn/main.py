@@ -65,6 +65,7 @@ def build(session: McpServer) -> Server[Any]:
                 INVALID_PARAMS,
                 f"tools/call params of {size} bytes exceeded the "
                 f"{MAX_MCP_PARAMS_BYTES}-byte ceiling",
+                data={"type": "InvalidArguments"},
             )
         waits = params.name in ("nspawn_run_show", "nspawn_result_show") and bool(
             (params.arguments or {}).get("timeout_ms")

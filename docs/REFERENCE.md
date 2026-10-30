@@ -30,7 +30,6 @@ All commands use the executable from the public repository's root workspace.
 | `nmemory context search` | `[QUERY] [--source S] [--limit N] [--budget N]` |
 | `nmemory index build` | `[--root DIR] [--source S]` |
 | `nmemory portal export` | `--project P [--digest]` |
-| `nmemory github sync` | `[--verify] [--config F] [--repo R] [--label L] [--max-writes N] [--effort REF]` |
 | `nmemory anchor list` | `None` |
 | `nmemory anchor check` | `[--drain \| --all] [--root DIR] [--spool DIR] [--json]` |
 | `nmemory quality measure` | `[--json] [--dry-run]` |
@@ -44,31 +43,22 @@ Source: [tools_schema.json](../nmemory/tools_schema.json).
 | Tool | Operation |
 | --- | --- |
 | `nmemory_board_show` | Show a project's live tasks as a board of five columns. |
-| `nmemory_capsule_consolidate` | Plan consolidation and optional protective tier changes. |
-| `nmemory_capsule_export` | Render the generated Markdown view. |
-| `nmemory_capsule_import` | Import records with source provenance. |
 | `nmemory_capsule_ingest` | Capture checked records. |
 | `nmemory_capsule_list` | List filtered records with optional paging. |
 | `nmemory_capsule_pin` | Pin or unpin a record with a reason. |
 | `nmemory_capsule_purge` | Redact or purge under the selected mode. |
-| `nmemory_capsule_reanchor` | Change an anchor with a reason. |
 | `nmemory_capsule_retrieve` | Recall eligible records with a receipt. |
 | `nmemory_capsule_show` | Read one record and its provenance. |
 | `nmemory_context_show` | Read context from selected sources. |
-| `nmemory_coverage_show` | Check whether approved claims cover supplied prose. |
 | `nmemory_digest_show` | Read the store summary. |
 | `nmemory_dod_set` | Set a result contract lifecycle. |
-| `nmemory_index_build` | Build the selected source index. |
 | `nmemory_kind_classify` | Classify kind, scope, and taint. |
 | `nmemory_outcome_list` | List observed outcomes. |
 | `nmemory_outcome_record` | Record an observed outcome. |
-| `nmemory_project_bootstrap` | Read project context. |
 | `nmemory_proposal_review` | Review staged proposals. |
 | `nmemory_relation_add` | Add or revoke a relation. |
 | `nmemory_session_finish` | Close a session with its handoff. |
-| `nmemory_session_start` | Start a session and inspect health. |
-| `nmemory_synonym_add` | Add lexical synonyms. |
-| `nmemory_turn_extract` | Extract record candidates. |
+| `nmemory_session_start` | Start a session. |
 | `nmemory_work_list` | Page through canonical work records. |
 
 ## Implementation and storage
@@ -94,10 +84,6 @@ Private audit commands do not authorize publication of their inputs.
 | `nmemory-evals session show` | `--data F --sha256 H --question Q --position N --session S` |
 | `nmemory-evals suite run` | `--config F --data F [--binary B] [--out DIR]` |
 | `nmemory-evals capsule score` | `[--binary B] [--lane term\|vector\|fused] [-k N] [--out DIR]` |
-| `nmemory-evals arena compare` | `[--binary B] [--systems S] [--run-id R] [-k N] [--out DIR]` |
-| `nmemory-evals arena run` | `--system S --budget N --corpus F --out DIR [--checkpoint F]` |
-| `nmemory-evals arena probe` | `--system S --corpus F --out DIR` |
-| `nmemory-evals arena judge` | `--loss F [--results F] [--precision-report F ...] [--expected-sha256 H]` |
 | `nmemory-evals synthesis judge` | `--preregistration F --results F [--expected-sha256 H]` |
 | `nmemory-evals proposal score` | `[--dataset F] [--proposer deterministic\|llm] [--timeout-s N] [--json] [--out DIR]` |
 | `nmemory-evals transcript audit` | `[--dataset F] [--session ID] [--json] [--out DIR]` |

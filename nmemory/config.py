@@ -10,6 +10,7 @@ value: a path does not age, a value does.
 The store is not configured here. It is one SQLite file under
 `NOTT_DATABASE_DIR` (`nmemory.database.store_path`). A `[store]` table left by the
 retired PostgreSQL store is ignored, not refused, so an old file keeps working.
+A `[github]` table left by the retired GitHub issue mirror is ignored the same way.
 """
 
 from __future__ import annotations
@@ -46,18 +47,11 @@ MAX_CONFIG_BYTES = 64 * 1024
 SYSTEM1_ENDPOINT_ENV = "NOTT_SYSTEM1_ENDPOINT"
 SYSTEM1_MODEL_ENV = "NOTT_SYSTEM1_MODEL"
 
-#: `store` is the retired PostgreSQL table: accepted and ignored.
+#: `store` is the retired PostgreSQL table and `github` the table of the retired
+#: GitHub issue mirror: each is accepted and ignored.
 _DOCUMENT_KEYS = frozenset({"store", "system1", "github", "curator"})
 _CURATOR_KEYS = frozenset({"provider", "account"})
 CURATOR_PROVIDERS = frozenset({"zai", "minimax", "kimi", "codex"})
-
-#: The github-sync fence lives HERE and not in `.nott/nmemory/config.toml`, and
-#: the reason is the path: the repository one is relative to the CWD and is only
-#: loaded `if exists()`, so a process started in the wrong directory finds no
-#: config, gains no fence, and proposes the whole graph in silence. This path is
-#: absolute by construction (`Path.home()`) and host-local — each machine decides
-#: what it mirrors, without going through the repository.
-_GITHUB_KEYS = frozenset({"repo", "label", "project", "efforts"})
 
 #: CREDENTIALS DO NOT LIVE IN THE FILE. `api_key` is not here, so writing it in
 #: [system1] is refused by the allowlist — and the refusal names the key, never the value. The
@@ -232,44 +226,6 @@ def _system1_values(path: Path, raw: dict[str, Any]) -> dict[str, Any]:
     return dito
 
 
-def github_table(path: Path | None = None) -> dict[str, Any]:
-    """The validated [github] table, or empty when there is neither file nor table.
-
-    Returns only what the file SAYS — a missing field stays missing, so the
-    CLI flags still get their turn. A file that exists and carries a wrong
-    key is refused; there is no silent discard.
-    """
-    if path is None:
-        path = config_path()
-    return _github_values(path, _document(path) or {})
-
-
-def _github_values(alvo: Path, raw: dict[str, Any]) -> dict[str, Any]:
-    github = (raw or {}).get("github")
-    if github is None:
-        return {}
-    if not isinstance(github, dict):
-        raise ConfigError(f"memory.toml: {alvo}: [github] is not a table")
-    _deny_unknown(github, _GITHUB_KEYS, "[github]")
-
-    dito: dict[str, Any] = {}
-    for chave in ("repo", "label", "project"):
-        valor = github.get(chave)
-        if valor is None:
-            continue
-        if not isinstance(valor, str):
-            raise ConfigError(
-                f"memory.toml: {alvo}: [github].{chave} e {type(valor).__name__}, "
-                "esperava string"
-            )
-        if valor.strip():
-            dito[chave] = valor.strip()
-
-    if "efforts" in github:
-        dito["efforts"] = github["efforts"]
-    return dito
-
-
 def resolve_system1_config(
     path: Path | None = None, scope: str | None = None
 ) -> System1Config:
@@ -340,7 +296,6 @@ def _curator_values(path: Path, raw: dict[str, Any]) -> CuratorRoute | None:
 def _validate_document(path: Path, data: bytes) -> dict[str, Any]:
     document = _parse_document(path, data)
     _system1_values(path, document)
-    _github_values(path, document)
     _curator_values(path, document)
     return document
 

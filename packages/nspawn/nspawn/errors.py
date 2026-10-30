@@ -1,8 +1,7 @@
 """`nERR-NNNN` errors — the catalog the operator reads, and this package's error root.
 
 `nERR-NNNN::description :: meaning :: action`; the code is the contract. Every
-entry below is extracted from the contract rather than retyped, and `classify` keeps
-the oracle's rule ORDER because it is first-match-wins.
+entry below is extracted from the contract rather than retyped.
 """
 
 from dataclasses import dataclass
@@ -50,9 +49,8 @@ def nerr_of(error: BaseException) -> int | None:
     return code if isinstance(code, int) else None
 
 
-#: The unknown-code sentinel. Returned by `from_code` when an integer has no
-#: registered entry. An error landing here is a missing variant, never a place
-#: to leave production errors.
+#: The unknown-code sentinel. An error landing here is a missing variant, never
+#: a place to leave production errors.
 UNKNOWN_CODE = 9999
 UNKNOWN = ErrorEntry(
     code=UNKNOWN_CODE,
@@ -405,41 +403,3 @@ ALL: tuple[ErrorEntry, ...] = (
     NERR_4102,
     NERR_4103,
 )
-
-
-def from_code(code: int) -> ErrorEntry:
-    """Look up by integer code, falling back to the `nERR-9999` sentinel."""
-    for candidate in ALL:
-        if candidate.code == code:
-            return candidate
-    return UNKNOWN
-
-
-def classify(reason: str) -> ErrorEntry:
-    """Classify a free-form refusal string to its catalog entry.
-
-    FIRST MATCH WINS and the order is the oracle's: `no ... binary` is tested
-    before `version check`, and the broad `spawn ` rule is tested last, so a
-    reason matching two rules resolves the way the Rust does.
-    """
-    if "no " in reason and "binary" in reason:
-        return NERR_1101
-    if "claude binary:" in reason or "version check" in reason:
-        return NERR_1102
-    if "roster:" in reason:
-        return NERR_1103
-    if "HOME is not set" in reason:
-        return NERR_1104
-    if "declares models" in reason:
-        return NERR_1105
-    if "offers no model" in reason:
-        return NERR_1106
-    if "no default model" in reason:
-        return NERR_1107
-    if "run-private home" in reason:
-        return NERR_1112
-    if "clean receipt" in reason or "guardian" in reason:
-        return NERR_2005
-    if "spawn " in reason:
-        return NERR_2002
-    return UNKNOWN

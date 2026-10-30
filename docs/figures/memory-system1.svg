@@ -110,7 +110,7 @@
       <text x="12" y="18" class="font-sans card-title">FTS5 BM25 + Synonym Graph</text>
       <text x="12" y="32" class="font-mono code-txt">diacritic folding · exact keyword lane</text>
 
-      <text x="12" y="52" class="font-sans detail-txt">• Expansion via <tspan class="font-mono code-txt">nmemory_synonym_add</tspan> multi-word aliases</text>
+      <text x="12" y="52" class="font-sans detail-txt">• Expansion via taught multi-word aliases</text>
       <text x="12" y="68" class="font-sans detail-txt">• Robust to accents, Portuguese inflections &amp; code tokens</text>
 
       <!-- Fusion Formula Box -->

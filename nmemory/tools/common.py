@@ -18,7 +18,7 @@ from typing import Any
 from ..capture import CaptureContext
 from ..config import ConfigError
 from ..embedding import EmbeddingClient
-from ..ingest import IngestDefaults
+from ..ingest import IngestDefaults, IngestOutcome
 from ..relation import Dag, DagCycleError, RelationKind, RelationRecord, closed_task_ids
 from ..repositories.capsules import StoredCapsule
 from ..store import Store
@@ -92,6 +92,26 @@ def error_result(message: str) -> dict[str, Any]:
         "content": [{"type": "text", "text": message}],
         "isError": True,
     }
+
+
+def capture_outcome_row(outcome: IngestOutcome) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "status": "deduplicated" if outcome.deduped else "captured",
+        "id": outcome.id,
+        "dedup_hint": (
+            {
+                "similar_id": outcome.dedup_hint.similar_id,
+                "score": outcome.dedup_hint.score,
+            }
+            if not outcome.deduped and outcome.dedup_hint
+            else None
+        ),
+    }
+    if not outcome.deduped and outcome.siblings:
+        row["siblings"] = [{"id": s.id, "score": s.score} for s in outcome.siblings]
+    if outcome.superseded:
+        row["superseded"] = outcome.superseded
+    return row
 
 
 def taint_summary(findings: list[TaintFinding]) -> list[str]:

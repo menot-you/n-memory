@@ -83,7 +83,7 @@ def _sem_classe(store: Store, content: str, anchor: str, projeto: str) -> str:
     Since the `kind` gate closed, `nmemory_capsule_ingest` rejects an item without
     `kind`: an unclassified capsule only reaches the store via internal writers.
     And their path is `ingest()` --- curator.py:966, curator.py:1121,
-    github.py:1775, server.py:5360 --- not `store.append`. Seeding via `append`
+    server.py:5360 --- not `store.append`. Seeding via `append`
     would bypass the taint scan, hash dedup, and the audit row, and with
     `context=None` would record this machine's REAL host and cwd instead of the
     test context.

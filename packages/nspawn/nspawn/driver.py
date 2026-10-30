@@ -8,12 +8,18 @@ The stdio process hands it one JSON frame on stdin and reads one ack from a pipe
 it passed down; the driver also persists that ack as `drivers/<uuid>.ack`. From
 admission to terminal the run belongs to the driver, so the stdio process owns
 no child and a client that dies — EOF, SIGHUP, SIGKILL, a killed scope — takes
-no run with it. `nspawn_route_ping` is the stated exemption and stays in-process. On macOS the
+no run with it. `nspawn_route_ping` is the stated exemption and stays in-process:
+the stdio keeps the run lease of each tree that a ping runs in until the stdio
+exits (`mcp.PING_LEASES`). On macOS the
 driver is a launchd job instead (`LaunchdLauncher`), with the ack through a FIFO.
+The driver process holds the run lease of a git tree (`take_run_lease`), a
+shared flock on `<git dir>/nott-run.lease`, from before admission until it
+exits, so `tools/worktree.sh collect` keeps the tree of each live run.
 
-The seam is `serve(frame, ack_writer, *, supervisor_factory, owns_supervisor)`.
-The driver passes `_default_supervisor` and owns it: after the ack it joins the
-run's worker, shuts the supervisor down, and only then stops the close watcher,
+The seam is `serve(frame, ack_writer, *, supervisor_factory, owns_supervisor,
+leases)`.
+The driver passes `_default_supervisor` and owns it: after the ack it joins
+each worker of the call, shuts the supervisor down, and only then stops the close watcher,
 which serves one last pending close after `remove_instance`. A McpServer built
 with an injected supervisor uses `InProcessLauncher` instead: `serve` on a
 thread, the same frame crossing as JSON, the injected supervisor never shut
@@ -29,6 +35,7 @@ driver has exited, else `AdmissionPending` — which `nspawn_run_show` resolves 
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import hashlib
 import inspect
 import json
@@ -42,13 +49,13 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Final, Protocol
 
 import nott_database
 
-from . import config
+from . import config, operations
 from .child import CALLER_SOCKET_ENV
 from .child import (
     RUN_ID_ENV as RUN_ID_ENV,  # noqa: PLC0414 - re-exported with the driver it marks
@@ -66,7 +73,14 @@ from .process_identity import (
     capture_process_identity,
     process_identity_matches,
 )
-from .registry import NODE_PREFIX, STORE_ERRORS, DriverCeiling, KeyLock, RunKey
+from .registry import (
+    NODE_PREFIX,
+    STORE_ERRORS,
+    DriverCeiling,
+    KeyLock,
+    RegistryError,
+    RunKey,
+)
 from .rows import RunPhase
 from .supervisor import (
     DRIVE_CALL,
@@ -110,7 +124,7 @@ class DriverUnavailable(SupervisorError):
 
 def wire_code(error: BaseException) -> int:
     """The JSON-RPC code a refusal renders with: typed entries are the caller's."""
-    if isinstance(error, (AdmissionHeld, AdmissionUnbound)):
+    if isinstance(error, (AdmissionHeld, AdmissionUnbound, InvalidRunRequest)):
         return INVALID_PARAMS
     code = getattr(getattr(error, "entry", None), "code", UNKNOWN_CODE)
     return INVALID_PARAMS if code != UNKNOWN_CODE else INTERNAL_ERROR
@@ -266,11 +280,25 @@ def make_frame(
     environ: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """One dispatch as the driver receives it."""
+    env = os.environ if environ is None else environ
+    arguments = dict(arguments)
+    notice = arguments.pop("notice", True)
+    context: dict[str, Any] = {}
+    if env.get(RUN_ID_ENV):
+        context["parent_run"] = env[RUN_ID_ENV]
+    # The Claude Code session that calls nSPAWN: the journal's parent evidence.
+    if env.get("CLAUDE_CODE_SESSION_ID"):
+        context.update(
+            caller_session=env["CLAUDE_CODE_SESSION_ID"], caller_vendor="claude"
+        )
+        if env.get("CLAUDE_CONFIG_DIR"):
+            context["caller_home"] = env["CLAUDE_CONFIG_DIR"]
     return {
         "tool": tool,
         "arguments": dict(arguments),
         "launch_uuid": str(uuid.uuid4()),
-        "caller": caller_identity(os.environ if environ is None else environ),
+        "caller": caller_identity(env) if notice else None,
+        "journal_context": context,
         "project": _caller_project(arguments),
         "drivers_dir": None if drivers_dir is None else str(drivers_dir),
     }
@@ -284,13 +312,24 @@ def _log(message: str) -> None:
     sys.stderr.flush()
 
 
+def _refusal_type(error: BaseException) -> str:
+    """The refusal type of `error`. The registry wraps a busy store in a plain
+    `RegistryError`: that refusal is the `BusyError` that caused it, so the caller
+    can know that the same call can succeed later."""
+    if type(error) is RegistryError and isinstance(
+        error.__cause__, nott_database.BusyError
+    ):
+        return nott_database.BusyError.__name__
+    return type(error).__name__
+
+
 def refusal_ack(error: BaseException) -> dict[str, Any]:
     """A refusal as an ack; one raised after `admit_run` names its failed run."""
     rpc_message = getattr(error, "rpc_message", None)
     data = getattr(error, "data", None)
     refused: dict[str, Any] = {
         **(data if isinstance(data, dict) else {}),
-        "type": type(error).__name__,
+        "type": _refusal_type(error),
         "message": rpc_message if isinstance(rpc_message, str) else str(error),
         "code": getattr(error, "code", INTERNAL_ERROR)
         if isinstance(rpc_message, str)
@@ -324,6 +363,310 @@ class FingerprintUnavailable(SupervisorError):
     call again — a guessed fingerprint would answer a spurious conflict."""
 
     data: dict[str, Any] | None = None
+
+
+#: The run lease: a file in the git dir of a run's tree. `tools/worktree.sh
+#: collect` is its other reader. The collector opens this file, and its
+#: readiness check reads this exact line as the mark of a lease-capable release.
+RUN_LEASE: Final = "nott-run.lease"
+
+
+class RunLeaseUnavailable(SupervisorError):
+    """The driver cannot hold the run lease of the tree, so nSPAWN created no run."""
+
+
+def _lease_refusal(message: str, *, retryable: bool) -> RunLeaseUnavailable:
+    refusal = RunLeaseUnavailable(message)
+    if retryable:
+        refusal.data = {"retryable": True}
+    return refusal
+
+
+#: The discovery lock: the file with this name in the store directory of the
+#: registry that an admission writes (`discovery_lock`). `tools/worktree.sh
+#: collect` holds it exclusive while it has the `.git` of a tree moved aside,
+#: because git then exits non-zero in that tree and the run lease cannot be
+#: found. The driver holds it shared from before its git discovery until it
+#: holds the run lease or has decided that no lease applies. In production that
+#: store directory is `nott_database.directory()`, and the collector resolves
+#: the same directory by the same rule. Neither side removes it.
+DISCOVERY_LOCK: Final = "worktree-collect.lock"
+
+
+def discovery_lock(store: Path) -> Path:
+    """The discovery lock in `store`, the directory of the admitting registry.
+
+    The supervisor gives the directory of its own registry file, so the lock is
+    beside the registry of the run. A cwd, a run root, a config file or the
+    environment never changes it.
+    """
+    return store / DISCOVERY_LOCK
+
+
+def _take_discovery_lock(store: Path) -> int:
+    """Hold the discovery lock shared, without waiting. The caller closes it."""
+    path = discovery_lock(store)
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        lock = os.open(
+            path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600
+        )
+    except OSError as error:
+        raise _lease_refusal(
+            f"the discovery lock {path} cannot be opened: {error.strerror}",
+            retryable=False,
+        ) from error
+    try:
+        fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        os.close(lock)
+        raise _lease_refusal(
+            f"the worktree collector holds the discovery lock {path}. "
+            "nSPAWN created no run. Retry the same call.",
+            retryable=True,
+        ) from error
+    except OSError as error:
+        os.close(lock)
+        raise _lease_refusal(
+            f"the discovery lock {path} cannot be locked: {error.strerror}",
+            retryable=False,
+        ) from error
+    return lock
+
+
+def take_run_lease(cwd: str, store: Path, deadline: float | None = None) -> int | None:
+    """Hold the shared run lease of the git tree at `cwd`, before admission.
+
+    The lease is a shared flock on `<git dir>/nott-run.lease`. The worktree
+    collector holds the exclusive flock from its check until the removal of the
+    tree ends, so it keeps a tree whose lease a run holds, and a dispatch into a
+    tree under collection refuses here. A cwd that is not a git tree takes no
+    lease (`None`). That decision and the lease are made under the discovery
+    lock in `store` (`discovery_lock`), so a tree whose `.git` the collector
+    moved aside refuses here and does not pass as a cwd outside git. The holder
+    (`RunLeases`) keeps the returned descriptor until its process exits.
+    `O_CLOEXEC` keeps it from the child. A `deadline` (`time.monotonic()`) is
+    the end of the budget of the call: git gets what remains of it when that is
+    less than `GIT_DISCOVERY_TIMEOUT_S`.
+    """
+    if not cwd:
+        return None
+    discovery = _take_discovery_lock(store)
+    try:
+        return _take_tree_lease(cwd, deadline)
+    finally:
+        os.close(discovery)
+
+
+#: The longest time that git gets to name the git dir of a tree.
+GIT_DISCOVERY_TIMEOUT_S: Final = 10.0
+
+#: The repository-local git variables (`git rev-parse --local-env-vars`). Git
+#: clears them for a subprocess in another repository. `-C` does not override
+#: `GIT_DIR`, so the discovery clears them too: it then names the git dir of the
+#: tree at `cwd`, as `tools/worktree.sh` names it for that tree.
+LOCAL_GIT_ENV: Final = frozenset(
+    {
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CONFIG",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_IMPLICIT_WORK_TREE",
+        "GIT_GRAFT_FILE",
+        "GIT_INDEX_FILE",
+        "GIT_NO_REPLACE_OBJECTS",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_PREFIX",
+        "GIT_SHALLOW_FILE",
+        "GIT_COMMON_DIR",
+    }
+)
+
+
+def _deadline_refusal(cwd: str) -> RunLeaseUnavailable:
+    """The deadline of the call passed before admission in `cwd`."""
+    return _lease_refusal(
+        f"the deadline of the call passed before admission in {cwd}. "
+        "nSPAWN created no run.",
+        retryable=True,
+    )
+
+
+def _take_tree_lease(cwd: str, deadline: float | None) -> int | None:
+    """The run lease of `cwd`, or `None` outside git. Call under the discovery lock."""
+    timeout = GIT_DISCOVERY_TIMEOUT_S
+    if deadline is not None:
+        timeout = min(timeout, deadline - time.monotonic())
+        if timeout <= 0:
+            raise _deadline_refusal(cwd)
+    try:
+        found = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "--absolute-git-dir"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env={
+                name: value
+                for name, value in os.environ.items()
+                if name not in LOCAL_GIT_ENV
+            },
+        )
+    except subprocess.TimeoutExpired as error:
+        if timeout < GIT_DISCOVERY_TIMEOUT_S:
+            raise _deadline_refusal(cwd) from error
+        raise _lease_refusal(
+            f"git did not name the git dir of {cwd} within 10 s. "
+            "nSPAWN created no run. Retry the same call.",
+            retryable=True,
+        ) from error
+    except OSError as error:
+        raise _lease_refusal(
+            f"git did not start to name the git dir of {cwd}: {error.strerror}",
+            retryable=False,
+        ) from error
+    if found.returncode != 0:
+        return None
+    path = os.path.join(found.stdout.removesuffix("\n"), RUN_LEASE)
+    try:
+        lease = os.open(
+            path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600
+        )
+    except OSError as error:
+        raise _lease_refusal(
+            f"the run lease {path} cannot be opened: {error.strerror}",
+            retryable=False,
+        ) from error
+    try:
+        try:
+            fcntl.flock(lease, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise _lease_refusal(
+                f"the worktree collector holds the run lease of {cwd}. "
+                "nSPAWN created no run. Retry the same call.",
+                retryable=True,
+            ) from error
+        except OSError as error:
+            raise _lease_refusal(
+                f"the run lease {path} cannot be locked: {error.strerror}",
+                retryable=False,
+            ) from error
+        # The collector removed the tree between the open and the flock.
+        if os.fstat(lease).st_nlink == 0:
+            raise _lease_refusal(
+                f"the worktree collector removed {cwd}", retryable=False
+            )
+    except BaseException:
+        os.close(lease)
+        raise
+    return lease
+
+
+def _late(deadline: float | None) -> bool:
+    """The `deadline` (`time.monotonic()`) of a lease call has passed."""
+    return deadline is not None and time.monotonic() >= deadline
+
+
+def _file_identity(fd: int) -> tuple[int, int]:
+    found = os.fstat(fd)
+    return found.st_dev, found.st_ino
+
+
+class RunLeases:
+    """The run leases of one holder process: a driver, or the stdio of pings.
+
+    Each admission path calls `take` through the lease callback of its drive
+    call. The holder keeps one raw descriptor for each lease file and has no
+    finalizer, so only `close` or the exit of the process closes a lease. The
+    kernel closes each descriptor when the process exits, for every exit. A
+    driver and the stdio never call `close`. Only `serve` closes a holder that
+    it made itself, for the in-process double.
+
+    The lock guards only the cache and `held`. It is never held across git, a
+    file open or a flock, so no call waits for the git discovery of another
+    call, and a call for a tree that the holder keeps answers at once.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        #: Each descriptor that this holder opened and kept.
+        self.held: list[int] = []
+        #: A tree path to the `(st_dev, st_ino)` of the tree and its descriptor.
+        self._trees: dict[str, tuple[tuple[int, int], int]] = {}
+
+    def _kept(self, tree: str, identity: tuple[int, int]) -> bool:
+        """The cache names `tree` with `identity`, and its lease file has a link.
+
+        Call with the lock held.
+        """
+        entry = self._trees.get(tree)
+        return (
+            entry is not None
+            and entry[0] == identity
+            and os.fstat(entry[1]).st_nlink > 0
+        )
+
+    def take(self, tree: str, store: Path, deadline: float | None = None) -> None:
+        """Hold the run lease of `tree`, or refuse with `RunLeaseUnavailable`.
+
+        `store` is the store directory of the admitting registry, where the
+        discovery lock is. A `tree` that is not a git tree takes no lease. With
+        a `deadline` (`time.monotonic()`), the discovery gets only what remains
+        of it, and a call that ends after it refuses, so no run is admitted
+        after the deadline. The deadline is decided under the lock, before a
+        new descriptor goes into `held` or the cache: a late call closes its
+        new descriptor and keeps no lease. A lease that the holder kept before
+        stays held.
+        """
+        try:
+            found = os.stat(tree)
+        except OSError:
+            identity: tuple[int, int] | None = None
+        else:
+            identity = (found.st_dev, found.st_ino)
+        with self._lock:
+            if identity is not None and self._kept(tree, identity):
+                if _late(deadline):
+                    raise _deadline_refusal(tree)
+                return
+        lease = take_run_lease(tree, store, deadline)
+        if lease is None:
+            if _late(deadline):
+                raise _deadline_refusal(tree)
+            return
+        try:
+            key = _file_identity(lease)
+        except BaseException:
+            os.close(lease)
+            raise
+        with self._lock:
+            if _late(deadline):
+                # The new descriptor is in neither `held` nor the cache. A kept
+                # descriptor of the same lease file and its flock stay.
+                os.close(lease)
+                raise _deadline_refusal(tree)
+            kept = next((fd for fd in self.held if _file_identity(fd) == key), None)
+            if kept is None:
+                self.held.append(lease)
+                kept = lease
+            else:
+                # The same lease file: the flock of the kept descriptor stays.
+                os.close(lease)
+            # A caller that inserted this tree first, during the discovery of
+            # this call, keeps its entry.
+            if identity is not None and not self._kept(tree, identity):
+                self._trees[tree] = (identity, kept)
+
+    def close(self) -> None:
+        """Close each kept descriptor once. Only `serve` calls it, for its own."""
+        with self._lock:
+            held, self.held = self.held, []
+            self._trees.clear()
+        for fd in held:
+            os.close(fd)
 
 
 #: A review with no `base` is read against the remote's default branch, else
@@ -370,9 +713,9 @@ def _refuse_nul(arguments: Mapping[str, Any]) -> None:
     """A NUL byte fits neither an argv (git) nor a registry text column, so
     no string argument may carry one; the field is named, its value is not.
 
-    A nested object — the orchestrator binding is one — is read field by field,
-    so a coordinate carrying a NUL is refused HERE rather than reaching the
-    binding's own validation as an argv this process already composed.
+    A nested object — an inference profile or an activation is one — is read
+    field by field, so a coordinate carrying a NUL is refused HERE rather than
+    reaching its own validation as an argv this process already composed.
     """
     for name, value in arguments.items():
         if isinstance(value, Mapping):
@@ -428,6 +771,12 @@ def request_fingerprint(
         ),
         "cwd": _realpath("cwd", cwd) if cwd else None,
     }
+    if "red_record" in arguments:
+        request["red_record"] = arguments["red_record"]
+    if "operations" in arguments:
+        request["operations"] = operations.Declaration.parse(
+            arguments["operations"]
+        ).data()
     # Only when true: every key admitted before the mode existed keeps its print.
     if arguments.get("native_write"):
         request["native_write"] = True
@@ -436,16 +785,15 @@ def request_fingerprint(
         request["producer"] = sorted(arguments["producer"])
     if arguments.get("original_run") is not None:
         request["original_run"] = arguments["original_run"]
-    for coordinate in ("activation", "session_operation", "command"):
+    for coordinate in (
+        "activation",
+        "session_operation",
+        "command",
+        "subject",
+        "candidate",
+    ):
         if arguments.get(coordinate) is not None:
             request[coordinate] = arguments[coordinate]
-    # Only when bound, for the same reason: a default request's key is BYTE
-    # IDENTICAL to the one it had before orchestrator turns existed. Every
-    # coordinate of a binding is part of the print, so another session, another
-    # project, another repository or another runtime is another request rather
-    # than this one's retry.
-    if arguments.get("orchestrator"):
-        request["orchestrator"] = arguments["orchestrator"]
     if arguments.get("inference_profile") is not None:
         request["inference_profile"] = arguments["inference_profile"]
     if batch is not None:
@@ -527,7 +875,17 @@ def _reattach_in_transaction(
     orphaned = hit.phase is RunPhase.ORPHANED
     if notice is not None and (orphaned or not hit.phase.is_terminal()):
         lock.reattach(hit.run_id, notice, orphaned=orphaned)
-    return {"run_id": hit.run_id, "deduplicated": True, "phase": hit.phase.value}
+    answer: dict[str, Any] = {
+        "run_id": hit.run_id,
+        "deduplicated": True,
+        "phase": hit.phase.value,
+    }
+    admission = lock.operation_admission(hit.run_id)
+    if admission is not None:
+        answer["operation_admission"] = json.loads(
+            operations.canonical(asdict(admission))
+        )
+    return answer
 
 
 def _release(lock: KeyLock | None) -> None:
@@ -536,14 +894,9 @@ def _release(lock: KeyLock | None) -> None:
         lock.commit()
 
 
-def _dispatch(
+def _dispatch_method(
     supervisor: Supervisor, tool: str, arguments: Mapping[str, Any]
-) -> RunAccepted:
-    # The frame crossed as JSON: lists go back to the tuples these methods take.
-    kwargs: dict[str, Any] = {
-        name: tuple(value) if isinstance(value, list) else value
-        for name, value in arguments.items()
-    }
+) -> tuple[Callable[..., RunAccepted], str]:
     method: Callable[..., RunAccepted]
     if tool == "nspawn_run_start":
         method, head = supervisor.execute, "prompt"
@@ -554,9 +907,21 @@ def _dispatch(
     # A frame can arrive on stdin, past the MCP door's schema: a field the verb does
     # not take is refused by name, never forwarded.
     taken = inspect.signature(method).parameters
-    unknown = sorted(set(kwargs) - set(taken))
+    unknown = sorted(set(arguments) - set(taken))
     if unknown and not any(p.kind is p.VAR_KEYWORD for p in taken.values()):
         raise InvalidRunRequest(f"{tool} takes no {', '.join(unknown)}")
+    return method, head
+
+
+def _dispatch(
+    supervisor: Supervisor, tool: str, arguments: Mapping[str, Any]
+) -> RunAccepted:
+    method, head = _dispatch_method(supervisor, tool, arguments)
+    # The frame crossed as JSON: lists go back to the tuples these methods take.
+    kwargs: dict[str, Any] = {
+        name: tuple(value) if isinstance(value, list) else value
+        for name, value in arguments.items()
+    }
     return method(kwargs.pop(head, None), kwargs.pop("cwd"), **kwargs)
 
 
@@ -639,14 +1004,22 @@ def serve(
     *,
     supervisor_factory: Callable[[], Supervisor],
     owns_supervisor: bool,
+    leases: RunLeases | None = None,
 ) -> dict[str, Any]:
     """Admit one dispatch, ack it, and — owning the supervisor — drive it out.
 
     The public `execute`/`review` are called, so a fake's overrides are reached;
     per-call data reaches `_admit` through `DRIVE_CALL`. Everything after the
-    admission runs inside `finally`: join the worker, retry a refused terminal
+    admission runs inside `finally`: join each worker of the call, retry a refused terminal
     write, end FAILED a run still unended, then shut down, so the terminal push, `implementation.close()` and
     prompt cleanup always run.
+
+    The run lease reaches admission as the callback `take_lease` of the drive
+    call: each admission path calls it after the refusals of the request and
+    immediately before its run directory. `leases` is the holder of the driver
+    process, which keeps each lease until it exits. `serve` never closes it.
+    With no holder (the in-process double), `serve` makes one and closes it as
+    its last act.
     """
     tool = str(frame["tool"])
     arguments = dict(frame["arguments"])
@@ -654,11 +1027,15 @@ def serve(
     group = arguments.pop("group", None)
     batch = arguments.pop("batch", None)
     project = frame.get("project")
+    own_leases = leases is None
+    holder = RunLeases() if leases is None else leases
     call = DriveCall(
         launch_uuid=str(frame["launch_uuid"]),
         group=group,
         caller=frame.get("caller"),
         project=project,
+        journal_context=frame.get("journal_context"),
+        take_lease=holder.take,
     )
     token = DRIVE_CALL.set(call)
     supervisor: Supervisor | None = None
@@ -668,6 +1045,7 @@ def serve(
         try:
             _refuse_nul({**arguments, "idempotency_key": key, "group": group})
             supervisor = supervisor_factory()
+            _dispatch_method(supervisor, tool, arguments)
             if (
                 tool == "nspawn_run_start"
                 and any(
@@ -719,45 +1097,62 @@ def serve(
                         "deduplicated": False,
                         "phase": accepted.phase.value,
                     }
+                    if accepted.operation_admission is not None:
+                        ack["operation_admission"] = json.loads(
+                            operations.canonical(asdict(accepted.operation_admission))
+                        )
         except (NSpawnError, ControllerRefusal) as refusal:
             ack = refusal_ack(refusal)
+        except nott_database.BusyError as busy:
+            # A busy store is a typed refusal until a worker drives the run.
+            if call.run_id is not None:
+                raise
+            ack = refusal_ack(busy)
         _persist_ack(frame, ack)
         _write_ack(ack_writer, ack)
         return ack
     finally:
-        if lock is not None:
-            lock.close()
-        DRIVE_CALL.reset(token)
-        # A review that fails over hands the call to its successor's worker.
-        join_workers(call)
-        if owns_supervisor and supervisor is not None:
-            try:
+        try:
+            if lock is not None:
+                lock.close()
+            DRIVE_CALL.reset(token)
+            # A review that fails over hands the call to its successor's worker.
+            join_workers(call)
+            if owns_supervisor and supervisor is not None:
                 try:
-                    # A terminal write the registry refused is retried here, on
-                    # a fresh connection: it arms the notice and pushes it.
-                    drained = supervisor.publish_pending()
-                    # A retried write can hand a review on: wait for that run.
-                    join_workers(call)
-                    if not drained:
-                        _log("a refused terminal write is still unrecorded at exit")
-                    elif call.run_id is not None:
-                        supervisor.fail_unended(call.run_id)
-                        # A refused FAILED write waits in the queue: one retry.
+                    try:
+                        # A terminal write the registry refused is retried here,
+                        # on a fresh connection: it arms the notice and pushes it.
                         drained = supervisor.publish_pending()
+                        # A retried write can hand a review on: wait for that run.
                         join_workers(call)
                         if not drained:
-                            _log("the driver-exit failed write is still unrecorded")
-                # A store error is the one cause a later pass can cure; any
-                # other refusal propagates after shutdown, never exit 0.
-                except STORE_ERRORS as error:
-                    _log(f"the driver-exit failed write raised {type(error).__name__}")
+                            _log("a refused terminal write is still unrecorded at exit")
+                        elif call.run_id is not None:
+                            supervisor.fail_unended(call.run_id)
+                            # A refused FAILED write waits in the queue: one retry.
+                            drained = supervisor.publish_pending()
+                            join_workers(call)
+                            if not drained:
+                                _log("the driver-exit failed write is still unrecorded")
+                    # A store error is the one cause a later pass can cure; any
+                    # other refusal propagates after shutdown, never exit 0.
+                    except STORE_ERRORS as error:
+                        _log(
+                            f"the driver-exit failed write raised {type(error).__name__}"
+                        )
+                    finally:
+                        if watcher is not None:
+                            watcher.stop()
+                        supervisor.shutdown()
                 finally:
                     if watcher is not None:
-                        watcher.stop()
-                    supervisor.shutdown()
-            finally:
-                if watcher is not None:
-                    watcher.finish()
+                        watcher.finish()
+        finally:
+            # The last act, and only for a holder that `serve` made: the
+            # driver process keeps its holder until it exits.
+            if own_leases:
+                holder.close()
 
 
 def _read_all(fd: int) -> bytes:
@@ -843,6 +1238,9 @@ def drive_main(argv: Sequence[str]) -> int:
     frame["drivers_dir"] = str(directory)
     # One spelling everywhere: the files above are named by the canonical form.
     frame["launch_uuid"] = launch_uuid
+    # This process holds each run lease of its dispatch until it exits: the
+    # kernel closes the descriptors then. No code here closes them.
+    leases = RunLeases()
     serve(
         frame,
         ack_writer(frame),
@@ -850,6 +1248,7 @@ def drive_main(argv: Sequence[str]) -> int:
             launch_uuid, host_control=list(argv) == ["--host-control"]
         ),
         owns_supervisor=True,
+        leases=leases,
     )
     return 0
 
@@ -1122,10 +1521,7 @@ class SystemdLauncher:
                 "manager, and every drive scope, stops at the last logout"
             )
         weigh_custody_parent(manager)
-        return {
-            name: manager[name]
-            for name in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")
-        }
+        return {"DBUS_SESSION_BUS_ADDRESS": manager["DBUS_SESSION_BUS_ADDRESS"]}
 
     def _launch(
         self, frame: dict[str, Any], manager: dict[str, str] | None, deadline: float
@@ -1168,6 +1564,9 @@ class SystemdLauncher:
                 "--",
                 *argv,
             ]
+        environment = {**os.environ, **(manager or {})}
+        if manager is not None:
+            environment.pop("XDG_RUNTIME_DIR", None)
         try:
             process = subprocess.Popen(
                 argv,
@@ -1176,7 +1575,7 @@ class SystemdLauncher:
                 stderr=log,
                 pass_fds=(write_fd,),
                 start_new_session=True,
-                env={**os.environ, **(manager or {})},
+                env=environment,
             )
         except OSError as error:
             os.close(read_fd)

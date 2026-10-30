@@ -10,17 +10,14 @@ It lives in a private parent with a short path, not under pytest's basetemp: a t
 bind a unix socket in it, and AF_UNIX refuses a path past 104 bytes (108 on Linux) — a
 deep basetemp made the bind fail with the directory itself correct.
 
-The parent is on `/dev/shm` when that is writable. The opener commits with
-`synchronous = FULL`, so on a disk filesystem every commit is an fsync: 200 inserts
-took 2.0 s on btrfs and 0.03 s on tmpfs (2026-09-25). The semantics a test observes
-are the same; only the wait goes. Without a writable `/dev/shm` (macOS) it is
-`/var/tmp`, which is disk on both hosts, where `/tmp` is a tmpfs with a finite inode
-table.
+The parent is in `/var/tmp`, shared by native writers and the host user units
+that their tests start. A writer's `/dev/shm` is private to each Bash call: a
+host unit cannot open a store there. Keep the short, private parent even on
+hosts where `/dev/shm` is writable.
 """
 
 from __future__ import annotations
 
-import os
 import shutil
 import tempfile
 from collections.abc import Iterator
@@ -30,8 +27,6 @@ from pathlib import Path
 import pytest
 
 from nott_database import DIRECTORY_VARIABLE
-
-_MEMORY = Path("/dev/shm")
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -47,8 +42,7 @@ def pytest_configure(config: pytest.Config) -> None:
 @contextmanager
 def private_directory() -> Iterator[Path]:
     """A named, not yet created directory in a fresh 0700 parent, removed on exit."""
-    memory = _MEMORY.is_dir() and os.access(_MEMORY, os.W_OK)
-    parent = Path(tempfile.mkdtemp(prefix="nd-", dir=_MEMORY if memory else "/var/tmp"))
+    parent = Path(tempfile.mkdtemp(prefix="nd-", dir="/var/tmp"))
     try:
         yield parent / "d"
     finally:

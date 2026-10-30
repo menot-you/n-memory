@@ -273,15 +273,12 @@ def write_read_census(
     db: Database,
     since: datetime,
     project_prefix: str | None = None,
-    *,
-    rewrites: bool | None = None,
 ) -> dict[str, tuple[int, int]]:
     """Captured and never-served counts by kind within a creation window.
 
-    `rewrites` fences on a live outgoing `supersedes` edge: `True` counts only
-    capsules that replace an older one, `False` only the rest, `None` all.
-    A bulk rewrite (a translation sweep, measured 2026-09-26) is not unread
-    knowledge, and `digest show` reports it apart.
+    The counts include rewrites, the capsules with a live outgoing `supersedes`
+    edge. `digest show` reads the two partitions apart through
+    `write_read_census_partition`.
 
     U1 (nmemory-curator): a never-served capsule has no usage row AND no
     read_traffic row on ANY surface — the census counts ARRIVAL, not
@@ -291,10 +288,6 @@ def write_read_census(
     denominator.
     """
     ordinary, rewritten = write_read_census_partition(db, since, project_prefix)
-    if rewrites is True:
-        return rewritten
-    if rewrites is False:
-        return ordinary
     return {
         kind: (
             ordinary.get(kind, (0, 0))[0] + rewritten.get(kind, (0, 0))[0],

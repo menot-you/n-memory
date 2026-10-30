@@ -68,13 +68,16 @@ def quota_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     fixture sets `NOTT_NSPAWN_ROSTER` so the test surface is identical
     to what the live door reads. HOME is set for compatibility with
     legacy call paths that the roster's secrets resolution may consult
-    transitively, but `_read_roster` finds the file via NOTT_NSPAWN_ROSTER.
+    transitively, but `read_roster` finds the file via NOTT_NSPAWN_ROSTER.
     """
     home = tmp_path / "quota-home"
     secrets = home / "secrets" / "claude"
     secrets.mkdir(parents=True)
+    secrets.chmod(0o700)  # whatever the umask
     (secrets / "acct-1.token").write_text("x", encoding="utf-8")
+    (secrets / "acct-1.token").chmod(0o600)  # whatever the umask
     (secrets / "acct-2.token").write_text("x", encoding="utf-8")
+    (secrets / "acct-2.token").chmod(0o600)  # whatever the umask
     (home / ".nott").mkdir(parents=True)
     (home / ".nott" / "spawn.toml").write_text(
         "[defaults]\n"
@@ -702,10 +705,14 @@ def provider_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home = tmp_path / "provider-home"
     secrets = home / "secrets" / "claude"
     secrets.mkdir(parents=True)
+    secrets.chmod(0o700)  # whatever the umask
     (secrets / "guara-owner-invalid.token").write_text("x", encoding="utf-8")
+    (secrets / "guara-owner-invalid.token").chmod(0o600)  # whatever the umask
     (secrets / "strife.token").write_text("x", encoding="utf-8")
+    (secrets / "strife.token").chmod(0o600)  # whatever the umask
     (secrets / "notes.txt").write_text("not a token", encoding="utf-8")
     (home / "secrets" / "hollow").mkdir(parents=True)
+    (home / "secrets" / "hollow").chmod(0o700)  # whatever the umask
     (home / ".nott").mkdir(parents=True)
     (home / ".nott" / "spawn.toml").write_text(
         "[defaults]\n"
@@ -769,11 +776,7 @@ def test_provider_report_carries_everything_a_router_needs_to_choose(
 def test_provider_report_states_what_each_route_implements(
     provider_home: Path,
 ) -> None:
-    """The capabilities are the IMPLEMENTED ones for the route, never a roster
-    claim: a Claude route reviews and writes caged, each in its own slice. A
-    Claude route that reaches its model through another endpoint cannot be
-    caged (the cage's closed env carries only the vendor credential), so it
-    keeps the uncaged review and neither custody nor write."""
+    """Writer custody does not depend on the route's inference endpoint."""
     roster = provider_home / ".nott" / "spawn.toml"
     roster.write_text(
         roster.read_text()
@@ -785,13 +788,9 @@ def test_provider_report_states_what_each_route_implements(
     }
     assert listing["claude"].kind == "claude"
     assert listing["claude"].capabilities == ("custody", "resume", "review", "write")
-    assert listing["proxy"].capabilities == ("resume", "review")
+    assert listing["proxy"].capabilities == ("custody", "resume", "review", "write")
     assert supervisor.CAPABILITIES["codex"] == ("custody", "resume", "review", "write")
-    # Measured 2026-09-29 (P-G E0, /var/tmp/p-g-e0/RESULT.md, agy 1.2.13): under
-    # nSPAWN's `--sandbox` argv the file tools wrote outside the checkout in plan
-    # mode, BypassSandbox ran `sudo` unprompted and a child outlived killpg. No
-    # custody until an outer cage is built and proved.
-    assert supervisor.CAPABILITIES["agy"] == ("resume", "review")
+    assert supervisor.CAPABILITIES["agy"] == ("custody", "resume", "review", "write")
     assert supervisor.provider_report().roles == {}
 
 
@@ -801,7 +800,7 @@ def test_provider_report_states_what_each_route_implements(
         '\n[defaults.env]\nANTHROPIC_BASE_URL = "https://proxy.invalid"\n',
         (
             '\n[[provider]]\nname = "local"\nkind = "claude"\n'
-            '[provider.accounts.vllm]\nbase_url = "http://127.0.0.1:8000"\n'
+            '[provider.accounts.vllm]\nbase_url = "https://vllm.invalid:8000"\n'
         ),
     ],
     ids=["defaults-env", "account-base-url"],
@@ -809,15 +808,14 @@ def test_provider_report_states_what_each_route_implements(
 def test_a_claude_route_proxied_from_elsewhere_lists_no_cage(
     provider_home: Path, declaration: str
 ) -> None:
-    """The listing reads the route as dispatch resolves it: `[defaults.env]`
-    under the provider's, and each account's own endpoint."""
+    """Both roster and account endpoints support uncaged native writers."""
     roster = provider_home / ".nott" / "spawn.toml"
     roster.write_text(roster.read_text() + declaration)
     listing = {
         entry.provider: entry for entry in supervisor.provider_report().providers
     }
     name = "local" if "local" in listing else "claude"
-    assert listing[name].capabilities == ("resume", "review")
+    assert listing[name].capabilities == ("custody", "resume", "review", "write")
 
 
 def test_provider_report_carries_the_declared_role_binding(

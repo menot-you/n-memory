@@ -9,8 +9,17 @@ import nott_database
 import pytest
 from workspace_root import workspace_path
 
-from nspawn.native import prepare_native
+from nspawn.inference import StructuredInference
+from nspawn.native import (
+    NativePreparationError,
+    orchestrator_disposable_leaves,
+    orchestrator_launch_environment,
+    orchestrator_neutral_cwd,
+    orchestrator_neutral_refusal,
+    prepare_native,
+)
 from nspawn.owner_roster import NativeAccount, Provider, Roster
+from nspawn.wire import SANDBOX_TOOL_PATH
 
 #: The retired database variables, read from the canon rather than spelled here.
 RETIRED = tomllib.loads((workspace_path("rails/organization.toml")).read_text())[
@@ -1583,3 +1592,163 @@ def test_agy_still_passes_an_effort_for_a_model_without_a_tier(provider, tmp_pat
     credential(provider.accounts["two"].home, "SECOND-AGY-OAUTH-SECRET", kind="agy")
     launch = prepare(provider, tmp_path, account_name="two", effort="high")
     assert "--effort=high" in launch.argv
+
+
+# ---------------------------------------------------------------------------
+# The neutral cwd and the closed environment of a structured inference launch
+# ---------------------------------------------------------------------------
+
+#: A tool-free structured inference request, the one launch with a disposable root.
+INFERENCE = StructuredInference.from_request(
+    {
+        "tools": "none",
+        "output_schema": {
+            "type": "object",
+            "properties": {"decision": {"type": "string"}},
+            "required": ["decision"],
+        },
+    }
+)
+
+
+def test_the_neutral_cwd_is_a_leaf_of_the_runs_disposable_root(tmp_path):
+    """The app-server runs in one leaf of the RUN's own disposable root, and that
+    leaf is one of the directories the drive creates 0700 before any child."""
+    disposable = tmp_path / "runs/a-run/disposable"
+    neutral = orchestrator_neutral_cwd(str(disposable))
+    assert Path(neutral).parent == disposable
+    assert Path(neutral).name in orchestrator_disposable_leaves()
+    assert orchestrator_neutral_refusal(neutral) is None
+    refusal = orchestrator_neutral_refusal("runs/a-run/disposable/neutral")
+    assert refusal is not None and "absolute canonical" in refusal, refusal
+
+
+@pytest.mark.parametrize(
+    ("marker", "in_cwd"),
+    [(".git", False), (".git", True), (".codex", True)],
+    ids=["git-above", "git-in-cwd", "codex-in-cwd"],
+)
+def test_an_inference_launch_refuses_a_cwd_that_is_not_neutral(
+    provider, tmp_path, marker, in_cwd
+):
+    """Each marker where it disqualifies a cwd, by its own name and without
+    printing a path.
+
+    A `.git` ANYWHERE on the path is a repository the vendor may treat as a
+    project, so it is refused in the directory and in every ancestor. A `.codex`
+    is refused in the NEUTRAL DIRECTORY ITSELF, which is the only one that could
+    be loaded as a project layer for this cwd (the vendor reads a project
+    `.codex` between the cwd and the project root, and with no repository on the
+    path there is no such root above it). A run root under either is refused
+    instead of launched.
+    """
+    planted = tmp_path / "planted"
+    disposable = planted / "runs/a-run/disposable"
+    cwd = Path(orchestrator_neutral_cwd(str(disposable)))
+    ((cwd if in_cwd else planted) / marker).mkdir(parents=True)
+
+    refusal = orchestrator_neutral_refusal(str(cwd))
+    assert refusal is not None and marker in refusal, refusal
+    assert "neutral cwd" in refusal, refusal
+    # The refusal names the marker and the field, never the path it found it on.
+    assert str(planted) not in refusal, refusal
+    with pytest.raises(NativePreparationError, match="neutral run cwd") as refused:
+        prepare(
+            provider,
+            tmp_path,
+            disposable_root=str(disposable),
+            inference_profile=INFERENCE,
+        )
+    assert str(planted) not in str(refused.value)
+
+    # The positive control: the same leaf under a parent carrying neither.
+    clean = tmp_path / "clean/runs/a-run/disposable"
+    assert orchestrator_neutral_refusal(orchestrator_neutral_cwd(str(clean))) is None
+
+
+def test_a_codex_above_the_neutral_cwd_does_not_refuse_it(tmp_path):
+    """A `.codex` in an ANCESTOR of the neutral cwd is not a refusal.
+
+    The vendor loads a project `.codex` layer only between the cwd and the project
+    root, and the neutral cwd is inside no git repository, so the only `.codex`
+    that could apply to it is its own. Refusing every ancestor refused every
+    launch on a host whose account home sits above the run root. What stands for
+    the layer itself is the `config/read` boundary, which refuses any layer of
+    type `project` before a thread may start.
+    """
+    planted = tmp_path / "planted"
+    (planted / ".codex").mkdir(parents=True)
+    neutral = orchestrator_neutral_cwd(str(planted / "runs/a-run/disposable"))
+
+    assert orchestrator_neutral_refusal(neutral) is None
+    # The same ancestor with a `.git`: that marker's reach is unchanged.
+    (planted / ".git").mkdir()
+    refusal = orchestrator_neutral_refusal(neutral)
+    assert refusal is not None and ".git" in refusal, refusal
+
+
+def test_a_disposable_root_belongs_only_to_an_inference_launch(provider, tmp_path):
+    with pytest.raises(NativePreparationError, match="disposable root"):
+        prepare(provider, tmp_path, disposable_root=str(tmp_path / "disposable"))
+    with pytest.raises(NativePreparationError, match="closed read-only"):
+        prepare(provider, tmp_path, inference_profile=INFERENCE)
+
+
+def test_the_inference_launch_environment_is_explicit_paths_and_disposable_needs(
+    tmp_path,
+):
+    """The whole environment the vendor child is launched with, spelled out: a
+    dictionary built here, not a filter over the ambient."""
+    disposable = tmp_path / "runs/a-run/disposable"
+    prepared = {
+        "PATH": "/usr/sbin:/usr/bin:/bin",
+        "HOME": "/home/owner",
+        "USER": "owner",
+        "LANG": "en_GB.UTF-8",
+        "TERM": "xterm-256color",
+        "XDG_RUNTIME_DIR": "/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus",
+        "NOTT_DATABASE_DIR": "/home/owner/.nott/store",
+        "SSL_CERT_FILE": "/etc/ssl/cert.pem",
+        "CODEX_HOME": "/account",
+        "FIXTURE_AUTH": "fixture-value",
+    }
+
+    environment = orchestrator_launch_environment(
+        prepared, disposable_root=str(disposable), auth_env="FIXTURE_AUTH"
+    )
+
+    assert environment == {
+        "PATH": SANDBOX_TOOL_PATH,
+        # Disposable, under the RUN's own directory.
+        "HOME": str(disposable / "vendor-home"),
+        "TMPDIR": str(disposable / "vendor-tmp"),
+        "XDG_CONFIG_HOME": str(disposable / "xdg-config"),
+        "XDG_DATA_HOME": str(disposable / "xdg-data"),
+        "XDG_CACHE_HOME": str(disposable / "xdg-cache"),
+        "XDG_STATE_HOME": str(disposable / "xdg-state"),
+        # Fixed literals, not the host's locale or terminal.
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "TERM": "dumb",
+        "SHELL": "/bin/sh",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+        "CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED": "1",
+        # The certificate bundle and the credential the route declared.
+        "SSL_CERT_FILE": "/etc/ssl/cert.pem",
+        "FIXTURE_AUTH": "fixture-value",
+        # THE ONE ACCOUNT PATH THAT STAYS: the vendor reads its credential there.
+        "CODEX_HOME": "/account",
+    }
+    # Every leaf the environment names is one the drive creates.
+    assert {
+        Path(value).name
+        for value in environment.values()
+        if value.startswith(str(disposable))
+    } <= set(orchestrator_disposable_leaves())
+    with pytest.raises(NativePreparationError, match="SSL_CERT_DIR"):
+        orchestrator_launch_environment(
+            {"CODEX_HOME": "/account", "SSL_CERT_DIR": "relative/certs"},
+            disposable_root=str(disposable),
+        )

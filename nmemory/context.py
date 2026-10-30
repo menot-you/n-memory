@@ -1013,7 +1013,7 @@ def durable_source_status(
         return {
             "source": src,
             "status": "not_indexed",
-            "detail": "run nmemory_index_build",
+            "detail": "run nmemory index build",
             "staleness_basis": "git_head",
         }
     curr_head = None

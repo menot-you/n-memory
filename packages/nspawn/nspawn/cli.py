@@ -23,6 +23,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from dataclasses import asdict
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Final, NamedTuple
 
@@ -31,31 +32,27 @@ from nott_system1.renamed import RENAMED as SYSTEM1_RENAMED
 from nott_system1.renamed import RenamedVariableError as System1RenamedVariableError
 from nott_system1.renamed import refuse as system1_refuse
 
-from . import driver, install, notify, route
+from . import driver, install, notify, route, steer
 from .claude_catalog import ModelCatalogError
 from .client import NspawnClient, NspawnClientError, NspawnRefused, StdioServer
 from .custody import ControllerRefusal
 from .errors import NSpawnError
-from .owner_roster import Provider, Roster
-from .picker import (
-    AccountUse,
-    AllProvidersWalled,
-    PickerError,
-    _select_account,
-    key_refusal,
-    keyless,
-)
+from .owner_roster import Provider, Roster, account_notes
+from .picker import AccountUse, AllProvidersWalled, PickerError, _select_account
 from .registry import (
     NODE_PREFIX,
     NOTICE_LEASE_S,
+    NOTICE_RETENTION_DAYS,
     STORE_ERRORS,
     Registry,
     RegistryError,
+    WriterRedCorrupt,
+    _chain_valid,
     create_store,
     store_path,
 )
 from .renamed import RENAMED, RenamedVariableError, refuse
-from .rows import RunPhase
+from .rows import RunPhase, RunRow, SessionProfile
 
 
 def _one_argument(name: str, arguments: list[str]) -> str | None:
@@ -414,7 +411,7 @@ def cmd_quota_record(arguments: list[str]) -> int:
     from . import supervisor  # the supervisor module is heavy; only this verb needs it
 
     try:
-        roster = supervisor._read_roster()
+        roster = supervisor.read_roster()
         with Registry(store_path(), "quota-record", allow_live_store=True) as registry:
             registry.upgrade()
             outcome = supervisor.pull_compute(registry, roster)
@@ -461,7 +458,7 @@ def cmd_learning_export(arguments: list[str]) -> int:
     return 0
 
 
-def _read_tool(tool: str, arguments: dict[str, str]) -> int:
+def _read_tool(tool: str, arguments: dict[str, str | bool]) -> int:
     """Read through this runtime's native MCP; request no domain mutation.
 
     The server retains its normal lifecycle. Its executable and working directory
@@ -537,6 +534,10 @@ def _group_runs(arguments: list[str]) -> int:
     if mine is not None:
         sys.stderr.write(f"nspawn run list refused: this nSPAWN serves {mine}\n")
         return 2
+    from .config import resolve_run_root
+    from .supervisor import observe_run_progress
+
+    run_root = resolve_run_root()
     with Registry(store_path(), "run-list", allow_live_store=True) as registry:
         registry.upgrade()
         grouped = tuple(
@@ -556,9 +557,67 @@ def _group_runs(arguments: list[str]) -> int:
                     "failureReason": row.blocked_reason,
                     "owner": row.owner,
                     "sandbox": row.sandbox,
+                    "tokens": row.tokens,
+                    "turn_count": row.turn_count,
                     **({"session": asdict(session)} if session is not None else {}),
                 }
-                for row, key, session in grouped
+                for stored, key, session in grouped
+                for row in (observe_run_progress(stored, run_root),)
+            ]
+        }
+    )
+
+
+def _last_output_at(stdout: Path) -> int | None:
+    """When the run last wrote its stdout file, in epoch ms: one stat, no read.
+    None when the file does not exist: the child did not start, or retention
+    removed the run directory."""
+    try:
+        return stdout.stat().st_mtime_ns // 1_000_000
+    except FileNotFoundError:
+        return None
+
+
+def _caller_runs(arguments: list[str]) -> int:
+    """`--caller <socket> --json`: the runs that the Claude Code session at that
+    messaging socket started, newest first, from their notice rows. A run leaves
+    the list when `prune_notices` removes its notice row or `prune_closed_runs` its
+    run row. The nSPAWN of a node or of an audit parent refuses it."""
+    refused = _coordinator_refuse("run", "list")
+    if refused is not None:
+        return refused
+    options = _options([a for a in arguments if a != "--json"], ("--caller",))
+    if (
+        options is None
+        or arguments.count("--json") != 1
+        or not os.path.isabs(options["--caller"])
+    ):
+        return _usage("run", "list")
+    from .config import resolve_run_root
+
+    with Registry(store_path(), "run-list", allow_live_store=True) as registry:
+        registry.upgrade()
+        rows = registry.caller_runs(options["--caller"])
+    run_root = resolve_run_root()
+    # A close moves a failed run to closed. The list keeps `failed`: a close before
+    # the host's next read must not hide the failure.
+    return _answer(
+        {
+            "runs": [
+                {
+                    "runId": row.run_id,
+                    "phase": (
+                        RunPhase.FAILED.value
+                        if row.phase is RunPhase.CLOSED
+                        and first == RunPhase.FAILED.value
+                        else row.phase.value
+                    ),
+                    "createdAt": row.created_at,
+                    "group": row.group_name,
+                    "lastOutputAt": _last_output_at(run_root / row.run_id / "stdout"),
+                    "continuedAs": notify.continued_run(row),
+                }
+                for row, first in rows
             ]
         }
     )
@@ -582,15 +641,172 @@ def _scope_empty(registry: Registry, run_id: str) -> bool:
         return False
 
 
+def _red_history(registry: Registry, row: RunRow) -> dict[str, object]:
+    events = registry.read_run_events(row.run_id)
+    profiles = [
+        event.payload["session_profile"]
+        for event in events
+        if event.kind == "lifecycle"
+        and isinstance(event.payload, dict)
+        and "session_profile" in event.payload
+    ]
+    result: dict[str, object] = {
+        "native_write": False,
+        "execution_class": None,
+        "red_admission": "unknown",
+        "red_admission_reason": "session profile is missing",
+        "red_receipt": None,
+    }
+    if not _chain_valid(events):
+        result.update(
+            red_admission="invalid",
+            red_admission_reason="admission event chain is invalid",
+        )
+        return result
+    if not profiles:
+        return result
+    try:
+        if len(profiles) != 1:
+            raise ValueError("multiple session profiles")
+        profile = SessionProfile.from_record(profiles[0])
+    except TypeError, ValueError:
+        result["red_admission_reason"] = "session profile is invalid"
+        return result
+    result.update(
+        native_write=profile.native_write, execution_class=profile.execution_class
+    )
+    if not profile.native_write or profile.execution_class != "implementation":
+        result.update(red_admission="not_required", red_admission_reason=None)
+        return result
+    try:
+        evidence = registry.writer_red(row.run_id)
+    except WriterRedCorrupt:
+        result.update(
+            red_admission="invalid",
+            red_admission_reason="writer RED receipt is malformed, duplicate or inconsistent",
+        )
+        return result
+    if evidence is None:
+        result.update(
+            red_admission="missing",
+            red_admission_reason="implementation writer has no admission receipt",
+        )
+    else:
+        receipt, at = evidence
+        result.update(
+            red_admission="valid",
+            red_admission_reason=None,
+            red_receipt={
+                "record": receipt.record,
+                "commit": receipt.commit,
+                "unit": receipt.unit,
+                "tests": len(receipt.test_ids),
+                "admitted_at": at,
+            },
+        )
+    return result
+
+
+def _live_runs(since: int | None = None) -> int:
+    """Read all live runs, or all runs created since the requested epoch ms."""
+    try:
+        mine = driver.node_owner(os.environ)
+        driver.read_grant(os.environ)
+    except NSpawnError as error:
+        return _refused("run", "list", error)
+    from .config import resolve_run_root
+    from .supervisor import observe_run_progress
+
+    run_root = resolve_run_root()
+    try:
+        with Registry(store_path(), "run-list", allow_live_store=True) as registry:
+            registry.upgrade()
+            rows = (
+                registry.live_runs(owner=mine)
+                if since is None
+                else registry.runs_since(since, owner=mine)
+            )
+            return _answer(
+                {
+                    "observed_at": int(time.time()),
+                    "runs": [
+                        {
+                            "run_id": row.run_id,
+                            "lane": row.lane,
+                            "phase": row.phase.value,
+                            "executed_provider": row.executed_provider,
+                            "executed_account": row.executed_account,
+                            "model": row.model,
+                            "tokens": row.tokens,
+                            "turn_count": row.turn_count,
+                            **(
+                                {"failure_reason": row.blocked_reason}
+                                if since is not None
+                                else {}
+                            ),
+                            "created_at": row.created_at,
+                            "updated_at": row.updated_at,
+                            "group": row.group_name,
+                            "backend": row.backend.value,
+                            **(
+                                _red_history(registry, row)
+                                if since is not None
+                                else {
+                                    "native_write": bool(
+                                        (
+                                            profile := registry.session_profile(
+                                                row.run_id
+                                            )
+                                        )
+                                        and profile.native_write
+                                    )
+                                }
+                            ),
+                        }
+                        for row in (
+                            observe_run_progress(stored, run_root) for stored in rows
+                        )
+                    ],
+                }
+            )
+    except (*STORE_ERRORS, RegistryError, ValueError):
+        sys.stderr.write(
+            "nspawn run list: RegistryError: complete history or admission evidence read failed; retry the history read\n"
+        )
+        return 1
+
+
 def cmd_run_list(arguments: list[str]) -> int:
     """The fleet, through the stdio tool; with `--owner`, a node's runs from the store;
-    with `--group`, that group's runs from the store. `--include activations` adds the
+    with `--group`, that group's runs from the store; with `--caller`, one Claude Code
+    session's runs from the store. `--include activations` adds the
     node's SDK activations, and names for each run whether it is one and whether the
     slice it recorded is empty or gone."""
     if not arguments:
-        return _read_tool("nspawn_run_list", {})
+        return _read_tool("nspawn_run_list", {"include_terminal": True})
+    if "--since" in arguments:
+        if len(arguments) != 2 or arguments[0] != "--since":
+            return _usage("run", "list")
+        try:
+            instant = datetime.fromisoformat(arguments[1])
+            if instant.tzinfo is None:
+                instant = instant.replace(tzinfo=UTC)
+            since = -(
+                (datetime(1970, 1, 1, tzinfo=UTC) - instant)
+                // timedelta(milliseconds=1)
+            )
+        except ValueError, OverflowError:
+            sys.stderr.write(
+                f"nspawn: --since {arguments[1]!r} needs an ISO date or timestamp\n"
+            )
+            return 2
+        return _live_runs(since)
+    if "--live" in arguments:
+        return _live_runs() if arguments == ["--live"] else _usage("run", "list")
     if "--group" in arguments:
         return _group_runs(arguments)
+    if "--caller" in arguments:
+        return _caller_runs(arguments)
     options = _owner(arguments, "list", ("--include",))
     if options is None:
         return 2
@@ -598,6 +814,10 @@ def cmd_run_list(arguments: list[str]) -> int:
         return _usage("run", "list")
     activations = "--include" in options
     owner = options["--owner"]
+    from .config import resolve_run_root
+    from .supervisor import observe_run_progress
+
+    run_root = resolve_run_root()
     with Registry(store_path(), "run-list", allow_live_store=True) as registry:
         registry.upgrade()
         owned = []
@@ -623,6 +843,7 @@ def cmd_run_list(arguments: list[str]) -> int:
                     "generation": generation,
                     "acked": acked,
                     "tokens": row.tokens,
+                    "turn_count": row.turn_count,
                     "createdAt": row.created_at,
                     **({"session": asdict(session)} if session is not None else {}),
                     **(
@@ -631,7 +852,8 @@ def cmd_run_list(arguments: list[str]) -> int:
                         else {}
                     ),
                 }
-                for row, key, generation, acked, session, activation, empty in owned
+                for stored, key, generation, acked, session, activation, empty in owned
+                for row in (observe_run_progress(stored, run_root),)
             ]
         }
     )
@@ -714,8 +936,165 @@ def cmd_run_close(arguments: list[str]) -> int:
     return 2
 
 
+def cmd_slice_reconcile(arguments: list[str]) -> int:
+    """Stop each empty writer slice whose run ended, or that no run of the store
+    names once it is an hour old, and give back the poisoned claim each held.
+    A slice that holds a process, or whose run has not ended, stays. With
+    `--dry-run`, name each slice it would stop and stop none."""
+    if arguments not in ([], ["--dry-run"]):
+        return _usage("slice", "reconcile")
+    refused = _coordinator_refuse("slice", "reconcile")
+    if refused is not None:
+        return refused
+    from .mcp import _default_supervisor  # deferred, like every verb that serves
+
+    try:
+        supervisor = _default_supervisor()
+    except NSpawnError as error:
+        return _refused("slice", "reconcile", error)
+    try:
+        outcomes = supervisor.reconcile_slices(unknown=True, dry_run=bool(arguments))
+    except (NSpawnError, ControllerRefusal) as error:
+        return _refused("slice", "reconcile", error)
+    finally:
+        supervisor.shutdown()
+        supervisor._registry.close()
+    by_action: dict[str, list[dict[str, Any]]] = {}
+    for outcome in outcomes:
+        by_action.setdefault(outcome.action, []).append(
+            {
+                "unit": outcome.unit,
+                "run_id": outcome.run_id,
+                "phase": outcome.phase,
+                **({} if outcome.detail is None else {"detail": outcome.detail}),
+                **({"claim_released": True} if outcome.claim_released else {}),
+            }
+        )
+    _answer(
+        {
+            "dry_run": bool(arguments),
+            "counts": {action: len(found) for action, found in by_action.items()},
+            **by_action,
+        }
+    )
+    return 1 if "refused" in by_action else 0
+
+
 def cmd_run_show(arguments: list[str]) -> int:
     return _run_read("nspawn_run_show", arguments)
+
+
+def _run_wait_status(result: dict[str, Any]) -> dict[str, Any]:
+    """Read and remove the spill file this wait's own call created."""
+    if set(result) != {"preview", "path", "bytes"}:
+        return result
+    path_text = result["path"]
+    if not isinstance(path_text, str) or not path_text:
+        raise NspawnClientError("the peer returned an invalid run status spill path")
+    path = Path(path_text)
+    try:
+        try:
+            payload = path.read_bytes()
+        finally:
+            path.unlink(missing_ok=True)
+    except (OSError, ValueError) as error:
+        raise NspawnClientError(
+            f"cannot read or remove spilled run status: {error}"
+        ) from error
+    size = result["bytes"]
+    if type(size) is not int or len(payload) != size:
+        raise NspawnClientError("the spilled run status does not match its byte count")
+    try:
+        status = json.loads(payload)
+    except (ValueError, RecursionError) as error:
+        raise NspawnClientError("the spilled run status is not valid JSON") from error
+    if not isinstance(status, dict):
+        raise NspawnClientError("the spilled run status is not a JSON object")
+    return status
+
+
+def _start_tool(noun: str, arguments: list[str]) -> int:
+    """Send one stdin object unchanged through this runtime's MCP door."""
+    if arguments:
+        return _usage(noun, "start")
+    try:
+        payload = json.load(sys.stdin)
+    except (ValueError, OSError, RecursionError) as error:
+        return _refused(noun, "start", error)
+    if not isinstance(payload, dict):
+        return _refused(noun, "start", ValueError("stdin must be one JSON object"))
+    peer = StdioServer(sys.executable, ("-P", "-m", "nspawn.cli", "mcp", "serve"))
+    try:
+        with NspawnClient(
+            peer, Path.cwd(), deadline_s=driver.ACK_WAIT_S + 60
+        ) as client:
+            result = client.call(f"nspawn_{noun}_start", payload)
+    except NspawnRefused as error:
+        sys.stderr.write(
+            f"nspawn {noun} start refused: {error.message}\n"
+            f"{json.dumps(error.data, ensure_ascii=False)}\n"
+        )
+        return 2
+    except NspawnClientError as error:
+        sys.stderr.write(f"nspawn {noun} start failed: {error}\n")
+        return 1
+    return _answer(result)
+
+
+def cmd_run_start(arguments: list[str]) -> int:
+    return _start_tool("run", arguments)
+
+
+def cmd_review_start(arguments: list[str]) -> int:
+    return _start_tool("review", arguments)
+
+
+def cmd_run_wait(arguments: list[str]) -> int:
+    """Wait through this runtime's MCP, following the run that serves the work."""
+    if len(arguments) != 1 or not arguments[0] or arguments[0].startswith("-"):
+        sys.stderr.write(
+            f"nspawn run wait refused: expected one <run-id>, got {arguments!r}\n"
+        )
+        return 2
+    from .supervisor import Supervisor
+
+    run_id = arguments[0]
+    followed = 0
+    peer = StdioServer(sys.executable, ("-m", "nspawn.cli", "mcp", "serve"))
+    try:
+        with NspawnClient(peer, Path(__file__).resolve().parent.parent) as client:
+            while True:
+                result = _run_wait_status(
+                    client.call(
+                        "nspawn_run_show", {"run_id": run_id, "timeout_ms": 20_000}
+                    )
+                )
+                try:
+                    phase = RunPhase(result.get("phase"))
+                except ValueError as error:
+                    raise NspawnClientError(
+                        "the peer returned no valid run phase"
+                    ) from error
+                if not phase.is_terminal():
+                    continue
+                successor = (
+                    notify.continued_in(result.get("warning"))
+                    if phase in (RunPhase.FAILED, RunPhase.CLOSED)
+                    else None
+                )
+                if successor is not None and followed < Supervisor.MAX_CONTINUATIONS:
+                    run_id = successor
+                    followed += 1
+                    continue
+                break
+    except NspawnRefused as error:
+        sys.stderr.write(f"nspawn run wait refused for {run_id!r}: {error}\n")
+        return 2
+    except NspawnClientError as error:
+        sys.stderr.write(f"nspawn run wait failed for {run_id!r}: {error}\n")
+        return 1
+    print(json.dumps({"run_id": run_id, "phase": phase.value}))
+    return 0 if phase is RunPhase.COMPLETED else 3
 
 
 def cmd_result_show(arguments: list[str]) -> int:
@@ -836,10 +1215,10 @@ def _picked(account: str | None) -> route.Pick:
             raise WallsUnreadable(2) from error
         except STORE_ERRORS as error:
             raise WallsUnreadable(1) from error
-        if account is not None and (refusal := key_refusal(provider, account, None)):
+        if account is not None and (refusal := route.key_refusal(provider, account)):
             raise PickerError(refusal)
         return _select_account(
-            keyless(provider, None),
+            route.keyless(provider),
             account,
             provider_walls,
             account_walls,
@@ -943,7 +1322,7 @@ def cmd_route_show(arguments: list[str]) -> int:
     alert: str | None = None
     wanted = provider
     try:
-        roster = route.read_roster()
+        roster = route.node_roster()
         try:
             found, environment, _ = route.route_start(
                 roster,
@@ -997,6 +1376,11 @@ def cmd_route_show(arguments: list[str]) -> int:
     }
     if alert is not None:
         shown.update(provider=provider, alert=alert)
+    # What the owner fixes in the roster, shown where the node host reads the route.
+    selected = roster.select(provider)
+    notes = account_notes(selected) if selected is not None else []
+    if notes:
+        shown["warning"] = "; ".join(notes)
     if (
         options.get("--consumer") == "sdk"
         and environment.get("CLAUDE_CODE_OAUTH_TOKEN")
@@ -1028,7 +1412,7 @@ def cmd_route_list(arguments: list[str]) -> int:
     ):
         return _usage("route", "list")
     try:
-        roster = route.read_roster()
+        roster = route.node_roster()
         with Registry(store_path(), "route-list", allow_live_store=True) as registry:
             registry.upgrade()
             shown = route.route_list(
@@ -1082,7 +1466,7 @@ def cmd_route_switch(arguments: list[str]) -> int:
             "route", "switch", route.RouteRefused("subscription event is malformed")
         )
     try:
-        roster = route.read_roster()
+        roster = route.node_roster()
         with Registry(store_path(), "route-switch", allow_live_store=True) as registry:
             registry.upgrade()
             shown = route.route_switch(
@@ -1136,7 +1520,7 @@ def cmd_route_wall(arguments: list[str]) -> int:
             "route", "wall", route.RouteRefused("node failure is malformed")
         )
     try:
-        roster = route.read_roster()
+        roster = route.node_roster()
         with Registry(store_path(), "route-wall", allow_live_store=True) as registry:
             registry.upgrade()
             shown = route.route_wall(
@@ -1153,6 +1537,104 @@ def cmd_route_wall(arguments: list[str]) -> int:
         sys.stderr.write(f"{error.message}\n")
         return 1
     return _answer(shown)
+
+
+# Only fixed PRELAUNCH reasons cross this boundary. Unknown text stays private.
+_PRELAUNCH_REASONS = frozenset(
+    {
+        "JSON integer is not exactly portable",
+        "JSON object keys must be ASCII strings",
+        "JSON text is not valid Unicode",
+        "JSON value is outside the canonical vocabulary",
+        "PRELAUNCH requires a selected Claude account",
+        "PRELAUNCH requires native subscription authentication",
+        "a grant shows a socket's directory",
+        "admission activation differs",
+        "admission conversation differs",
+        "admission profile digest differs",
+        "configuration document identity differs",
+        "configuration snapshot captured bytes differ",
+        "configuration snapshot differs from selected inputs",
+        "configuration snapshot file identity differs",
+        "configuration snapshot identity differs",
+        "configuration snapshot topology differs",
+        "configuration snapshots require sealed inputs",
+        "constructor baseline differs from selected options",
+        "constructor environment exceeds its admitted vocabulary",
+        "consumer runtime differs from PRELAUNCH",
+        "duplicate JSON object key",
+        "duplicate pending control reference",
+        "duplicate selected launch input",
+        "invalid JSON document",
+        "launch command has no admitted executable identity",
+        "launch runtime identity differs",
+        "native account authentication is unavailable",
+        "native state and scratch must have admitted destinations",
+        "native tool boundary differs from its admitted scope",
+        "native tool boundary exposes administrative inputs",
+        "native tool boundary has no scratch destination",
+        "network bootstrap producers were not admitted",
+        "new submission requires its prepared input",
+        "node administrative grants expose platform writes",
+        "node bootstrap confinement is unavailable",
+        "node filesystem destination is absent or noncanonical",
+        "noninteger JSON number is not admitted",
+        "policy generation differs from admitted managed inputs",
+        "private contract bytes are not canonical",
+        "private contract must be a JSON object",
+        "private egress endpoint was not admitted",
+        "private egress port exceeds its admitted boundary",
+        "private profile descriptor could not be sealed",
+        "private profile descriptor write made no progress",
+        "private profile input is unavailable",
+        "producer authentication differs from admitted channels",
+        "producer caller or project differs",
+        "producer destinations exceed the node",
+        "producer filesystem grants exceed the node",
+        "profile and grant root must be absolute",
+        "profile changed while being verified",
+        "profile exceeds the private transport bound",
+        "profile grant directory is not private and owned",
+        "profile grant root is linked or noncanonical",
+        "profile is outside the owning activation grant",
+        "profile must be a bounded private owned regular file",
+        "profile path is not a closed grant-relative path",
+        "replacement must not resubmit owner input",
+        "runtime content identity differs",
+        "runtime entry is absent from its file manifest",
+        "runtime file has incompatible identity bindings",
+        "runtime input has incompatible identities",
+        "runtime input is unavailable",
+        "runtime inventory changed or is unavailable",
+        "runtime inventory contains a nonregular input",
+        "runtime inventory contains missing or extra inputs",
+        "runtime inventory exceeds its bound",
+        "runtime inventory has an external or unknown link",
+        "runtime inventory is unavailable",
+        "runtime inventory topology differs",
+        "runtime root overlaps or lacks a canonical input",
+        "runtime roots exceed the native argument bound",
+        "runtime stage already has an uncertain owner",
+        "runtime stage directory ownership differs",
+        "runtime stage has an admitted filesystem alias",
+        "runtime stage is not private and owned",
+        "sealed private profile descriptors require Linux",
+        "selected file content identity differs",
+        "selected file exceeds its launch bound",
+        "selected file has incompatible identity bindings",
+        "selected file identity is linked or noncanonical",
+        "selected file is not a bounded regular input",
+        "selected file pin made no progress",
+        "selected launch input is unavailable",
+        "selected native runtime differs from its account route",
+        "selected route or working directory differs",
+        "staged profile digest differs",
+        "the sealed profile descriptor is not private",
+        "the selected consumer is not an ECMAScript module",
+        "version must be an integer",
+        "write destinations exceed the permission ceiling",
+    }
+)
 
 
 def cmd_route_start(arguments: list[str]) -> int:
@@ -1196,8 +1678,18 @@ def cmd_route_start(arguments: list[str]) -> int:
             ) as prepared:
                 sys.stdout.buffer.write(prepared.receipt.encoded + b"\n")
                 return 0
-        except AdmissionRefusal, route.RouteRefused:
-            sys.stderr.write("Claude PRELAUNCH was refused before consumer execution\n")
+        except (AdmissionRefusal, route.RouteRefused) as error:
+            if isinstance(error, route.RouteRefused):
+                discriminator = f"RouteRefused: nERR-{error.entry.code_str()}"
+            else:
+                reason = str(error)
+                if reason not in _PRELAUNCH_REASONS:
+                    reason = "private admission refused"
+                discriminator = f"AdmissionRefusal: {reason}"
+            sys.stderr.write(
+                "Claude PRELAUNCH was refused before consumer execution "
+                f"({discriminator})\n"
+            )
             return 2
         except route.RosterUnreadable:
             sys.stderr.write("the provider roster could not be read\n")
@@ -1320,7 +1812,83 @@ def cmd_thread_show(arguments: list[str]) -> int:
 
 
 #: A vendor session id: a Claude session UUID or a Codex thread id.
-THREAD_ID: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+THREAD_ID: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,299}")
+
+
+def _vendors() -> set[str]:
+    from .journal import TRANSLATORS
+
+    return {translator.vendor for translator in TRANSLATORS}
+
+
+def cmd_session_serve(arguments: list[str]) -> int:
+    """The session journal's writer, in the foreground until SIGTERM."""
+    if arguments:
+        return _usage("session", "serve")
+    from .journal import serve
+
+    return serve.main()
+
+
+def cmd_session_list(arguments: list[str]) -> int:
+    """One JSON line per journal session, newest change first, with its totals.
+    `--id` keeps one session family and needs a vendor. `--count` ends the reply
+    with `{"count":N}`, where N is the number of session lines before it."""
+    vendor: str | None = None
+    rest = arguments
+    if arguments and arguments[0] in _vendors():
+        vendor, rest = arguments[0], arguments[1:]
+    ids: list[str] = []
+    since: str | None = None
+    count = False
+    while rest:
+        match rest:
+            case ["--id", ident, *rest] if vendor and THREAD_ID.fullmatch(ident):
+                ids.append(ident)
+            case ["--since", bound, *rest] if since is None and _iso(bound):
+                since = bound
+            case ["--count", *rest] if not count:
+                count = True
+            case _:
+                return _usage("session", "list")
+    from .journal import show
+
+    try:
+        lines = show.list_sessions(store_path(), vendor, since=since, ids=ids or None)
+    except show.JournalFormatRefused as error:
+        sys.stderr.write(f"nspawn session list: {error}\n")
+        return 2
+    if count:
+        lines.append(json.dumps({"count": len(lines)}, separators=(",", ":")))
+    sys.stdout.write("".join(line + "\n" for line in lines))
+    return 0
+
+
+def _iso(value: str) -> bool:
+    """Whether `value` is an ISO time that `datetime.fromisoformat` reads."""
+    try:
+        datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def cmd_session_show(arguments: list[str]) -> int:
+    """A journal session's rows as stored, then its `total` line."""
+    match arguments:
+        case [vendor, ident] if vendor in _vendors() and THREAD_ID.fullmatch(ident):
+            pass
+        case _:
+            return _usage("session", "show")
+    from .journal import show
+
+    try:
+        lines = show.show(store_path(), vendor, ident)
+    except (show.Missing, show.JournalFormatRefused) as error:
+        sys.stderr.write(f"nspawn session show: {error}\n")
+        return 2
+    sys.stdout.write("".join(line + "\n" for line in lines))
+    return 0
 
 
 def _install(noun: str, verb: str, call: Callable[[], dict[str, Any]]) -> int:
@@ -1377,6 +1945,49 @@ def cmd_plugin_install(arguments: list[str]) -> int:
     )
 
 
+def cmd_review_admit(arguments: list[str]) -> int:
+    """Count the two public brief lines without starting a model run."""
+    if arguments != ["--stdin"]:
+        return _usage("review", "admit")
+    from . import review_cap
+
+    try:
+        subject, candidate, revision = review_cap.brief(sys.stdin.read())
+        with Registry(store_path(), "review-admit", allow_live_store=True) as registry:
+            registry.upgrade()
+            answer = registry.admit_review_head(subject, candidate, revision)
+    except review_cap.InvalidCandidate as error:
+        sys.stderr.write(f"ReviewCandidateInvalid: {error}\n")
+        return 2
+    return _answer(answer)
+
+
+def cmd_turn_send(arguments: list[str]) -> int:
+    """Queue one user message for a live run. A run that is not live gives exit 2."""
+    match arguments:
+        case [run_id, text] if run_id and not run_id.startswith("-"):
+            pass
+        case _:
+            return _usage("turn", "send")
+    from .config import resolve_run_root
+
+    with Registry(store_path(), "turn-send", allow_live_store=True) as registry:
+        row = registry.get_run(run_id)
+    if row is None:
+        sys.stderr.write(f"nspawn turn send refused: no run {run_id!r}\n")
+        return 2
+    if row.phase.is_terminal():
+        sys.stderr.write(
+            f"nspawn turn send refused: run {run_id} is {row.phase.value}, not live\n"
+        )
+        return 2
+    try:
+        steer.send(resolve_run_root(), run_id, text)
+    except steer.SteerRefused as error:
+        return _refused("turn", "send", error)
+    return _answer({"run_id": run_id, "queued": True})
+
+
 # --- the table ---------------------------------------------------------------------
 
 
@@ -1387,6 +1998,9 @@ class Command(NamedTuple):
 
 
 COMMANDS: Final[dict[tuple[str, str], Command]] = {
+    ("review", "admit"): Command(
+        "--stdin", "count one review head from its brief lines", cmd_review_admit
+    ),
     ("mcp", "serve"): Command(
         "[--host-control]", "serve the MCP surface on stdio", cmd_mcp_serve
     ),
@@ -1454,11 +2068,27 @@ COMMANDS: Final[dict[tuple[str, str], Command]] = {
         "with its effective class",
         cmd_learning_export,
     ),
+    ("run", "start"): Command(
+        "< <arguments.json>",
+        "start a run with the tool's arguments as one JSON object on stdin",
+        cmd_run_start,
+    ),
+    ("review", "start"): Command(
+        "< <arguments.json>",
+        "start a review with the tool's arguments as one JSON object on stdin",
+        cmd_review_start,
+    ),
     ("run", "list"): Command(
-        "[--owner node:<session> [--include activations] | --group <group>]",
-        "read the fleet as JSON; with --owner, that node's runs (with its SDK "
+        "[--live | --since <ISO> | --owner node:<session> [--include activations] | --group <group>"
+        " | --caller <socket> --json]",
+        "read the fleet as JSON; with --live, every nonterminal run from the store "
+        "without a page limit; with --since, every run created at or after that "
+        "ISO time (UTC when no offset is given); with --owner, that node's runs (with its SDK "
         "activations and whether each slice is empty, on --include activations); "
-        "with --group, every run of that group with its owner and sandbox",
+        "with --group, every run of that group with its owner and sandbox; "
+        "with --caller, the runs that the Claude Code session at that socket "
+        f"started, while their notice rows last ({NOTICE_RETENTION_DAYS} days). "
+        "A closed run can leave sooner, when nSPAWN prunes its run row",
         cmd_run_list,
     ),
     ("run", "close"): Command(
@@ -1468,6 +2098,24 @@ COMMANDS: Final[dict[tuple[str, str], Command]] = {
         cmd_run_close,
     ),
     ("run", "show"): Command("<run-id>", "read one run as JSON", cmd_run_show),
+    ("run", "wait"): Command(
+        "<run-id>",
+        "wait for terminal work and print its run and phase as JSON",
+        cmd_run_wait,
+    ),
+    ("slice", "reconcile"): Command(
+        "[--dry-run]",
+        "stop each empty writer slice whose run ended, or that no run names once "
+        "it is an hour old, and release the poisoned claim it held; --dry-run "
+        "names them and stops none",
+        cmd_slice_reconcile,
+    ),
+    ("turn", "send"): Command(
+        "<run-id> <text>",
+        "queue one user message for a live Claude run and exit 0; a run that is "
+        "not live gives exit 2",
+        cmd_turn_send,
+    ),
     ("result", "show"): Command(
         "<run-id>", "read one run's result as JSON", cmd_result_show
     ),
@@ -1524,6 +2172,24 @@ COMMANDS: Final[dict[tuple[str, str], Command]] = {
         "newest messages",
         cmd_thread_show,
     ),
+    ("session", "serve"): Command(
+        "",
+        "translate each live Claude session into the session journal, in the "
+        "foreground until SIGTERM",
+        cmd_session_serve,
+    ),
+    ("session", "list"): Command(
+        "[<vendor>] [--id <id>]... [--since <ISO>] [--count]",
+        "print one JSON line per journal session, newest change first, with its "
+        "token totals; --id keeps that session, its copies and its subagents; "
+        "--count ends the reply with its row count",
+        cmd_session_list,
+    ),
+    ("session", "show"): Command(
+        "<vendor> <id>",
+        "print a journal session's rows as JSON lines, then its token totals",
+        cmd_session_show,
+    ),
     ("skill", "install"): Command(
         "<claude|codex> <source> [--check] [--skill <name>]...",
         "install skills with npx skills; --check stages them and shows them as JSON",
@@ -1559,8 +2225,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         case [noun, verb, *rest] if (noun, verb) in COMMANDS:
             try:
-                refuse(os.environ, RENAMED)
-                system1_refuse(os.environ, SYSTEM1_RENAMED)
+                refuse(frozenset(os.environ), RENAMED)
+                system1_refuse(frozenset(os.environ), SYSTEM1_RENAMED)
             except (RenamedVariableError, System1RenamedVariableError) as error:
                 sys.stderr.write(f"nspawn: refused: {error}\n")
                 return 2

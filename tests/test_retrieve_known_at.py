@@ -2,25 +2,9 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
-from typing import Any
 
-from storefile import fresh_store_path
-
-from nmemory.server import MemoryServer
-from nmemory.store import Store
-
-
-def fresh_server() -> MemoryServer:
-    url = fresh_store_path("knat")
-    return MemoryServer(store=Store.open(url))
-
-
-def ok(res: dict[str, Any]) -> dict[str, Any]:
-    assert "result" in res and res["result"]["isError"] is False, res
-    payload: dict[str, Any] = json.loads(res["result"]["content"][0]["text"])
-    return payload
+from mcp_helpers import fresh_server, ok
 
 
 def test_known_at_rewinds_eligibility_for_superseded_capsule() -> None:

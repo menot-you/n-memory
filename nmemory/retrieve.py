@@ -1568,7 +1568,7 @@ def retrieve(
             now=now_dt,
             session_id=asked_by_session,
             project_prefix=params.project_prefix,
-        ).id
+        )
 
     # B2 — the counters are DERIVED from the engine, never served as literals.
     return build_envelope(

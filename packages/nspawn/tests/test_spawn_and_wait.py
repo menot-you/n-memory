@@ -71,16 +71,23 @@ if "--no-session-persistence" in sys.argv:
     print(json.dumps({"type": "control_response", "response": {
         "request_id": request["request_id"], "response": {"models": models}}}))
     raise SystemExit(0)
+# The driver speaks stream-json: the prompt is the first user message, and stdin
+# stays open until the child gave its result.
+content = json.loads(sys.stdin.readline())["message"]["content"]
 seen = {
     "argv": sys.argv[1:],
     "cwd": os.getcwd(),
     "env": dict(os.environ),
     "pid": os.getpid(),
-    "stdin": sys.stdin.read(),
+    "stdin": content if isinstance(content, str) else "".join(
+        block.get("text", "") for block in content if block.get("type") == "text"),
 }
 (here / "seen.json").write_text(json.dumps(seen))
-sys.stdout.write((here / "replay").read_text())
+replay = (here / "replay").read_text()
+sys.stdout.write(replay)
 sys.stdout.flush()
+if '"type": "result"' in replay:
+    sys.stdin.read()
 ending = (here / "ending").read_text().split()
 if ending[0] == "signal":
     os.kill(os.getpid(), int(ending[1]))
@@ -160,8 +167,11 @@ def _acme(
     )
     secrets = tmp_path / "secrets"
     secrets.mkdir()
+    secrets.chmod(0o700)  # whatever the umask
     (secrets / "acct-a.token").write_text(_OTHER_TOKEN + "\n", encoding="utf-8")
+    (secrets / "acct-a.token").chmod(0o600)  # whatever the umask
     (secrets / "acct-b.token").write_text(_TOKEN + "\n", encoding="utf-8")
+    (secrets / "acct-b.token").chmod(0o600)  # whatever the umask
     acme = Provider(
         name="acme",
         secrets=secrets,
@@ -245,7 +255,7 @@ def test_a_turn_reaches_the_child_and_the_store_as_the_route_declares(
     argv: list[str] = seen["argv"]
     assert f"--session-id={thread_id}" in argv
     assert not [argument for argument in argv if argument.startswith("--resume")]
-    assert _after(argv, "--plugin-dir") == [str(plugin)]
+    assert _after(argv, "--plugin-dir") == [str(run_dir.root / "writer-plugin-0")]
     assert _after(argv, "--from-acme") == [f"{plugin}/extra"]
     assert "--decoy" not in argv
     assert "--strict-mcp-config" not in argv
@@ -569,6 +579,7 @@ def test_a_402_on_a_route_without_accounts_walls_its_provider_for_the_hour(
     binary = _claude(tmp_path / "bin", _frames(spent), ending="1")
     token = tmp_path / "route.token"
     token.write_text(_TOKEN, encoding="utf-8")
+    token.chmod(0o600)  # whatever the umask
     route = Provider(
         name="route", bin=binary, token_file=token, model="m", models=["m"]
     )
@@ -842,7 +853,9 @@ def test_the_prompt_is_written_within_its_deadline_and_the_wait_is_unbounded(
     )
 
     (driven,) = spawner.children
-    assert driven.writes == [("ping ✓".encode(), supervisor.PROMPT_WRITE_SECONDS)]
+    assert driven.writes == [
+        (supervisor._user_frame("ping ✓"), supervisor.PROMPT_WRITE_SECONDS)
+    ]
     assert driven.waits == [None]
     observed = registry.get_run(run_id)
     assert (observed.last_record_at, observed.records_seen) == (None, 0)
@@ -885,7 +898,7 @@ def test_a_prompt_the_child_cannot_take_kills_the_child(
 
 
 @pytest.mark.parametrize("kill_error", _KILL_ERRORS)
-@pytest.mark.parametrize(("deadline_ms", "waited"), [(1, 0.001), (250, 0.25)])
+@pytest.mark.parametrize("deadline_ms", [1, 250])
 def test_a_child_that_outlives_its_deadline_is_signalled_and_named(
     sv: Supervisor,
     registry: Registry,
@@ -893,7 +906,6 @@ def test_a_child_that_outlives_its_deadline_is_signalled_and_named(
     monkeypatch: pytest.MonkeyPatch,
     fake_picked: picker.PickerResult,
     deadline_ms: int,
-    waited: float,
     kill_error: Exception | None,
 ) -> None:
     spawner = _Spawner("sleep", "5", kill_error=kill_error)
@@ -918,7 +930,8 @@ def test_a_child_that_outlives_its_deadline_is_signalled_and_named(
         f"run exceeded its caller-named deadline of {deadline_ms} ms and was signalled"
     )
     (driven,) = spawner.children
-    assert driven.waits == [waited]
+    # The steer loop owns the deadline: it raises before any wait call.
+    assert driven.waits == []
     assert driven.stop_calls == [driven.identity]
     assert driven.process.wait(timeout=5) == -signal.SIGKILL
     assert run_id not in sv._children
@@ -950,4 +963,5 @@ def test_a_child_that_meets_its_deadline_is_classified(
 
     assert verdict.phase is RunPhase.COMPLETED
     (driven,) = spawner.children
-    assert driven.waits == [60.0]
+    (bound,) = driven.waits
+    assert bound is not None and 55.0 < bound <= 60.0

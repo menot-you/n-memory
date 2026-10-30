@@ -262,6 +262,7 @@ def test_build_child_env_reads_the_token_file_and_delivers_it(
     # carries the token, and the needles keep covering the same bytes.
     token = tmp_path / "token"
     token.write_text("a-real-credential-value-that-is-long-enough")
+    token.chmod(0o600)  # whatever the umask
     provider = Provider(name="claude", token_file=token)
 
     env, needles = build_child_env(provider, None, ambient={})
@@ -277,6 +278,7 @@ def test_build_child_env_layers_provider_env_over_the_closed_base(
 ) -> None:
     token = tmp_path / "token"
     token.write_text("another-real-credential-value-1234567890")
+    token.chmod(0o600)  # whatever the umask
     provider = Provider(
         name="claude",
         token_file=token,
@@ -325,8 +327,11 @@ def test_build_child_env_uses_the_explicit_account_alias_not_the_default_one(
     """
     secrets = tmp_path / "secrets"
     secrets.mkdir()
+    secrets.chmod(0o700)  # whatever the umask
     (secrets / "alpha.token").write_text("alpha-credential-bytes-1234567890")
+    (secrets / "alpha.token").chmod(0o600)  # whatever the umask
     (secrets / "beta.token").write_text("beta-credential-bytes-0987654321")
+    (secrets / "beta.token").chmod(0o600)  # whatever the umask
     provider = Provider(name="claude", secrets=secrets)
 
     _, needles = build_child_env(provider, "beta")
@@ -379,13 +384,15 @@ def test_build_child_env_refuses_an_unreadable_token_file() -> None:
 
     message = str(caught.value)
     assert "'claude'" in message
-    assert "credential file" in message
-    assert str(missing) in message
+    # The file and its fix, never its host path (2026-10-21).
+    assert "nspawn-token-file is not there: put the account's token in it" in message
+    assert str(missing) not in message
 
 
 def test_build_child_env_refuses_a_blank_credential(tmp_path: Path) -> None:
     token = tmp_path / "token"
     token.write_text("   \n\t  ")
+    token.chmod(0o600)  # whatever the umask
     provider = Provider(name="claude", token_file=token)
 
     with pytest.raises(ChildEnvironmentError) as caught:
@@ -425,6 +432,7 @@ def test_build_child_env_versioned_credential_corpus_never_raises_untyped(
 ) -> None:
     token = tmp_path / "token"
     token.write_bytes(corpus)
+    token.chmod(0o600)  # whatever the umask
     provider = Provider(name="claude", token_file=token)
 
     try:
@@ -443,6 +451,7 @@ def test_build_child_env_fuzzes_arbitrary_credential_bytes(
     # bytes reach the same reader without five filesystem operations apiece.
     token = tmp_path / "token"
     token.write_bytes(data)
+    token.chmod(0o600)  # whatever the umask
     provider = Provider(name="claude", token_file=token)
     try:
         build_child_env(provider, None)
@@ -466,6 +475,8 @@ def test_compose_child_argv_fresh_turn_golden_order() -> None:
     assert argv == [
         "/usr/bin/claude",
         "-p",
+        "--input-format",
+        "stream-json",
         "--output-format",
         "stream-json",
         "--verbose",
@@ -473,6 +484,8 @@ def test_compose_child_argv_fresh_turn_golden_order() -> None:
         "user",
         # no --strict-mcp-config: there is a plugin_dir, and the strict flag would erase
         # the plugin's own servers. See the door test just below.
+        "--disallowedTools",
+        "mcp__plugin_nott_nspawn__*,mcp__nspawn__*",
         "--append-system-prompt-file",
         "/run/boot-prompt.md",
         "--plugin-dir",
@@ -491,17 +504,21 @@ def test_compose_child_argv_resume_turn_omits_the_session_id_flag() -> None:
     assert argv == [
         "/usr/bin/claude",
         "-p",
+        "--input-format",
+        "stream-json",
         "--output-format",
         "stream-json",
         "--verbose",
         "--setting-sources",
         "user",
         "--strict-mcp-config",
+        "--disallowedTools",
+        "mcp__plugin_nott_nspawn__*,mcp__nspawn__*",
         "--resume=deadbeef-0000-4000-8000-000000000000",
     ]
 
 
-def test_compose_child_argv_minimal_call_carries_only_the_base_line() -> None:
+def test_compose_child_argv_minimal_call_is_the_base_line_plus_writer_deny() -> None:
     argv = compose_child_argv(
         "/usr/bin/claude",
     )
@@ -509,12 +526,16 @@ def test_compose_child_argv_minimal_call_carries_only_the_base_line() -> None:
     assert argv == [
         "/usr/bin/claude",
         "-p",
+        "--input-format",
+        "stream-json",
         "--output-format",
         "stream-json",
         "--verbose",
         "--setting-sources",
         "user",
         "--strict-mcp-config",
+        "--disallowedTools",
+        "mcp__plugin_nott_nspawn__*,mcp__nspawn__*",
     ]
 
 
@@ -2034,8 +2055,10 @@ def test_read_only_child_bootstrap_success(tmp_path: Path) -> None:
 def _claude_provider_with_secrets(tmp_path: Path) -> Provider:
     secrets = tmp_path / "claude"
     secrets.mkdir()
+    secrets.chmod(0o700)  # whatever the umask
     # the real file ends in a newline; an env var with \n silently breaks auth
     (secrets / "conta-a.token").write_text(synthetic_token("test_child:2") + "\n")
+    (secrets / "conta-a.token").chmod(0o600)  # whatever the umask
     return Provider(name="claude", secrets=secrets)
 
 
@@ -2064,7 +2087,9 @@ def test_a_provider_that_declares_its_own_credential_env_is_not_overwritten(
     # credentials to the same child, and whichever wins would be an accident of order.
     secrets = tmp_path / "px"
     secrets.mkdir()
+    secrets.chmod(0o700)  # whatever the umask
     (secrets / "conta-a.token").write_text("chave-de-proxy-exemplo\n")
+    (secrets / "conta-a.token").chmod(0o600)  # whatever the umask
     provider = Provider(
         name="codex1",
         secrets=secrets,
@@ -2125,6 +2150,7 @@ def test_the_account_window_wins_and_carries_the_second_spelling(
     """
     token = tmp_path / "token"
     token.write_text("another-real-credential-value-1234567890")
+    token.chmod(0o600)  # whatever the umask
     provider = Provider(
         name="qwen",
         kind="claude",
@@ -2151,6 +2177,7 @@ def test_a_provider_window_still_reaches_an_account_that_declares_none(
     second spelling keeps following the first."""
     token = tmp_path / "token"
     token.write_text("another-real-credential-value-1234567890")
+    token.chmod(0o600)  # whatever the umask
     provider = Provider(
         name="qwen",
         kind="claude",
@@ -2176,7 +2203,9 @@ def test_a_routed_child_environment_is_pinned_whole(tmp_path: Path) -> None:
     spelling, the credential and the run marker. Nothing else rides along."""
     secrets = tmp_path / "secrets"
     secrets.mkdir()
+    secrets.chmod(0o700)  # whatever the umask
     (secrets / "m5.token").write_text("fixture-token-m5\n")
+    (secrets / "m5.token").chmod(0o600)  # whatever the umask
     provider = Provider(
         name="qwen",
         kind="claude",
@@ -2311,6 +2340,7 @@ def test_the_child_inherits_the_operator_environment_not_a_sealed_empty_one(
     # overrides above; the account credential overrides last.
     token = tmp_path / "token"
     token.write_text("a-real-credential-value-that-is-long-enough")
+    token.chmod(0o600)  # whatever the umask
     provider = Provider(name="claude", token_file=token, env={"MEU": "do-provider"})
     ambiente = {
         "CLAUDE_CONFIG_DIR": "/home/o/.claude",
@@ -2333,6 +2363,7 @@ def test_an_ambient_credential_never_survives_the_account_the_run_was_routed_to(
     # the chosen credential always overwrites the environment.
     token = tmp_path / "token"
     token.write_text("o-token-DA-CONTA-escolhida-pelo-picker")
+    token.chmod(0o600)  # whatever the umask
     provider = Provider(name="claude", token_file=token)
 
     env, _ = build_child_env(
@@ -2349,6 +2380,7 @@ def test_build_child_env_sets_the_six_model_variables_from_the_pick(
     injected value beats one leaked from the parent's environment."""
     token = tmp_path / "token"
     token.write_text("a-real-credential-value-that-is-long-enough")
+    token.chmod(0o600)  # whatever the umask
     provider = Provider(
         name="claude", token_file=token, env={"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1"}
     )
@@ -2376,6 +2408,7 @@ def test_a_literal_model_in_the_roster_still_wins_and_no_effort_sets_nothing(
 ) -> None:
     token = tmp_path / "token"
     token.write_text("a-real-credential-value-that-is-long-enough")
+    token.chmod(0o600)  # whatever the umask
     provider = Provider(name="kimi", token_file=token, env={"ANTHROPIC_MODEL": "k2.7"})
 
     env, _ = build_child_env(
@@ -2426,6 +2459,7 @@ def test_family_requests_clamp_only_upward(
     """Higher tiers stay within the family. Haiku fan-out stays Haiku."""
     token = tmp_path / "token"
     token.write_text("a-test-credential-value-that-is-long-enough")
+    token.chmod(0o600)  # whatever the umask
     names = tuple(
         f"ANTHROPIC_DEFAULT_{tier}_MODEL" for tier in ("OPUS", "SONNET", "HAIKU")
     )
@@ -2469,7 +2503,9 @@ def _provider_com_conta(
 ) -> Provider:
     secrets = tmp_path / "fugu"
     secrets.mkdir()
+    secrets.chmod(0o700)  # whatever the umask
     (secrets / "conta-a.token").write_text(f"{_SEGREDO}\n")
+    (secrets / "conta-a.token").chmod(0o600)  # whatever the umask
     contas = {} if conta is None else {"conta-a": conta}
     return Provider(name="fugu", secrets=secrets, accounts=contas, **campos)  # type: ignore[arg-type]
 
@@ -2512,8 +2548,10 @@ def test_o_alias_ausente_cai_na_primeira_DECLARADA_nao_na_primeira_do_alfabeto(
 
     secrets = tmp_path / "qwen"
     secrets.mkdir()
+    secrets.chmod(0o700)  # whatever the umask
     for alias in ("server", "m5"):
         (secrets / f"{alias}.token").write_text(f"{_SEGREDO}\n")
+        (secrets / f"{alias}.token").chmod(0o600)  # whatever the umask
     provider = Provider(
         name="qwen",
         accounts={
@@ -2899,21 +2937,28 @@ def test_child_socket_address():
     assert child_socket_address(1234, environ={CALLER_SOCKET_ENV: "noslash"}) is None
 
 
-def test_appends_law_reads_a_relative_prompt_from_the_childs_cwd(
+def test_without_law_reads_a_relative_prompt_from_the_childs_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A relative --append-system-prompt-file is the child's: the claude CLI opens it
     from the child's cwd, so the law is looked for there, never in the supervisor's."""
     (tmp_path / "law.md").write_bytes(child_module.LAW_TITLE + b"\n")
+    (tmp_path / "persona.md").write_bytes(b"A persona.\n")
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
-    assert child_module.appends_law(["--append-system-prompt-file", "law.md"], tmp_path)
+    declared = [
+        "--append-system-prompt-file",
+        "law.md",
+        "--append-system-prompt-file",
+        "persona.md",
+    ]
+    assert child_module.without_law(declared, tmp_path) == declared[2:]
 
 
 def test_the_plugin_law_begins_with_the_title_the_supervisor_detects() -> None:
-    """`appends_law` knows the law by its first line. A retitled plugin/NOTT.md would
-    be appended by the roster AND printed by the plugin's hook, twice, silently."""
+    """`without_law` knows the law by its first line. A retitled plugin/NOTT.md would
+    reach every child the roster appends it to, silently."""
     law = (workspace_path("plugin/NOTT.md")).read_bytes()
     assert law.startswith(child_module.LAW_TITLE)
 
@@ -2935,6 +2980,7 @@ def test_full_ids_do_not_promote_the_haiku_tier(
 ) -> None:
     token = tmp_path / "token"
     token.write_text("test-credential-value-long-enough")
+    token.chmod(0o600)  # whatever the umask
     env, _ = build_child_env(
         Provider(name="claude", token_file=token),
         None,
@@ -2962,6 +3008,7 @@ def test_small_fast_roster_values_cannot_promote_a_haiku_run(
 ) -> None:
     token = tmp_path / "token"
     token.write_text("test-credential-value-long-enough")
+    token.chmod(0o600)  # whatever the umask
     override = {"ANTHROPIC_SMALL_FAST_MODEL": "claude-opus-5-5"}
     provider = Provider(
         name="claude",

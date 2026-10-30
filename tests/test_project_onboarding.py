@@ -147,6 +147,53 @@ def test_bootstrap_preserves_settings_and_restores(
     assert {path: path.read_bytes() for path in original} == original
 
 
+def test_launcher_startup_note_names_tools_and_grants_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], config_probe: None
+) -> None:
+    """Run the bootstrap's SessionStart command as Claude Code runs a command hook."""
+    store = os.environ.get("NOTT_DATABASE_DIR")
+    if not store:
+        pytest.fail("NOTT_DATABASE_DIR is not set: the hook would reach the live store")
+    root = tmp_path / "project"
+    root.mkdir()
+    bootstrap(root, capsys)
+    settings = json.loads((root / ".claude/settings.json").read_text())
+    start = settings["hooks"]["SessionStart"]
+    commands = [hook["command"] for group in start for hook in group["hooks"]]
+    assert len(commands) == 1 and commands[0].endswith("nmemory-session.sh")
+    # The NOTT plugin is active: the client gives the hook its plugin root.
+    plugin = tmp_path / "nott-plugin"
+    (plugin / ".claude-plugin").mkdir(parents=True)
+    (plugin / ".claude-plugin/plugin.json").write_text('{"name": "nott"}\n')
+    result = subprocess.run(
+        ["sh", "-c", commands[0]],
+        input='{"session_id":"absent","source":"startup"}',
+        env={
+            "HOME": str(tmp_path / "home"),
+            "XDG_STATE_HOME": str(tmp_path / "state"),
+            "PATH": os.environ["PATH"],
+            "TMPDIR": str(tmp_path),
+            "NOTT_DATABASE_DIR": store,
+            "CLAUDE_PLUGIN_ROOT": str(plugin),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    for text in ("Standing grant", "2026-09-14", "plugin:nott:", "NOTT plugin"):
+        assert text not in result.stdout, f"the note prints {text!r}"
+    line = (
+        "Memory for this session is the nMEMORY MCP server, under the name that this "
+        "install registers (tools nmemory_context_show, nmemory_capsule_ingest, "
+        "nmemory_outcome_record, nmemory_session_start, nmemory_session_finish). If "
+        "they arrive deferred, load them with ToolSearch by those names; do not guess "
+        "other names."
+    )
+    assert result.stdout.count(line) == 1, result.stdout
+
+
 @pytest.mark.parametrize("existed", [False, True])
 @pytest.mark.parametrize("change", ["existing", "addition", "field"])
 @pytest.mark.parametrize("action", ["repeat", "restore"])

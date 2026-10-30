@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..capsule import sha256_hex
-from ..database import writes
+from ..database import Cursor, writes
 from ..lexical import bm25_scores, lexical_tokens, lexical_words
 from ..project import glob_subtree_pattern
 from .base import EmptyField, Repository
@@ -375,28 +375,7 @@ class CorpusRepository(Repository):
                 """
             )
 
-            cur.execute(
-                """
-                INSERT INTO corpus_sources (source_key, kind, root, revision, indexed_at, status, detail)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (source_key) DO UPDATE SET
-                    kind = EXCLUDED.kind,
-                    root = EXCLUDED.root,
-                    revision = EXCLUDED.revision,
-                    indexed_at = EXCLUDED.indexed_at,
-                    status = EXCLUDED.status,
-                    detail = EXCLUDED.detail
-                """,
-                (
-                    source.source_key,
-                    source.kind,
-                    source.root,
-                    source.revision,
-                    source.indexed_at,
-                    source.status,
-                    source.detail,
-                ),
-            )
+            self._upsert_source(cur, source)
             return True
 
     @writes
@@ -409,28 +388,31 @@ class CorpusRepository(Repository):
         with self.db.connection() as conn, conn.cursor() as cur:
             if source.kind == "code":
                 ensure_code_source_kind(cur)
-            cur.execute(
-                """
-                INSERT INTO corpus_sources (source_key, kind, root, revision, indexed_at, status, detail)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (source_key) DO UPDATE SET
-                    kind = EXCLUDED.kind,
-                    root = EXCLUDED.root,
-                    revision = EXCLUDED.revision,
-                    indexed_at = EXCLUDED.indexed_at,
-                    status = EXCLUDED.status,
-                    detail = EXCLUDED.detail
-                """,
-                (
-                    source.source_key,
-                    source.kind,
-                    source.root,
-                    source.revision,
-                    source.indexed_at,
-                    source.status,
-                    source.detail,
-                ),
-            )
+            self._upsert_source(cur, source)
+
+    def _upsert_source(self, cur: Cursor, source: CorpusSourceRecord) -> None:
+        cur.execute(
+            """
+            INSERT INTO corpus_sources (source_key, kind, root, revision, indexed_at, status, detail)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (source_key) DO UPDATE SET
+                kind = EXCLUDED.kind,
+                root = EXCLUDED.root,
+                revision = EXCLUDED.revision,
+                indexed_at = EXCLUDED.indexed_at,
+                status = EXCLUDED.status,
+                detail = EXCLUDED.detail
+            """,
+            (
+                source.source_key,
+                source.kind,
+                source.root,
+                source.revision,
+                source.indexed_at,
+                source.status,
+                source.detail,
+            ),
+        )
 
     def list_corpus_sources(self) -> list[CorpusSourceRecord]:
         with self.db.connection() as conn, conn.cursor() as cur:

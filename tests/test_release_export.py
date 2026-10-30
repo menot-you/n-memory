@@ -6,6 +6,7 @@ import hashlib
 import importlib
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tomllib
@@ -257,6 +258,53 @@ def test_explicit_source_deterministic_workspace(source: Path, tmp_path: Path) -
         == hashlib.sha256((one / "LICENSE").read_bytes()).hexdigest()
     )
     assert str(source) not in (one / "source-manifest.json").read_text()
+
+
+def test_exported_startup_note_names_tools_and_grants_nothing(
+    source: Path, tmp_path: Path
+) -> None:
+    """The export copies the hook bytes, so the exported note grants nothing."""
+    from workspace_root import workspace_path
+
+    for hook in ("nmemory-session.sh", "renamed.sh"):
+        (source / "plugin/hooks" / hook).write_bytes(
+            workspace_path(f"plugin/hooks/{hook}").read_bytes()
+        )
+    output = tmp_path / "export"
+    exporter().export(source, output)
+    binary = tmp_path / "memory"
+    binary.write_text("#!/bin/sh\nexit 0\n")
+    binary.chmod(0o700)
+    other = tmp_path / "other-plugin"
+    (other / ".claude-plugin").mkdir(parents=True)
+    (other / ".claude-plugin/plugin.json").write_text('{"name": "other"}\n')
+    result = subprocess.run(
+        ["bash", str(output / "nmemory/hooks/nmemory-session.sh")],
+        input='{"session_id":"absent","source":"startup"}',
+        env={
+            "HOME": str(tmp_path / "home"),
+            "XDG_STATE_HOME": str(tmp_path / "state"),
+            "PATH": os.environ["PATH"],
+            "TMPDIR": str(tmp_path),
+            "NOTT_NMEMORY_BIN": str(binary),
+            "CLAUDE_PLUGIN_ROOT": str(other),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    for text in ("Standing grant", "2026-09-14", "plugin:nott:", "NOTT plugin"):
+        assert text not in result.stdout, f"the note prints {text!r}"
+    line = (
+        "Memory for this session is the nMEMORY MCP server, under the name that this "
+        "install registers (tools nmemory_context_show, nmemory_capsule_ingest, "
+        "nmemory_outcome_record, nmemory_session_start, nmemory_session_finish). If "
+        "they arrive deferred, load them with ToolSearch by those names; do not guess "
+        "other names."
+    )
+    assert result.stdout.count(line) == 1, result.stdout
 
 
 @pytest.mark.parametrize(
@@ -696,9 +744,7 @@ def test_installed_projection_and_bundled_hooks_coverage(
     import io
 
     import nmemory
-    from nmemory import github_client
     from nmemory.commands import projection
-    from nmemory.github_plan import CloseReason, DesiredState, IssuePatch
 
     stage = tmp_path / "stage"
     stage.mkdir()
@@ -956,138 +1002,6 @@ def test_installed_projection_and_bundled_hooks_coverage(
             monkeypatch.setattr(sys, "stdin", io.StringIO("{}"))
             assert mod.main() == ""
 
-    seen_cmds: list[list[str]] = []
-
-    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        seen_cmds.append(cmd)
-        joined = " ".join(cmd)
-        if "--paginate" in cmd:
-            if "sub_issues" in joined or "blocked_by" in joined:
-                return subprocess.CompletedProcess(
-                    cmd, 0, '[[{"number": 2, "id": 20}]]', ""
-                )
-            return subprocess.CompletedProcess(
-                cmd,
-                0,
-                '[[{"number": 1, "id": 10, "title": "T", "body": "B", "state": "open", "state_reason": null, "labels": [{"name": "l"}], "type": {"name": "Task"}}]]',
-                "",
-            )
-        if "search/issues" in joined:
-            return subprocess.CompletedProcess(
-                cmd, 0, '{"items": [{"number": 1, "id": 10}]}', ""
-            )
-        if "issue-types" in joined:
-            return subprocess.CompletedProcess(
-                cmd,
-                0,
-                '[{"name": "Task", "is_enabled": true}]',
-                "",
-            )
-        return subprocess.CompletedProcess(
-            cmd,
-            0,
-            '{"number": 1, "id": 10, "title": "T", "body": "B", "state": "open", "state_reason": null, "labels": [{"name": "l"}], "type": {"name": "Task"}}',
-            "",
-        )
-
-    monkeypatch.setattr(github_client, "run_with_timeout", fake_run)
-    gh = github_client.SubprocessGh()
-    assert len(gh.list_issues("o/r", "l")) == 1
-    assert gh.get_issue("o/r", 1).number == 1
-    assert len(gh.search_marker("o/r", "cap-1")) == 1
-    assert len(gh.list_sub_issues("o/r", 1)) == 1
-    assert len(gh.list_blocked_by("o/r", 1)) == 1
-    assert gh.list_issue_types("o/r") == {"Task"}
-    gh.ensure_label("o/r", "l")
-    assert gh.create_issue("o/r", "T", "B", ["l"], "Task").number == 1
-    assert (
-        gh.update_issue(
-            "o/r",
-            1,
-            IssuePatch(
-                title="T2",
-                body="B2",
-                issue_type="Task",
-                state=DesiredState(is_open=False, close_reason=CloseReason.COMPLETED),
-            ),
-        ).number
-        == 1
-    )
-    gh.add_labels("o/r", 1, ["a"])
-    gh.remove_label("o/r", 1, "a")
-    gh.add_sub_issue("o/r", 1, 20)
-    gh.add_blocked_by("o/r", 1, 20)
-    assert ["gh", "api", "repos/o/r/labels/l"] in seen_cmds
-    assert [
-        "gh",
-        "api",
-        "--method",
-        "POST",
-        "repos/o/r/issues/1/labels",
-        "-f",
-        "labels[]=a",
-    ] in seen_cmds
-    assert [
-        "gh",
-        "api",
-        "--method",
-        "DELETE",
-        "repos/o/r/issues/1/labels/a",
-    ] in seen_cmds
-    assert [
-        "gh",
-        "api",
-        "--method",
-        "POST",
-        "repos/o/r/issues/1/sub_issues",
-        "-F",
-        "sub_issue_id=20",
-    ] in seen_cmds
-    assert [
-        "gh",
-        "api",
-        "--method",
-        "POST",
-        "repos/o/r/issues/1/dependencies/blocked_by",
-        "-F",
-        "issue_id=20",
-    ] in seen_cmds
-    assert [
-        "gh",
-        "api",
-        "--method",
-        "POST",
-        "repos/o/r/issues",
-        "-f",
-        "title=T",
-        "-f",
-        "body=B",
-        "-f",
-        "type=Task",
-        "-f",
-        "labels[]=l",
-    ] in seen_cmds
-    assert [
-        "gh",
-        "api",
-        "--method",
-        "PATCH",
-        "repos/o/r/issues/1",
-        "-f",
-        "title=T2",
-        "-f",
-        "body=B2",
-        "-f",
-        "type=Task",
-        "-f",
-        "state=closed",
-        "-f",
-        "state_reason=completed",
-    ] in seen_cmds
-    assert str(github_client.GhSpawnError("gh", OSError("missing")))
-    assert str(github_client.GhCommandError("op", "exit 1", "err"))
-    assert str(github_client.GhParseError("op", "bad json"))
-
     from nmemory.commands import layout
 
     doc_stage = tmp_path / "doc-stage"
@@ -1117,17 +1031,6 @@ def test_installed_projection_and_bundled_hooks_coverage(
         assert "invalid type" in validation._format_type_error(
             "f", sample_val, "a string"
         )
-    for bad_extract in (
-        {"bad": "v"},
-        {"content": "a", "text": "b"},
-        {},
-        {"content": 123},
-    ):
-        with pytest.raises(validation.DeserializationError):
-            validation.validate_tool_arguments("nmemory_turn_extract", bad_extract)
-    assert validation.validate_tool_arguments(
-        "nmemory_turn_extract", {"content": "ok"}
-    ) == {"content": "ok"}
     with pytest.raises(validation.DeserializationError):
         validation.validate_tool_arguments(
             "nmemory_kind_classify",

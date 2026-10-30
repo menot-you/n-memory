@@ -17,33 +17,20 @@ gives its bare id and no headline, slug or outcome text.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Final
 
 from ..capsule import Capsule, headline_of
-from ..database import Cursor, Database
+from ..database import Database
 from ..relation import CLOSING_KIND_VALUES, live_relation_sql
 from .inbox import short_headline
-from .staged import REVIEW_REASON_PROPOSAL
 from .work import WorkPageError, _work_row, check_scope
 
 COLUMNS: Final = ("ready", "blocked", "doing", "done", "dropped")
-#: The `provenance.source` of a change the GitHub sync read back as a proposal.
-GITHUB_PULL_SOURCE: Final = "github-pull"
 
 
 class BoardError(WorkPageError):
     """A board request names a card the board cannot show."""
-
-
-@dataclass(frozen=True)
-class WaitingChange:
-    """A staged GitHub change that waits on the owner, and the task it is about."""
-
-    id: str
-    task: str
-    content: str
 
 
 def _ratified(capsule: str) -> str:
@@ -62,66 +49,6 @@ def _closed(capsule: str, kinds: str = "(SELECT value FROM json_each(?))") -> st
     return f"""EXISTS (SELECT 1 FROM relations x WHERE x.to_id = {capsule}
                AND x.kind IN {kinds} AND {live_relation_sql("x")}
                AND {_live("x.from_id")} AND {_ratified("x.from_id")})"""
-
-
-def waiting_changes(cur: Cursor, capsule_id: str | None = None) -> list[WaitingChange]:
-    """Every staged GitHub change no review has answered, oldest first.
-
-    Waiting means: the latest review event is `proposed` with the staged-ingest
-    reason (or `ratified` by the board host while its closing effect is still
-    incomplete), the source is the GitHub pull, and a live `about` edge names a task.
-    Revoking a completed effect does not return its approval to the queue.
-    """
-    cur.execute(
-        f"""
-        SELECT p.id, r.to_id, p.canonical_json FROM capsules p
-        JOIN relations r ON r.from_id = p.id AND r.kind = 'about'
-        JOIN classifications k ON k.capsule_id = r.to_id AND k.kind = 'task'
-        WHERE json_extract(p.canonical_json, '$.provenance.source') = ?
-          AND {live_relation_sql("r")}
-          AND {_live("p.id")}
-          AND (? IS NULL OR p.id = ?)
-          AND (
-              (SELECT json_array(e.verdict, e.reason) FROM review_events e
-               WHERE e.capsule_id = p.id ORDER BY e.seq DESC LIMIT 1)
-              = json_array('proposed', ?)
-              OR (
-                  (SELECT e.verdict FROM review_events e
-                   WHERE e.capsule_id = p.id ORDER BY e.seq DESC LIMIT 1) = 'ratified'
-                  AND (SELECT e.reason FROM review_events e
-                       WHERE e.capsule_id = p.id ORDER BY e.seq DESC LIMIT 1) GLOB 'nott-app:board *'
-                  AND (
-                      (instr(json_extract(p.canonical_json, '$.content'), ' state closed-') > 0
-                       AND NOT EXISTS (
-                           SELECT 1 FROM relations c
-                           WHERE c.from_id = p.id AND c.to_id = r.to_id
-                             AND c.kind IN ('witnesses', 'supersedes')
-                       ))
-                      OR (instr(json_extract(p.canonical_json, '$.content'), ' body edited') > 0
-                          AND NOT EXISTS (
-                              SELECT 1 FROM relations d
-                              JOIN relations s ON s.from_id = d.from_id AND s.to_id = r.to_id
-                              WHERE d.to_id = p.id AND d.kind = 'derived_from'
-                                AND s.kind = 'supersedes'
-                                AND EXISTS (SELECT 1 FROM review_events e
-                                            WHERE e.capsule_id = d.from_id
-                                              AND e.verdict = 'ratified')
-                          ))
-                  )
-              )
-          )
-        ORDER BY p.seq, r.to_id
-        """,
-        (GITHUB_PULL_SOURCE, capsule_id, capsule_id, REVIEW_REASON_PROPOSAL),
-    )
-    return [
-        WaitingChange(
-            id=str(row[0]),
-            task=str(row[1]),
-            content=Capsule.from_canonical_json(str(row[2])).content,
-        )
-        for row in cur.fetchall()
-    ]
 
 
 def _headline(canonical: str | None) -> str | None:
@@ -203,7 +130,6 @@ def board(
             (project,),
         )
         outcomes = {str(row[0]): row for row in cur.fetchall()}
-        waiting = [w for w in waiting_changes(cur) if w.task in tasks]
 
     closer: dict[str, dict[str, Any]] = {}
     doing: dict[str, dict[str, Any]] = {}
@@ -287,8 +213,4 @@ def board(
             for name, cards in columns.items()
         },
         "workstreams": workstreams,
-        "pending": {
-            "total": len(waiting),
-            "ids": [{"id": w.id, "task": w.task} for w in waiting[:limit]],
-        },
     }

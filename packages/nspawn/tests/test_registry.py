@@ -405,34 +405,12 @@ def test_a_late_record_does_not_resurrect_a_closed_run(owner) -> None:  # type: 
     assert observed.records_seen == 1
 
 
-def test_a_page_is_bounded_and_reports_where_the_next_one_starts(owner) -> None:  # type: ignore[no-untyped-def]
-    from nspawn.rows import RunPhase
-
-    for n in range(5):
-        owner.insert_run(
-            _row(f"r-{n}", phase=RunPhase.RUNNING, worktree=f"/tmp/wt-{n}")
-        )
-    # Equal `created_at`: the tie breaks on `run_id`, descending, like the rest.
-    first = owner.list_runs_page(limit=2)
-    assert [row.run_id for row in first.rows] == ["r-4", "r-3"]
-    assert first.truncated
-    assert first.next_after_run == "r-3"
-
-    second = owner.list_runs_page(after_run=first.next_after_run, limit=2)
-    assert [row.run_id for row in second.rows] == ["r-2", "r-1"]
-    assert second.truncated
-
-    last = owner.list_runs_page(after_run=second.next_after_run, limit=2)
-    assert [row.run_id for row in last.rows] == ["r-0"]
-    assert not last.truncated
-    assert last.next_after_run is None
-
-
-def test_pages_run_newest_first_and_the_cursor_follows_that_order(owner) -> None:  # type: ignore[no-untyped-def]
-    """Creation time decides the page, not the uuid: a new run is on page one.
+def test_the_list_runs_newest_first_by_creation_time(owner) -> None:  # type: ignore[no-untyped-def]
+    """Creation time decides the order, not the uuid: a new run comes first.
 
     The `run_id` order is deliberately the REVERSE of the time order here, so
-    a page that still sorts by `run_id` puts the oldest run first.
+    a list that still sorts by `run_id` puts the oldest run first. Equal
+    `created_at` breaks on `run_id`, descending.
     """
     from nspawn.rows import RunPhase
 
@@ -445,48 +423,19 @@ def test_pages_run_newest_first_and_the_cursor_follows_that_order(owner) -> None
                 created_at=created,
             )
         )
-    seen: list[str] = []
-    page = owner.list_runs_page(limit=2)
-    seen.extend(row.run_id for row in page.rows)
-    while page.next_after_run is not None:
-        page = owner.list_runs_page(after_run=page.next_after_run, limit=2)
-        seen.extend(row.run_id for row in page.rows)
-    assert seen == ["r-0", "r-2", "r-1", "r-3", "r-4"]
+    listed = [row.run_id for row in owner.list_runs()]
+    assert listed == ["r-0", "r-2", "r-1", "r-3", "r-4"]
 
 
-def test_a_cursor_naming_a_vanished_run_is_refused(owner) -> None:  # type: ignore[no-untyped-def]
-    """The cursor is a run; if the reaper removed it, the page has no anchor."""
-    from nspawn.registry import RegistryError
-
-    with pytest.raises(RegistryError):
-        owner.list_runs_page(after_run="r-gone", limit=2)
-
-
-def test_naming_a_run_answers_that_run_and_never_reports_truncation(owner) -> None:  # type: ignore[no-untyped-def]
+def test_naming_a_run_answers_that_run_alone(owner) -> None:  # type: ignore[no-untyped-def]
     from nspawn.rows import RunPhase
 
     for n in range(3):
         owner.insert_run(
             _row(f"r-{n}", phase=RunPhase.RUNNING, worktree=f"/tmp/wt-{n}")
         )
-    page = owner.list_runs_page(run_id="r-1", limit=1)
-    assert [row.run_id for row in page.rows] == ["r-1"]
-    assert not page.truncated
-    assert page.next_after_run is None
-    assert owner.list_runs_page(run_id="r-absent").rows == ()
-
-
-def test_the_page_limit_is_clamped_at_both_ends(owner) -> None:  # type: ignore[no-untyped-def]
-    from nspawn.registry import MAX_RUN_PAGE
-    from nspawn.rows import RunPhase
-
-    for n in range(3):
-        owner.insert_run(
-            _row(f"r-{n}", phase=RunPhase.RUNNING, worktree=f"/tmp/wt-{n}")
-        )
-    assert len(owner.list_runs_page(limit=0).rows) == 1
-    assert len(owner.list_runs_page(limit=-5).rows) == 1
-    assert len(owner.list_runs_page(limit=MAX_RUN_PAGE * 10).rows) == 3
+    assert [row.run_id for row in owner.list_runs("r-1")] == ["r-1"]
+    assert owner.list_runs("r-absent") == ()
 
 
 def test_pruning_drops_history_but_never_custody_or_a_claimed_run(owner) -> None:  # type: ignore[no-untyped-def]
@@ -564,12 +513,12 @@ def test_a_dead_instance_orphans_its_runs_and_this_one_is_protected(
             worktree="/tmp/theirs",
         )
     )
-    rival.heartbeat_instance(1000)
+    rival.remove_instance()
 
     changed = owner.mark_orphans(now=100_000, stale_after_ms=1_000)
     assert changed == 1
     assert owner.get_run("r-theirs").phase is RunPhase.ORPHANED
-    assert "heartbeat expired" in owner.get_run("r-theirs").blocked_reason
+    assert "owner instance row removed" in owner.get_run("r-theirs").blocked_reason
     # A supervisor never orphans its own runs by its own reaper pass.
     assert owner.get_run("r-mine").phase is RunPhase.RUNNING
 
@@ -588,7 +537,7 @@ def test_orphaning_a_run_with_parked_approvals_says_they_were_lost(
             worktree="/tmp/parked",
         )
     )
-    rival.heartbeat_instance(1000)
+    rival.remove_instance()
     owner.mark_orphans(now=100_000, stale_after_ms=1_000)
     orphaned = owner.get_run("r-parked")
     assert "parked approvals were lost" in orphaned.blocked_reason
@@ -608,7 +557,7 @@ def test_an_orphan_holding_custody_has_its_claim_poisoned(owner, rival) -> None:
         )
     )
     rival.claim_worktree(WT, "r-custody", now=1, lease_ms=1)
-    rival.heartbeat_instance(1000)
+    rival.remove_instance()
     owner.mark_orphans(now=100_000, stale_after_ms=1_000)
     assert owner.read_claim(WT).lease_until == POISONED_LEASE_UNTIL
 
@@ -1365,7 +1314,7 @@ def test_mark_orphans_does_not_rewrite_a_claim_that_is_already_poisoned(
         )
     )
     rival.claim_worktree(WT, "r-custody", now=1, lease_ms=1)
-    rival.heartbeat_instance(1000)
+    rival.remove_instance()
     owner.mark_orphans(now=100_000, stale_after_ms=1_000)
     assert owner.read_claim(WT).lease_until == POISONED_LEASE_UNTIL
 
@@ -1456,3 +1405,117 @@ def test_an_annotation_never_moves_a_live_run(owner) -> None:  # type: ignore[no
             owner.update_run(_row("r-1", phase=phase, warning="w"), annotate=True)
     read = owner.get_run("r-1")
     assert (read.phase, read.warning) == (RunPhase.RUNNING, None)
+
+
+# -- the worktree claim generation ---------------------------------------------
+
+OTHER_WT = "/tmp/wt-other"
+
+
+def _generation(registry, worktree: str = WT) -> int | None:  # type: ignore[no-untyped-def]
+    """The retained generation of `worktree`, or None when it has no row."""
+    row = sql(
+        registry,
+        "SELECT generation FROM worktree_claim_generations WHERE worktree = ?",
+        (worktree,),
+    ).fetchone()
+    return None if row is None else int(row["generation"])
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "acquire",
+        "takeover",
+        "release",
+        "terminal_close",
+        "orphan_cleanup",
+        "orphan_poison",
+        "poison",
+    ],
+)
+def test_each_claim_mutation_advances_only_its_worktree_generation(  # type: ignore[no-untyped-def]
+    owner, rival, path
+) -> None:
+    """A RED admission compares this number before and after its Git call.
+
+    Each path that changes the claim of a worktree advances its generation by
+    one. The generation of another worktree does not change, and the row stays
+    after the claim goes.
+    """
+    from nspawn.process_identity import ProcessIdentity
+    from nspawn.rows import RunPhase
+
+    identity = ProcessIdentity(pid=7, boot_id="boot-1", start_ticks=99)
+    owner.claim_worktree(OTHER_WT, "r-other", now=1000, lease_ms=10**9)
+    other = _generation(owner, OTHER_WT)
+    if path == "acquire":
+        before = _generation(owner)
+        owner.claim_worktree(WT, "r-1", now=1000, lease_ms=500)
+    elif path == "takeover":
+        owner.claim_worktree(WT, "r-1", now=1000, lease_ms=1)
+        before = _generation(owner)
+        rival.claim_worktree(WT, "r-2", now=5000, lease_ms=500)
+    elif path == "release":
+        owner.claim_worktree(WT, "r-1", now=1000, lease_ms=500)
+        before = _generation(owner)
+        assert owner.release_claim(WT, "r-1")
+    elif path == "terminal_close":
+        owner.insert_run(_row("r-1", phase=RunPhase.RUNNING, process_identity=identity))
+        owner.claim_worktree(WT, "r-1", now=1000, lease_ms=10_000)
+        before = _generation(owner)
+        assert rival.close_owned("r-1", identity, now=5)
+    elif path == "orphan_cleanup":
+        rival.claim_worktree(WT, "r-1", now=1000, lease_ms=1)
+        before = _generation(owner)
+        rival.remove_instance()
+        owner.mark_orphans(now=100_000, stale_after_ms=1_000)
+        assert owner.read_claim(WT) is None
+    elif path == "orphan_poison":
+        owner.insert_run(
+            _row(
+                "r-1",
+                phase=RunPhase.RUNNING,
+                owner_instance="i-rival",
+                process_identity=identity,
+            )
+        )
+        rival.claim_worktree(WT, "r-1", now=1, lease_ms=1)
+        before = _generation(owner)
+        rival.remove_instance()
+        owner.mark_orphans(now=100_000, stale_after_ms=1_000)
+        assert owner.read_claim(WT).lease_until == POISONED_LEASE_UNTIL
+    else:
+        owner.claim_worktree(WT, "r-1", now=1000, lease_ms=500)
+        before = _generation(owner)
+        rival.poison_claim(WT, "r-1")
+    assert _generation(owner) == (before or 0) + 1
+    assert _generation(owner, OTHER_WT) == other
+
+
+def test_a_rolled_back_claim_change_keeps_the_generation(owner) -> None:  # type: ignore[no-untyped-def]
+    owner.claim_worktree(WT, "r-1", now=1000, lease_ms=500)
+    before = _generation(owner)
+    with (
+        pytest.raises(RuntimeError, match="fixture rollback"),
+        owner._transaction(),
+    ):
+        owner._run("DELETE FROM claims WHERE worktree = ?", (WT,))
+        inside = owner._one(
+            "SELECT generation FROM worktree_claim_generations WHERE worktree = ?",
+            (WT,),
+        )
+        assert inside is not None and inside["generation"] == (before or 0) + 1
+        raise RuntimeError("fixture rollback")
+    assert _generation(owner) == before
+    assert owner.read_claim(WT) is not None
+
+
+def test_moving_a_claim_to_another_worktree_advances_both(owner) -> None:  # type: ignore[no-untyped-def]
+    owner.claim_worktree(WT, "r-1", now=1000, lease_ms=500)
+    owner.claim_worktree(OTHER_WT, "r-2", now=1000, lease_ms=500)
+    owner.release_claim(OTHER_WT, "r-2")
+    moved_from, moved_to = _generation(owner), _generation(owner, OTHER_WT)
+    sql(owner, "UPDATE claims SET worktree = ? WHERE worktree = ?", (OTHER_WT, WT))
+    assert _generation(owner) == (moved_from or 0) + 1
+    assert _generation(owner, OTHER_WT) == (moved_to or 0) + 1

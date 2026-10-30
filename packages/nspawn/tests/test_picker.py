@@ -99,8 +99,10 @@ def _provider(
 def _with_accounts(provider: Provider, tmp_path: Path, *aliases: str) -> Provider:
     secrets = tmp_path / f"secrets-{provider.name}"
     secrets.mkdir()
+    secrets.chmod(0o700)  # whatever the umask
     for alias in aliases:
         (secrets / f"{alias}.token").write_text("x")
+        (secrets / f"{alias}.token").chmod(0o600)  # whatever the umask
     provider.secrets = secrets
     return provider
 
@@ -363,7 +365,8 @@ def test_explicit_effort_outside_declared_efforts_is_refused() -> None:
             _roster(provider), NOW, requested_provider="p", requested_effort="high"
         )
     assert excinfo.value.message == (
-        'provider "p" declares efforts [low]; "high" is not one of them'
+        'provider "p" declares efforts [low]; "high" is not one of them; '
+        'model "m" cannot serve effort "high"'
     )
 
 
@@ -519,7 +522,9 @@ def test_walled_default_with_no_eligible_fallback_reports_nearest_reset(
             provider_walls={"default": NOW + 42},
             account_walls={"only": NOW + 1},
         )
-    assert excinfo.value.nearest_reset == NOW + 1
+    # The route's wall holds every account until it lifts: no account runs
+    # before NOW + 42, so a reset at the account's NOW + 1 would be a lie.
+    assert excinfo.value.nearest_reset == NOW + 42
     assert str(excinfo.value) == "every eligible Claude route is cooling down"
 
 
@@ -634,6 +639,7 @@ def test_property_a_future_wall_always_blocks(
     provider_walled, account_walled = walled_combo
     secrets = tmp_path_factory.mktemp("secrets")
     (secrets / "only.token").write_text("x")
+    (secrets / "only.token").chmod(0o600)  # whatever the umask
     provider = _provider("p", model="m")
     provider.secrets = secrets
     provider_walls = {"p": NOW + reset_offset} if provider_walled else {"p": NOW}
@@ -653,6 +659,7 @@ def test_walls_exactly_at_now_never_block(
 ) -> None:
     secrets = tmp_path_factory.mktemp("secrets")
     (secrets / "only.token").write_text("x")
+    (secrets / "only.token").chmod(0o600)  # whatever the umask
     provider = _provider("p", model="m")
     provider.secrets = secrets
     result = pick_execution(
@@ -1803,11 +1810,13 @@ def test_no_pinned_model_keeps_the_unfiltered_choice() -> None:
     fallback = pick_execution(_roster(default, weak), NOW)
     assert fallback.executed_provider is default
     assert fallback.model == "x"
-    # Only `weak` declares `m`. Main refuses on `strong`, so a filter that acts
-    # on preferred_model (and picks `weak`) fails here.
-    assert _outcome(
-        _roster(strong, weak), execution_class=JUDGMENT, preferred_model="m"
-    ) == ("refused", 'provider "strong" declares models [x]; "m" is not one of them')
+    # Only `weak` declares `m`. A judgment class skips a suggestion (U3), so a
+    # filter that acts on preferred_model (and picks `weak`) fails here.
+    skipped = pick_execution(
+        _roster(strong, weak), NOW, execution_class=JUDGMENT, preferred_model="m"
+    )
+    assert skipped.executed_provider is strong
+    assert skipped.model == "x"
 
 
 def _account_model_qwen() -> Provider:

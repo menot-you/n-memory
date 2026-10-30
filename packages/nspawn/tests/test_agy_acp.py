@@ -599,6 +599,62 @@ def test_every_turn_runs_on_the_account_the_node_host_recorded(
     assert agy_acp.main() == 2
 
 
+def test_the_shim_runs_the_account_from_the_roster_the_route_selected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The single config file wins in the shim as it wins in `route_launch`.
+
+    Config A and roster B both declare `agy1`, with different homes. The route
+    selects A's account, so the shim must run A's home, not B's.
+    """
+
+    def declare(name: str) -> Path:
+        path = tmp_path / f"{name}.toml"
+        path.write_text(
+            f'[bins]\nagy = "{tmp_path / "agy"}"\n'
+            '[[provider]]\nname = "agy"\nkind = "agy"\nmodel = "m"\n'
+            f'[provider.accounts.agy1]\nhome = "{tmp_path / name / "home"}"\n'
+        )
+        return path
+
+    monkeypatch.setenv("NOTT_NSPAWN_CONFIG", str(declare("config-a")))
+    monkeypatch.setenv("NOTT_NSPAWN_ROSTER", str(declare("roster-b")))
+    _, provider = agy_acp.roster_provider()
+    assert provider.accounts["agy1"].home == tmp_path / "config-a" / "home"
+
+
+def test_an_absent_roster_refuses_the_shim_without_a_host_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("NOTT_NSPAWN_CONFIG", str(tmp_path / "absent-config.toml"))
+    monkeypatch.setenv("NOTT_NSPAWN_ROSTER", str(tmp_path / "absent-roster.toml"))
+    assert agy_acp.main() == 2
+    said = capsys.readouterr().err
+    assert "roster is not declared" in said
+    assert str(tmp_path) not in said
+
+
+def test_every_refusal_of_the_roster_read_names_no_host_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A launcher that does not expand `${ROSTER}` makes the reader refuse with
+    the single config path. The shim gives the words of `route.node_roster`
+    and keeps the full refusal as the cause."""
+    monkeypatch.setenv("NOTT_NSPAWN_CONFIG", str(tmp_path / "absent-config.toml"))
+    monkeypatch.setenv("NOTT_NSPAWN_ROSTER", "${ROSTER}")
+    with pytest.raises(agy_acp.Refused) as refused:
+        agy_acp.roster_provider()
+    assert str(tmp_path) in str(refused.value.__cause__)
+    assert agy_acp.main() == 2
+    said = capsys.readouterr().err
+    assert "roster is not declared" in said
+    assert str(tmp_path) not in said
+
+
 PARAMS = {"sessionId": "s", "prompt": [{"type": "text", "text": "hi"}]}
 
 

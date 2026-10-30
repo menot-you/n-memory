@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Literal
 
 from .capsule import (
     AuthorityClass,
@@ -139,13 +138,6 @@ class DedupHint:
 @dataclass(frozen=True)
 class SiblingHint:
     id: str
-    score: float
-
-
-@dataclass(frozen=True)
-class CoverageMatch:
-    id: str
-    content: str
     score: float
 
 
@@ -308,25 +300,10 @@ def full_tokens(text: str) -> set[str]:
     return lexical_words(text)
 
 
-def containment(
-    a: set[str],
-    b: set[str],
-    *,
-    divisor: Literal["larger", "shorter"] = "larger",
-) -> float:
-    """Token overlap with the caller's declared containment semantics.
-
-    Ingest keeps its historical ``larger`` denominator: two differently sized
-    claims are not near-duplicates merely because the shorter appears inside the
-    longer. Read-only coverage asks the opposite question — whether a capsule's
-    complete claim appears in a larger message — and therefore uses ``shorter``.
-    """
-    if divisor == "larger":
-        denominator = max(len(a), len(b))
-    elif divisor == "shorter":
-        denominator = min(len(a), len(b))
-    else:
-        raise ValueError(f"unknown containment divisor {divisor!r}")
+def containment(a: set[str], b: set[str]) -> float:
+    """Token overlap over the larger set: two differently sized claims are not
+    near-duplicates merely because the shorter appears inside the longer."""
+    denominator = max(len(a), len(b))
     if denominator == 0:
         return 0.0
     return len(a & b) / denominator
@@ -424,60 +401,6 @@ def sibling_hints(
         SiblingHint(id=item[2], score=reported_score(item[0]))
         for item in scored[:SIBLING_TOP_K]
     ]
-
-
-def coverage_matches(
-    store: Store,
-    text: str,
-    *,
-    project_id: str | None,
-    session_id: str | None,
-    min_score: float,
-    limit: int,
-    now: datetime,
-) -> list[CoverageMatch]:
-    """Find live ratified capsules whose full claim appears in ``text``.
-
-    This is the read-only half of compaction. It deliberately does not reuse the
-    ingest threshold fallback: coverage always divides by the shorter token set,
-    while the two ingest callers retain ``containment(..., divisor="larger")``.
-    """
-    significant = significant_tokens(text)
-    if not significant or limit == 0:
-        return []
-    incoming = full_tokens(text)
-    candidates = store.capsules.search_fts_scoped(
-        significant[:DEDUP_MAX_QUERY_TERMS],
-        project_id=project_id,
-        limit=max(HINT_CANDIDATE_LIMIT, limit),
-    )
-    excluded = sibling_excluded_among(store.db, [stored.id for stored, _ in candidates])
-    scored: list[tuple[float, int, CoverageMatch]] = []
-    for stored, _ in candidates:
-        if (
-            stored.id in excluded
-            or stored.capsule.instruction_taint
-            or store.reviews.review_verdict(stored.id) != "ratified"
-            or (session_id is not None and stored.session_id != session_id)
-        ):
-            continue
-        valid_to = stored.capsule.freshness.valid_to
-        if valid_to is not None and valid_to < now:
-            continue
-        score = containment(
-            incoming,
-            full_tokens(stored.capsule.content),
-            divisor="shorter",
-        )
-        if score >= min_score:
-            match = CoverageMatch(
-                id=stored.id,
-                content=stored.capsule.content,
-                score=round(score, 4),
-            )
-            scored.append((score, stored.seq, match))
-    scored.sort(key=lambda item: (-item[0], item[1]))
-    return [item[2] for item in scored[:limit]]
 
 
 def system1_taint_surfaces(

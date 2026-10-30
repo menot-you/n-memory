@@ -38,7 +38,7 @@ Any MCP client that speaks stdio connects the same way as Claude Code.
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#1B1916", "primaryTextColor": "#ECE7DE", "primaryBorderColor": "#E4733A", "lineColor": "#E4733A", "secondaryColor": "#151311", "tertiaryColor": "#0F0E0D", "fontFamily": "IBM Plex Mono, monospace"}}}%%
 flowchart LR
-  agent["Your agent<br/>(any MCP client)"] -->|"stdio, 27 tools"| server["nmemory mcp serve"]
+  agent["Your agent<br/>(any MCP client)"] -->|"stdio, 18 tools"| server["nmemory mcp serve"]
   shell["You, in a shell"] -->|"nmemory CLI"| core
   server --> core["Capture and recall"]
   core -->|"one transaction per call"| store[("One SQLite file<br/>records, journal, index")]
@@ -54,7 +54,7 @@ Recall returns one of three outcomes. It never turns a weak match into an answer
 ## By the numbers
 
 <p align="center">
-  <img src="docs/figures/chart-tools.svg" width="49%" alt="MCP tools per server: nMEMORY 27, nSPAWN 15, nBROWSER 14, nAPPLE 10.">
+  <img src="docs/figures/chart-tools.svg" width="49%" alt="MCP tools per server: nMEMORY 18, nSPAWN 15, nBROWSER 14, nAPPLE 10.">
   <img src="docs/figures/chart-tests.svg" width="49%" alt="Tests per component: nSPAWN 4335, nMEMORY 2339, nBROWSER 731, nAPPLE 106.">
 </p>
 
@@ -128,7 +128,7 @@ The second command shows its provenance: source, anchor and source hash.
 ## Benchmarks
 
 The [evaluation harness](evals/README.md) holds runners for synthetic recall,
-LongMemEval, extraction and comparison.
+LongMemEval and extraction.
 It publishes methods, not a score for this release.
 We do not quote older numbers here, because they measured an earlier engine.
 
@@ -154,7 +154,7 @@ This section is for a language model that reads this repository.
 - **What it is not.** It is not a hosted service, a general vector database or a
   chat history. It does not invent an answer when nothing matches.
 - **Entry points.** The CLI is `nmemory <noun> <verb>` (`nmemory --help`).
-  The MCP server is `nmemory mcp serve` (stdio). All 27 tool names start with
+  The MCP server is `nmemory mcp serve` (stdio). All 18 tool names start with
   `nmemory_`. Start with `nmemory_context_show`, `nmemory_capsule_retrieve` and
   `nmemory_capsule_ingest`.
 - **Configuration.** The optional file is `~/.nott/memory.toml`. The variable

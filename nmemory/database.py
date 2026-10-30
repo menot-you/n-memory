@@ -1287,9 +1287,9 @@ class Database:
     ) -> None:
         """Count a read WITHOUT making the read a canonical write.
 
-        NOT decorated with `@writes`: an orientation read (`nmemory_context_show`,
-        `nmemory_project_bootstrap`) must never take the write lock for the answer it is
-        serving, nor lose that answer to a concurrent writer. The row is handed
+        NOT decorated with `@writes`: an orientation read (`nmemory_context_show`)
+        must never take the write lock for the answer it is serving, nor lose that
+        answer to a concurrent writer. The row is handed
         to `record_traffic`, which writes it after the tool boundary
         ends, in its own short write, and swallows a failure: bookkeeping that
         can fail a read is worse than bookkeeping that is occasionally missing.

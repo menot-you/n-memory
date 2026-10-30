@@ -69,8 +69,11 @@ def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A host whose HOME, roster and secrets are all under tmp."""
     for name in ("claude", "fugu", "qwen"):
         (tmp_path / "secrets" / name).mkdir(parents=True)
+        (tmp_path / "secrets" / name).chmod(0o700)  # whatever the umask
     (tmp_path / "secrets" / "claude" / "first.token").write_text("x")
+    (tmp_path / "secrets" / "claude" / "first.token").chmod(0o600)  # whatever the umask
     (tmp_path / "secrets" / "fugu" / "f1.token").write_text("x")
+    (tmp_path / "secrets" / "fugu" / "f1.token").chmod(0o600)  # whatever the umask
     roster = tmp_path / "spawn.toml"
     roster.write_text(ROSTER.format(root=tmp_path))
     roster.chmod(0o600)
@@ -141,6 +144,7 @@ def test_a_home_another_account_uses_is_refused(host: Path) -> None:
 def test_a_name_that_is_a_provider_is_refused(host: Path) -> None:
     """`Roster.select("claude")` takes the provider, never a fugu account."""
     (host / "secrets" / "fugu" / "claude.token").write_text("key")
+    (host / "secrets" / "fugu" / "claude.token").chmod(0o600)  # whatever the umask
     path = host / "spawn.toml"
     before = path.read_bytes()
     with pytest.raises(RosterEditRefused, match="names a provider"):
@@ -155,12 +159,14 @@ def test_a_token_named_as_its_provider_is_refused_by_name(host: Path) -> None:
     writes nothing; the token stays the owner's to rename, and runs still find it."""
     path = host / "spawn.toml"
     (host / "secrets" / "claude" / "claude.token").write_text("sk")
+    (host / "secrets" / "claude" / "claude.token").chmod(0o600)  # whatever the umask
     before = path.read_bytes()
     with pytest.raises(RosterEditRefused, match="rename claude.token"):
         _open_add(host, "claude")
     assert path.read_bytes() == before
     assert _accounts(host, "claude") == ["claude", "first"]
     (host / "secrets" / "fugu" / "codex.token").write_text("sk")
+    (host / "secrets" / "fugu" / "codex.token").chmod(0o600)  # whatever the umask
     with pytest.raises(RosterEditRefused, match="nothing was written") as refused:
         make_default_account(path, "fugu", "f1")
     assert "collides with a provider name" in str(refused.value.__cause__)
@@ -182,6 +188,7 @@ def test_what_cannot_be_registered_is_refused_untouched(
     host: Path, provider: str, alias: str, says: str
 ) -> None:
     (host / "secrets" / "fugu" / "first.token").write_text("key")
+    (host / "secrets" / "fugu" / "first.token").chmod(0o600)  # whatever the umask
     path = host / "spawn.toml"
     before = path.read_bytes()
     with pytest.raises(RosterEditRefused, match=says):
@@ -198,8 +205,11 @@ def _open_add(host: Path, provider: str) -> None:
 def test_a_new_token_that_sorts_first_never_becomes_the_default(host: Path) -> None:
     """Codex 58a8a8b2 #3: `aaa.token` beside `first.token` sorted first."""
     _open_add(host, "claude")
+    # Yours alone whatever the umask: the file alone makes the account (2026-10-21).
+    (host / "secrets" / "claude").chmod(0o700)
     (host / "secrets" / "claude" / "aaa.token").write_text("sk")
-    assert _accounts(host, "claude") == ["first"]
+    (host / "secrets" / "claude" / "aaa.token").chmod(0o600)  # whatever the umask
+    assert _accounts(host, "claude") == ["first", "aaa"]
     register_account(host / "spawn.toml", "claude", "aaa")
     assert _accounts(host, "claude") == ["first", "aaa"]
     found = Roster.read(host / "spawn.toml").select("claude")
@@ -211,6 +221,7 @@ def test_an_existing_discovered_account_is_never_registered_again(host: Path) ->
     """Codex 58a8a8b2 #2: `alpha` beside `alpha, beta` moved the default to beta."""
     path = host / "spawn.toml"
     (host / "secrets" / "claude" / "beta.token").write_text("sk")
+    (host / "secrets" / "claude" / "beta.token").chmod(0o600)  # whatever the umask
     before = path.read_bytes()
     with pytest.raises(RosterEditRefused, match="not declared yet"):
         register_account(path, "claude", "first")
@@ -229,6 +240,7 @@ def test_a_registered_token_account_is_always_declared(host: Path) -> None:
     path = host / "spawn.toml"
     _open_add(host, "claude")
     (host / "secrets" / "claude" / "work.token").write_text("sk")
+    (host / "secrets" / "claude" / "work.token").chmod(0o600)  # whatever the umask
     register_account(path, "claude", "work")
     assert "[provider.accounts.work]" in path.read_text()
     assert _accounts(host, "claude") == ["first", "work"]
@@ -238,6 +250,7 @@ def test_a_token_provider_with_no_account_takes_its_first(host: Path) -> None:
     path = host / "spawn.toml"
     (host / "secrets" / "claude" / "first.token").unlink()
     (host / "secrets" / "claude" / "solo.token").write_text("sk")
+    (host / "secrets" / "claude" / "solo.token").chmod(0o600)  # whatever the umask
     register_account(path, "claude", "solo")
     assert "[provider.accounts.solo]" in path.read_text()
     assert _accounts(host, "claude") == ["solo"]
@@ -273,8 +286,10 @@ def test_a_token_that_is_missing_is_refused(host: Path) -> None:
 
 def test_a_declared_token_provider_gets_the_others_variable(host: Path) -> None:
     (host / "secrets" / "fugu" / "zero.token").write_text("x")
+    (host / "secrets" / "fugu" / "zero.token").chmod(0o600)  # whatever the umask
     make_default_account(host / "spawn.toml", "fugu", "zero")
     (host / "secrets" / "fugu" / "work.token").write_text("key")
+    (host / "secrets" / "fugu" / "work.token").chmod(0o600)  # whatever the umask
     register_account(host / "spawn.toml", "fugu", "work")
     assert _accounts(host, "fugu") == ["zero", "f1", "work"]
     found = Roster.read(host / "spawn.toml").select("fugu")

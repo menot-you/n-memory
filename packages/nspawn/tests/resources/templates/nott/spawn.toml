@@ -76,7 +76,8 @@ default = true
 # class you dispatch. The method is the strong model plus the fast one:
 # experiments, probes and sweeps that have an oracle are dispatched as
 # `mechanical_fanout`, and `fast = true` runs them on each route's `model_fast`.
-# A table that declares any class must declare `unclassified`, the fail-closed floor.
+# A class table must declare `unclassified` for classless effort selection.
+# A classifier failure keeps the declared class.
 # [classes]
 # unclassified      = { effort = "low", ceiling = "medium" }
 # mechanical_fanout = { effort = "low", ceiling = "medium", fast = true }

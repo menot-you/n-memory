@@ -406,8 +406,8 @@ def test_cli_recall_and_digest_flags(
     assert data["outcome"] == "grounded"
     assert len(data["evidence"]) >= 1
 
-    # Digest --headlines
-    monkeypatch.setattr("sys.argv", ["nmemory", "digest", "show", "--headlines", "10"])
+    # Digest
+    monkeypatch.setattr("sys.argv", ["nmemory", "digest", "show"])
     main()
     out_d = capsys.readouterr().out
     assert "1 capsules stored in SQLite" in out_d

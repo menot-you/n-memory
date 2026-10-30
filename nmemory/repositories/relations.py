@@ -16,7 +16,7 @@ from ..relation import (
     RelationRecord,
     live_relation_sql,
 )
-from .base import Repository, StoreError
+from .base import Repository
 
 REVOCABLE_KINDS = frozenset({"falsifies", "supersedes"})
 
@@ -116,46 +116,6 @@ class RelationRepository(Repository):
         )
         last = cur.fetchone()
         return last is not None and str(last[0]).split(":", 1)[0] == "revoke"
-
-    @writes
-    def unsupersede(self, capsule_id: str, edge_from: str, now: datetime) -> bool:
-        with self.db.connection() as conn, conn.cursor() as cur:
-            # U1: an edge with revocation events has history; deleting it (which
-            # this DELETE does) would destroy the record. Revoke, do not delete.
-            cur.execute(
-                "SELECT 1 FROM relation_revocations WHERE kind = 'supersedes' "
-                "AND from_id = ? AND to_id = ? LIMIT 1",
-                (edge_from, capsule_id),
-            )
-            if cur.fetchone() is not None:
-                raise StoreError(
-                    f"unsupersede refused: {edge_from}->{capsule_id} carries revocation "
-                    "events; revoke it instead of deleting its history"
-                )
-            cur.execute(
-                """
-                DELETE FROM relations
-                WHERE kind = 'supersedes' AND from_id = ? AND to_id = ? AND origin = 'import'
-                """,
-                (edge_from, capsule_id),
-            )
-            return cur.rowcount > 0
-
-    def effort_members(self, effort_id: str) -> list[str]:
-        relations = self.list_relations()
-        pending = [effort_id]
-        members: set[str] = set()
-        while pending:
-            parent = pending.pop()
-            for r in relations:
-                if (
-                    r.kind in (RelationKind.PART_OF, RelationKind.GROUNDED_IN)
-                    and r.to_id == parent
-                    and r.from_id not in members
-                ):
-                    members.add(r.from_id)
-                    pending.append(r.from_id)
-        return sorted(members)
 
     def list_relations(self, *, include_revoked: bool = False) -> list[RelationRecord]:
         """LIVE edges by default (U1): twelve in-memory readers inherit the rule

@@ -1,4 +1,4 @@
-"""Replay evaluator of `nmemory_turn_extract` over the real transcripts (U3).
+"""Replay evaluator of the deterministic extractor (`nmemory.extract`) over the real transcripts (U3).
 
 Runs the deterministic extractor over the TURNS of every transcript the gold
 set declares and measures Precision and Recall against the human labels.
@@ -232,7 +232,7 @@ def evaluate_extractor(items: list[GoldCaptureItem] | None = None) -> ExtractEva
 def render_extract_eval_markdown(report: ExtractEvalReport) -> str:
     m = report.metrics
     lines = [
-        "# Evaluation of the Deterministic Extractor (`nmemory_turn_extract`) over transcripts",
+        "# Evaluation of the Deterministic Extractor (`nmemory.extract`) over transcripts",
         "",
         f"- **Sessions Measured**: {report.sessions_measured}",
         f"- **Sessions REFUSED (D18 exit 2)**: {report.sessions_refused}",

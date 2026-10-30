@@ -11,6 +11,8 @@ re-arm trigger that counts it. Version 6 adds reversible node holds, workflow
 bindings, key reservations and first-terminal receipts. Version 7 extends the
 backend constraint for command sessions. It preserves rows and guards
 in one transaction. An older build refuses an upgraded store.
+Version 7 also gains additive objects in place, in one transaction, with no new
+version: among them the worktree claim generations and their claim triggers.
 
 Times are integer milliseconds and uuids are text minted in Python; JSON is text
 under a `json_valid` CHECK. The one clock inside the database is the notice
@@ -40,6 +42,16 @@ from .rows import (
 
 #: The generation this build writes and the only one it opens.
 REGISTRY_SCHEMA_VERSION: Final = 7
+
+#: Additive instance identity fields. NULL means the old instance supplied no proof.
+INSTANCE_PROCESS_COLUMNS: Final = {
+    "process_pid": "INTEGER CHECK (process_pid IS NULL OR process_pid > 0)",
+    "process_boot_id": (
+        "TEXT CHECK (process_boot_id IS NULL OR "
+        f"octet_length(process_boot_id) BETWEEN 1 AND {MAX_DURABLE_IDENTIFIER_BYTES})"
+    ),
+    "process_start_ticks": "INTEGER CHECK (process_start_ticks IS NULL OR process_start_ticks >= 0)",
+}
 
 THREAD_ORIGIN_INDEX_DDL: Final = """CREATE INDEX IF NOT EXISTS run_events_thread_origin
     ON run_events(json_extract(payload, '$.thread_origin'))
@@ -174,6 +186,126 @@ CREATE TABLE IF NOT EXISTS compute_balance (
 ) STRICT;
 """
 
+#: The session journal (`nspawn.journal`, layer LJ): each vendor session that the
+#: daemon translates, its source and its cursor, its v1 rows and the usage of each
+#: model call. Added at every open without a version change, like
+#: `compute_balance`: an older build ignores these tables. Only the daemon writes
+#: them. `consumed` is the byte offset of the first source byte not translated
+#: yet; `state` is the translator state at that offset. A row is unique by its
+#: place in the session (`seq`) and by its source line, type and own key. The
+#: table key allows more than one `session` row in a session: `journal_session_row`
+#: finds them by key, so a reader sees a second one without the other rows.
+JOURNAL_DDL: Final = """
+CREATE TABLE IF NOT EXISTS journal_source (
+    vendor TEXT NOT NULL CHECK (octet_length(vendor) BETWEEN 1 AND 32),
+    home TEXT NOT NULL CHECK (octet_length(home) BETWEEN 1 AND 4096),
+    path TEXT NOT NULL CHECK (octet_length(path) BETWEEN 1 AND 4096),
+    session TEXT NOT NULL CHECK (octet_length(session) BETWEEN 1 AND 300),
+    size INTEGER NOT NULL CHECK (size >= 0),
+    consumed INTEGER NOT NULL CHECK (consumed >= 0),
+    state TEXT NOT NULL CHECK (json_valid(state)),
+    status TEXT CHECK (status IS NULL OR status = 'failed'),
+    reason TEXT CHECK (reason IS NULL OR octet_length(reason) <= 200),
+    PRIMARY KEY (vendor, home, path)
+) STRICT;
+CREATE TABLE IF NOT EXISTS journal_session (
+    vendor TEXT NOT NULL CHECK (octet_length(vendor) BETWEEN 1 AND 32),
+    id TEXT NOT NULL CHECK (octet_length(id) BETWEEN 1 AND 300),
+    home TEXT NOT NULL,
+    path TEXT NOT NULL,
+    account TEXT,
+    cwd TEXT,
+    model TEXT,
+    effort TEXT,
+    parent TEXT,
+    status TEXT,
+    time TEXT,
+    seq INTEGER NOT NULL CHECK (seq >= -1),
+    changed INTEGER NOT NULL CHECK (changed >= 0),
+    PRIMARY KEY (vendor, id)
+) STRICT;
+CREATE TABLE IF NOT EXISTS journal_row (
+    vendor TEXT NOT NULL,
+    session TEXT NOT NULL,
+    seq INTEGER NOT NULL CHECK (seq >= 0),
+    type TEXT NOT NULL,
+    time TEXT NOT NULL,
+    src INTEGER NOT NULL CHECK (src >= 0),
+    mid TEXT,
+    key TEXT NOT NULL,
+    row TEXT NOT NULL CHECK (json_valid(row)),
+    PRIMARY KEY (vendor, session, seq),
+    UNIQUE (vendor, session, src, type, key),
+    FOREIGN KEY (vendor, session) REFERENCES journal_session(vendor, id)
+) STRICT;
+CREATE TABLE IF NOT EXISTS journal_usage (
+    vendor TEXT NOT NULL,
+    session TEXT NOT NULL,
+    mid TEXT NOT NULL,
+    model TEXT,
+    input INTEGER NOT NULL CHECK (input >= 0),
+    cache_read INTEGER NOT NULL CHECK (cache_read >= 0),
+    cache_write INTEGER NOT NULL CHECK (cache_write >= 0),
+    output INTEGER NOT NULL CHECK (output >= 0),
+    reasoning INTEGER CHECK (reasoning IS NULL OR reasoning >= 0),
+    src INTEGER NOT NULL CHECK (src >= 0),
+    PRIMARY KEY (vendor, session, mid),
+    FOREIGN KEY (vendor, session) REFERENCES journal_session(vendor, id)
+) STRICT;
+CREATE INDEX IF NOT EXISTS journal_session_changed ON journal_session(changed);
+CREATE INDEX IF NOT EXISTS journal_child_id ON journal_row(json_extract(row, '$.id'))
+    WHERE type = 'child';
+CREATE INDEX IF NOT EXISTS journal_session_row ON journal_row(vendor, session, seq)
+    WHERE type = 'session';
+CREATE TABLE IF NOT EXISTS journal_link (
+    vendor TEXT NOT NULL,
+    session TEXT NOT NULL,
+    uuid TEXT NOT NULL,
+    parent_uuid TEXT,
+    parent_known INTEGER NOT NULL CHECK (parent_known IN (0, 1)),
+    logical_parent_uuid TEXT,
+    src INTEGER NOT NULL CHECK (src >= 0),
+    PRIMARY KEY (vendor, session, uuid),
+    FOREIGN KEY (vendor, session) REFERENCES journal_session(vendor, id)
+) STRICT;
+CREATE INDEX IF NOT EXISTS journal_link_source ON journal_link(vendor, session, src);
+CREATE INDEX IF NOT EXISTS journal_source_session ON journal_source(vendor, session);
+CREATE INDEX IF NOT EXISTS journal_run_thread ON runs(thread_id, backend);
+CREATE INDEX IF NOT EXISTS journal_run_updated ON runs(updated_at);
+"""
+
+#: Additive journal fields. The writer also fills them on a consumed source.
+JOURNAL_SESSION_COLUMNS: Final = {
+    "vendor_id": "TEXT",
+    "entrypoint": "TEXT",
+    "summary": "TEXT",
+    "title": "TEXT",
+    "owner_node": "TEXT",
+    "parent_vendor": "TEXT",
+    "parent_evidence": "TEXT",
+    "requested_effort": "TEXT",
+    "sent_effort": "TEXT",
+    "import_state": "TEXT NOT NULL DEFAULT 'importing' CHECK (import_state IN ('importing', 'done'))",
+    "modified": "INTEGER",
+}
+
+#: Additive source fields: `metadata_version` is 1 once the metadata pass read
+#: the source; `linked` is the offset up to which its links are committed. A
+#: release without links moves `consumed` past `linked`, and the pass reads the
+#: source again. `activity` holds bounded facts at the consumed cursor, plus
+#: the previous clock and file identity. NULL queues the existing metadata pass.
+JOURNAL_SOURCE_COLUMNS: Final = {
+    "metadata_version": "INTEGER NOT NULL DEFAULT 0",
+    "linked": "INTEGER NOT NULL DEFAULT 0",
+    "activity": "TEXT CHECK (activity IS NULL OR json_valid(activity))",
+}
+
+#: The indexes over the additive columns, created after them.
+JOURNAL_COLUMN_INDEX_DDL: Final = """
+CREATE INDEX IF NOT EXISTS journal_session_vendor_id
+    ON journal_session(vendor, vendor_id, home)
+"""
+
 #: Added in version 5; `Registry.open` appends both to an older store in place.
 #: The node that admitted a run (`node:<session>`), NULL for every other caller;
 #: `update_run` never writes it. A notice's `generation` counts its armings.
@@ -181,6 +313,9 @@ RUN_OWNER_COLUMN: Final = _text("owner", _IDENT, nullable=True)
 NOTICE_GENERATION_COLUMN: Final = (
     "generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0)"
 )
+
+#: Project notices keep their body in the existing outbox, without a run row.
+NOTICE_BODY_COLUMN: Final = _text("body", MAX_DURABLE_OBSERVATION_BYTES, nullable=True)
 
 #: The abort a fenced key's `run_keys` row meets (`registry.KeyFencedRow`).
 KEY_FENCED: Final = "run_keys: the idempotency key is fenced"
@@ -299,11 +434,76 @@ BEGIN
 END;
 """
 
+REVIEW_HEADS_DDL: Final = """
+CREATE TABLE IF NOT EXISTS review_heads (
+    id INTEGER PRIMARY KEY,
+    subject TEXT NOT NULL,
+    epoch INTEGER NOT NULL,
+    spec_revision TEXT,
+    candidate TEXT NOT NULL,
+    created_ns INTEGER NOT NULL,
+    UNIQUE (subject, epoch, candidate)
+);
+CREATE INDEX IF NOT EXISTS review_heads_candidate ON review_heads(candidate);
+"""
+
+#: The largest generation. A claim change at this value is refused: never wrapped.
+MAX_CLAIM_GENERATION: Final = 9223372036854775807
+#: The text of that refusal.
+CLAIM_GENERATION_LIMIT: Final = "worktree claim generation is at its limit"
+
+#: Each worktree's claim generation: the count of changes to its claim row.
+#: A RED-receipt admission reads it before its Git call and compares it in its
+#: write (`Registry.admit_run`). A row stays when its claim goes and is never
+#: reset or pruned, so a claim that came and went between two reads still
+#: shows. A worktree with no row has generation 0.
+CLAIM_GENERATIONS_DDL: Final = f"""
+CREATE TABLE IF NOT EXISTS worktree_claim_generations (
+    {_text("worktree", _PATH)} PRIMARY KEY,
+    generation INTEGER NOT NULL
+        CHECK (generation BETWEEN 1 AND {MAX_CLAIM_GENERATION})
+) STRICT"""
+
+
+def _advance(worktree: str, when: str) -> str:
+    """Add one to the generation of `worktree` when `when` holds, or refuse."""
+    return f"""
+    SELECT RAISE(ABORT, '{CLAIM_GENERATION_LIMIT}')
+      FROM worktree_claim_generations
+     WHERE worktree = {worktree} AND generation >= {MAX_CLAIM_GENERATION}
+       AND {when};
+    INSERT INTO worktree_claim_generations(worktree, generation)
+    SELECT {worktree}, 1 WHERE {when}
+    ON CONFLICT (worktree) DO UPDATE SET generation = generation + 1;"""
+
+
+#: One trigger for each claim mutation, so each writer advances the generation,
+#: an old one too. An UPDATE that moves the worktree key advances both keys.
+#: Each item is one statement: the upgrade runs them one at a time.
+CLAIM_GENERATION_TRIGGERS_DDL: Final = (
+    f"""CREATE TRIGGER IF NOT EXISTS claims_generation_insert
+AFTER INSERT ON claims
+BEGIN{_advance("NEW.worktree", "1")}
+END""",
+    f"""CREATE TRIGGER IF NOT EXISTS claims_generation_update
+AFTER UPDATE ON claims
+BEGIN{_advance("OLD.worktree", "1")}{_advance("NEW.worktree", "NEW.worktree IS NOT OLD.worktree")}
+END""",
+    f"""CREATE TRIGGER IF NOT EXISTS claims_generation_delete
+AFTER DELETE ON claims
+BEGIN{_advance("OLD.worktree", "1")}
+END""",
+)
+_CLAIM_GENERATION_TRIGGERS_SQL = "".join(
+    f"{statement};\n" for statement in CLAIM_GENERATION_TRIGGERS_DDL
+)
+
 TABLES_DDL: Final = f"""
 CREATE TABLE instances (
     {_text("instance_id", _IDENT)} PRIMARY KEY,
     started_at INTEGER NOT NULL CHECK (started_at >= 0),
-    heartbeat_at INTEGER NOT NULL CHECK (heartbeat_at >= 0)
+    heartbeat_at INTEGER NOT NULL CHECK (heartbeat_at >= 0),
+    {", ".join(f"{name} {declaration}" for name, declaration in INSTANCE_PROCESS_COLUMNS.items())}
 ) STRICT;
 
 CREATE TABLE runs (
@@ -467,6 +667,7 @@ CREATE TABLE notices (
     claim_token TEXT,
     delivered_at INTEGER,
     {NOTICE_GENERATION_COLUMN},
+    {NOTICE_BODY_COLUMN},
     PRIMARY KEY (run_id, caller_addr)
 ) STRICT;
 
@@ -481,7 +682,7 @@ CREATE TABLE run_keys (
 ) STRICT;
 CREATE UNIQUE INDEX run_keys_project_key ON run_keys(project, idempotency_key)
     WHERE idempotency_key IS NOT NULL;
-{KEY_FENCES_DDL}{OWNER_STAMPS_DDL}{COMPUTE_BALANCE_DDL}{ADMISSION_TABLES_DDL}
+{KEY_FENCES_DDL}{OWNER_STAMPS_DDL}{COMPUTE_BALANCE_DDL}{JOURNAL_DDL}{ADMISSION_TABLES_DDL}
 CREATE TABLE run_control (
     run_id TEXT PRIMARY KEY REFERENCES runs(run_id) ON DELETE CASCADE,
     close_requested_at INTEGER,
@@ -513,6 +714,8 @@ CREATE TABLE export_cursors (
     seq INTEGER NOT NULL CHECK (seq > 0),
     advanced_at INTEGER NOT NULL
 ) STRICT;
+{REVIEW_HEADS_DDL}
+{CLAIM_GENERATIONS_DDL};
 """
 
 TRIGGERS_DDL: Final = f"""
@@ -556,7 +759,8 @@ BEGIN
      WHERE EXISTS (SELECT 1 FROM json_each(NEW.read_roots) WHERE type <> 'text');
 END;
 
-{NOTICE_ARM_TRIGGER_DDL}"""
+{NOTICE_ARM_TRIGGER_DDL}
+{_CLAIM_GENERATION_TRIGGERS_SQL}"""
 
 SCHEMA_DDL: Final = (
     TABLES_DDL + TRIGGERS_DDL + f"\nPRAGMA user_version = {REGISTRY_SCHEMA_VERSION};\n"

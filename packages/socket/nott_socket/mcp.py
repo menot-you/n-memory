@@ -293,11 +293,6 @@ class McpClient:
         self._discarding = False
         self._late_envelope: _EnvelopeIds | None = None
 
-    @classmethod
-    def open(cls, root: Path, cwd: Path | None = None) -> McpClient:
-        """A client over the configured MCP at ``root``."""
-        return cls(configured_server(root), root if cwd is None else cwd)
-
     def __enter__(self) -> Self:
         environment = dict(os.environ, **self._server.env)
         try:

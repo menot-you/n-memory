@@ -1,4 +1,4 @@
-"""`nmemory quality measure`: measure the store's hygiene and capture it as a capsule."""
+"""`nmemory quality measure`: measure hygiene and the audit chain, capture a capsule."""
 
 from __future__ import annotations
 

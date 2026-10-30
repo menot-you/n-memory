@@ -47,10 +47,6 @@ class CapsuleNotFound(StoreError):
     pass
 
 
-class UnknownCapsule(CapsuleNotFound):
-    pass
-
-
 class Tombstoned(StoreError):
     def __init__(self, id: str) -> None:
         super().__init__(

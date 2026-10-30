@@ -305,7 +305,7 @@ def test_database_rollback_refuses_live_reserved_run_and_retains_rows_on_reupgra
         row = _admit(worker, project)
         assert cli.main(["database", "rollback"]) == 2
         assert "non-terminal" in capsys.readouterr().err
-        assert nott_database.user_version(worker.connection) == 6
+        assert nott_database.user_version(worker.connection) == 7
         worker.update_run(replace(row, phase=RunPhase.COMPLETED, updated_at=5))
         before = {
             table: [
@@ -318,7 +318,7 @@ def test_database_rollback_refuses_live_reserved_run_and_retains_rows_on_reupgra
         }
         assert _command(capsys, ["database", "rollback"]) == {"version": 5}
         assert nott_database.user_version(worker.connection) == 5
-        assert worker.upgrade() == 6
+        assert worker.upgrade() == 7
         after = {
             table: [
                 tuple(r)

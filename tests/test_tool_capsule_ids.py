@@ -1,8 +1,7 @@
 """Every tool that stores a capsule id names a stored capsule.
 
-`nmemory_capsule_pin`, `nmemory_capsule_reanchor` and
-`nmemory_outcome_record` stored the id they were given without resolving it: a typo
-or a stale id was recorded as a pin, an anchor correction or an
+`nmemory_capsule_pin` and `nmemory_outcome_record` stored the id they were given
+without resolving it: a typo or a stale id was recorded as a pin or an
 outcome about nothing, and an id passed as a handle was stored under the handle,
 which every reader (keyed by canonical id) misses. Each id is now resolved inside
 the tool's transaction, stored in canonical form, and an id that names no stored
@@ -178,10 +177,6 @@ def test_each_unknown_capsule_refusal_names_the_tool_that_refused_it() -> None:
     calls = (
         ("nmemory_capsule_pin", {"id": missing, "pinned": True, "reason": "r"}),
         (
-            "nmemory_capsule_reanchor",
-            {"capsule_id": missing, "anchor": "ids/y", "reason": "r"},
-        ),
-        (
             "nmemory_outcome_record",
             {"capsule_id": missing, "description": "d", "actor": "owner"},
         ),
@@ -221,49 +216,6 @@ def test_pin_by_handle_is_stored_under_the_canonical_id() -> None:
     )
     assert body["id"] == cid
     assert store.pins.get_pin(cid) is False
-
-
-def test_reanchor_refuses_an_id_that_names_no_capsule_and_writes_nothing() -> None:
-    store, server = _fresh()
-    _ingest(server, "a stored capsule so the store is not empty")
-    rebinds, audits = _rows(store, "anchor_rebind"), _rows(store, "audit_events")
-
-    res = _call(
-        server,
-        "nmemory_capsule_reanchor",
-        {
-            "capsule_id": sample_capsule_id(999999),
-            "anchor": "ids/y",
-            "reason": "typo",
-        },
-    )
-    assert res["error"]["code"] == -32002, res
-    assert res["error"]["data"] == {
-        "kind": "unknown_capsule",
-        "id": sample_capsule_id(999999),
-    }
-    assert "nmemory_capsule_retrieve" in res["error"]["message"]
-
-    assert _rows(store, "anchor_rebind") == rebinds
-    assert _rows(store, "audit_events") == audits
-
-
-def test_reanchor_by_handle_rebinds_the_canonical_id() -> None:
-    store, server = _fresh()
-    cid = _ingest(server, "the capsule reanchored through its handle")
-    handle = store.capsules.get_handle(cid)
-    assert handle != cid
-
-    args = {"capsule_id": handle, "anchor": "ids/moved", "reason": "r"}
-    body = _body(_call(server, "nmemory_capsule_reanchor", args))
-    assert body["capsule_id"] == cid
-    assert store.anchors.get_reanchor(cid) == "ids/moved"
-
-    short = "-".join(handle.split("-", 2)[:2])
-    args = {"capsule_id": short, "anchor": "ids/again", "reason": "r"}
-    body = _body(_call(server, "nmemory_capsule_reanchor", args))
-    assert body["capsule_id"] == cid
-    assert store.anchors.get_reanchor(cid) == "ids/again"
 
 
 def test_outcome_refuses_an_unknown_capsule_id_and_writes_nothing() -> None:

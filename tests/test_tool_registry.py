@@ -42,31 +42,22 @@ def test_read_only_tools_are_registered() -> None:
 #: pairing is written out rather than derived.
 MODULE_OF: dict[str, str] = {
     "nmemory_board_show": "board",
-    "nmemory_capsule_consolidate": "consolidate",
-    "nmemory_capsule_export": "export",
-    "nmemory_capsule_import": "import_",
     "nmemory_capsule_ingest": "ingest",
     "nmemory_capsule_list": "list_",
     "nmemory_capsule_pin": "pin",
     "nmemory_capsule_purge": "purge",
-    "nmemory_capsule_reanchor": "reanchor",
     "nmemory_capsule_retrieve": "retrieve",
     "nmemory_capsule_show": "get",
     "nmemory_context_show": "context",
-    "nmemory_coverage_show": "coverage",
     "nmemory_digest_show": "digest",
     "nmemory_dod_set": "dod",
-    "nmemory_index_build": "index",
     "nmemory_kind_classify": "classify",
     "nmemory_outcome_list": "outcome_list",
     "nmemory_outcome_record": "outcome",
-    "nmemory_project_bootstrap": "bootstrap",
     "nmemory_proposal_review": "review",
     "nmemory_relation_add": "relate",
     "nmemory_session_finish": "session_finish",
     "nmemory_session_start": "session_start",
-    "nmemory_synonym_add": "alias",
-    "nmemory_turn_extract": "extract",
     "nmemory_work_list": "work",
 }
 
@@ -179,5 +170,7 @@ def test_get_forms_match_the_schema() -> None:
 def test_an_unknown_field_refusal_lists_the_schema_fields_in_schema_order() -> None:
     """The refusal names the tool's fields in the order its served schema lists them."""
     with pytest.raises(ValueError) as caught:
-        validate_tool_arguments("nmemory_synonym_add", {"unexpected": 1})
-    assert str(caught.value) == "unknown field `unexpected`, expected `alias` or `term`"
+        validate_tool_arguments("nmemory_board_show", {"unexpected": 1})
+    assert str(caught.value) == (
+        "unknown field `unexpected`, expected one of `project_id`, `limit`, `capsule_id`"
+    )

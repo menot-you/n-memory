@@ -34,7 +34,7 @@ from supervisor_support import (
     roster_home,
     wired_success,
 )
-from test_dedup import _frame, _notices, _runs, _serve, parked
+from test_dedup import _frame, _held, _notices, _runs, _serve, parked
 from test_driver import Drivers, Reaper, drv, reaper
 from test_notice_outbox import PROJECT, _dead_caller, _drain, _lapse, _move, _notice
 
@@ -426,7 +426,6 @@ def test_the_read_grant_admits_only_caged_dispatch(
         {"read_only": False},
         {"native_write": True},
         {"read_only": True, "native_write": True},
-        {"read_only": True, "orchestrator": {"session": "s"}},
     ]
     for arguments in refused:
         with pytest.raises(InvalidRunRequest, match=driver.GRANT_ENV):
@@ -925,6 +924,7 @@ def test_a_store_failure_fails_each_store_verb_and_prints_no_answer(
         ("release_notices", ["notice", "release", "--owner-prefix", "node:"]),
         ("owned_runs", ["run", "list", "--owner", OWNER]),
         ("group_runs", ["run", "list", "--group", "g"]),
+        ("caller_runs", ["run", "list", "--caller", "/s.sock", "--json"]),
     ):
         monkeypatch.setattr(Registry, method, busy)
         monkeypatch.setattr(
@@ -934,6 +934,23 @@ def test_a_store_failure_fails_each_store_verb_and_prints_no_answer(
         captured = capsys.readouterr()
         assert captured.out == "", argv
         assert "failed: the store stayed locked" in captured.err, argv
+
+
+def test_a_store_held_while_a_verb_opens_its_supervisor_fails_by_name(
+    registry: Registry,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A busy store at the supervisor start is the same store failure as in any
+    other store verb: exit 1 and a named failure, never a traceback."""
+    monkeypatch.setattr(nott_database, "BUSY_TIMEOUT_MS", 500)
+    monkeypatch.setenv("NOTT_NSPAWN_RUN_ROOT", str(tmp_path / "runs"))
+    with _held():
+        code = main(["run", "close", "--owner", OWNER])
+    captured = capsys.readouterr()
+    assert (code, captured.out) == (1, ""), captured.err
+    assert "nspawn run close failed: " in captured.err, captured.err
 
 
 def test_run_list_and_close_by_owner_touch_only_that_owners_runs(
@@ -967,6 +984,7 @@ def test_run_list_and_close_by_owner_touch_only_that_owners_runs(
         "acked": True,
         # What the run spent as nSPAWN counted it: a Stop's row says its fronts' spend.
         "tokens": 7,
+        "turn_count": 0,
         # When nSPAWN admitted it: a Stop tells each front by the press that preceded it.
         "createdAt": 10,
     }
@@ -1112,6 +1130,8 @@ def test_run_list_by_group_answers_every_run_of_the_group_with_owner_and_sandbox
         "failureReason": "RunDeadlineExceeded",
         "owner": None,
         "sandbox": "workspace-write",
+        "tokens": 0,
+        "turn_count": 0,
     }
     assert [(run["owner"], run["sandbox"]) for run in runs[:3]] == [
         (OWNER, "policy-only"),

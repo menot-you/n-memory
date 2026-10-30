@@ -199,8 +199,8 @@ def run_pilot(
 def _outside_var_tmp(name: str) -> Path:
     """A path that is NEVER a descendant of `/var/tmp`, whatever the `TMPDIR`.
 
-    The `--out` refusals (`prepare_output`, `run_e1`, `run_extract_eval`,
-    `compare`) only fire outside `/var/tmp`, and four tests were building that
+    The `--out` refusals (`prepare_output`, `run_e1`, `run_extract_eval`)
+    only fire outside `/var/tmp`, and four tests were building that
     "outside" from `tmp_path`. pytest derives `tmp_path` from `TMPDIR`, and
     the python gate exports `TMPDIR=/var/tmp/p.XXXX` — inside `/var/tmp`, so the
     path was VALID and the refusal correctly did not fire. The four tests

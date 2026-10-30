@@ -1008,6 +1008,24 @@ def test_a_deeply_nested_answer_is_malformed(selfhosted: Stub, call: str) -> Non
             client.embed_document("d")
 
 
+def test_a_wrong_count_of_openai_results_is_malformed(selfhosted: Stub) -> None:
+    """A parsed answer with the wrong shape reads as malformed, so the answer is
+    the same whether or not the parser overflowed on a deeper nesting."""
+    selfhosted.body = json.dumps({"data": []}).encode()
+    with pytest.raises(EmbeddingError, match="malformed: expected 1 OpenAI"):
+        EmbeddingClient().embed_query("q")
+
+
+def test_a_wrong_count_of_gemini_results_is_malformed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("NOTT_NMEMORY_EMBED_PROVIDER", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(EmbeddingClient, "_post_within", lambda *_a: {"embeddings": []})
+    with pytest.raises(EmbeddingError, match="malformed: expected 1 Gemini"):
+        EmbeddingClient().embed_text("a capsule")
+
+
 def test_a_retried_status_waits_then_a_refused_one_raises(
     selfhosted: Stub, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -219,14 +219,14 @@ def test_the_state_is_the_head_of_the_prompt(monkeypatch: pytest.MonkeyPatch) ->
         pytest.param(("mechanical_fanout", 0.49), id="confidence-below-the-floor"),
     ],
 )
-def test_every_failure_falls_to_unclassified_with_a_warning(
+def test_every_failure_keeps_the_declared_class_with_a_warning(
     monkeypatch: pytest.MonkeyPatch, answer: Any
 ) -> None:
     _install(monkeypatch, answer)
     effective, warning, _ = classify.resolve_execution_class(
         "judgment", "orchestrate the campaign", _roster()
     )
-    assert effective == "unclassified"
+    assert effective == "judgment"
     assert warning is not None
     assert "judgment" in warning
 
@@ -234,7 +234,7 @@ def test_every_failure_falls_to_unclassified_with_a_warning(
 def test_a_failure_never_raises_the_floor_of_a_cheaper_class(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`deterministic` is cheaper than `unclassified`: falling closed is a `min`."""
+    """A failed observation keeps even the cheapest declared class."""
     _install(monkeypatch, system1.System1Unavailable("down"))
     effective, warning, _ = classify.resolve_execution_class(
         "deterministic", "run the formatter", _roster()
@@ -310,7 +310,7 @@ def test_an_exhausted_deadline_falls_closed_with_a_warning(
     effective, warning, _ = classify.resolve_execution_class(
         "judgment", "decide the architecture", _roster()
     )
-    assert effective == "unclassified"
+    assert effective == "judgment"
     assert warning is not None and "timed out after" in warning
 
 
@@ -488,22 +488,7 @@ def test_an_observation_never_narrows_the_pool_to_verification(
 def test_a_failed_system1_never_moves_a_thrifty_class_off_its_column(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The fall keeps the thrifty column, so it stays a descent.
-
-    This leg started life asserting the opposite. An independent review showed
-    that a dispatch declaring `mechanical_fanout` fell onto a DEARER route with
-    the System1 merely down: the floor ranked name-stable, and the alphabetically
-    first provider is not the thriftiest. The cure was not to forbid the fall
-    but to fix the floor — `ranks.py` now ranks `unclassified` by descending
-    `thrift`, the same column, so the fall cannot reshuffle the pool toward a
-    dearer route. `test_the_unclassified_floor_ranks_by_thrift_not_by_name`
-    holds that, and goes RED if the floor drifts back to name-stable.
-
-    What this leg measures is what survived: with the column equal, the three
-    numbers decide, the floor is lower on all of them, and the dispatch
-    descends carrying its warning. Falling closed means never dearer — and the
-    floor ranking cheap is what makes it never dearer.
-    """
+    """A failed observation cannot lower even a class with a cheaper fallback."""
     _install(monkeypatch, system1.System1Unavailable("down"))
     effective, warning, _ = classify.resolve_execution_class(
         "mechanical_fanout",
@@ -519,7 +504,7 @@ def test_a_failed_system1_never_moves_a_thrifty_class_off_its_column(
             }
         ),
     )
-    assert effective == "unclassified"
+    assert effective == "mechanical_fanout"
     assert warning is not None
 
 
@@ -920,7 +905,7 @@ def test_subq_renormalised_confidence_below_the_floor_is_unclassified(
     )
     assert observation is not None
     assert observation.observed is None
-    assert effective == UNCLASSIFIED
+    assert effective == "judgment"
     assert warning is not None and "confident" in warning
 
 
@@ -971,5 +956,5 @@ def test_subq_invalid_distribution_is_unclassified_not_a_crash(
         "judgment", "check the candidate against acceptance", _model_roster(_SUBQ)
     )
     assert observation is not None and observation.observed is None
-    assert effective == UNCLASSIFIED
+    assert effective == "judgment"
     assert warning is not None and "invalid distribution" in warning

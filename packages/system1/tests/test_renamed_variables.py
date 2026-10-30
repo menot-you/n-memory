@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import secrets
+
 import pytest
 
 from nott_system1.renamed import RENAMED, RETIRED, RenamedVariableError, env
@@ -47,3 +50,18 @@ def test_the_transport_refuses_the_old_key_rather_than_read_it(
             model="fixture",
             timeout=1.0,
         )
+
+
+def test_the_check_is_never_handed_an_environment_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing frame prints its arguments: no frame may hold a value, only names."""
+    new, old = min(RENAMED.items())
+    # Made at run time: the long traceback prints this function's source, literals too.
+    held = {old: secrets.token_hex(8), "NOTT_CANARY_SECRET": secrets.token_hex(8)}
+    monkeypatch.setattr(os, "environ", held)
+    with pytest.raises(RenamedVariableError) as refused:
+        env(new)
+    text = str(refused.getrepr(style="long", funcargs=True, truncate_locals=False))
+    assert old in text
+    assert not any(value in text for value in held.values())

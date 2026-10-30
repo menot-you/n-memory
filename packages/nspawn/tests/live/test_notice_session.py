@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 from live.live_support import MEMBER_ROOT, store_rows
-from test_driver_survival import Harvest, _bus, _completed, _dispatch, harvest
+from live.test_driver_survival import Harvest, _bus, _completed, _dispatch, harvest
 
 __all__ = ["harvest"]
 

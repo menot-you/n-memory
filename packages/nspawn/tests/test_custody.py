@@ -245,13 +245,17 @@ def test_every_slice_starts_under_one_weighted_parent(
         calls.append(argv)
         if "StartTransientUnit" in argv:
             raise ControllerRefusal("observed")
+        if argv[2] == "show":
+            return "LoadState=not-found\nActiveState=inactive\nJob=\n"
         return ""
 
     monkeypatch.setattr(AggregateScope, "_call", observe)
     with pytest.raises(ControllerRefusal, match="observed"):
         AggregateScope(**LIMITS)
-    assert len(calls) == 2, calls
-    weigh, start = calls
+    # A refused start still stops the unit it named: systemd may run it later.
+    assert len(calls) == 4, calls
+    weigh, start, stop, proof = calls
+    assert proof[2] == "show"
     assert weigh[-8:] == [
         "SetUnitProperties",
         "sba(sv)",
@@ -262,7 +266,9 @@ def test_every_slice_starts_under_one_weighted_parent(
         "t",
         str(custody.CPU_WEIGHT),
     ]
-    assert start[start.index("ssa(sv)a(sa(sv))") + 1].startswith("nottcontroller-")
+    unit = start[start.index("ssa(sv)a(sa(sv))") + 1]
+    assert unit.startswith("nottcontroller-")
+    assert stop == ["/usr/bin/systemctl", "--user", "stop", unit]
     assert custody.CPU_WEIGHT < 100
 
 
@@ -435,3 +441,27 @@ def test_malformed_accepted_job_reply_is_typed_refusal(
     monkeypatch.setattr(AggregateScope, "_call", malformed)
     with pytest.raises(ControllerRefusal), AggregateScope(**LIMITS):
         pass
+
+
+@needs_manager
+def test_user_manager_uses_only_the_public_bus() -> None:
+    environment = custody.user_manager_environment()
+    assert "XDG_RUNTIME_DIR" not in environment
+    assert environment["DBUS_SESSION_BUS_ADDRESS"].endswith("/bus")
+    result = subprocess.run(
+        ["systemctl", "--user", "show", "--property=Version"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@needs_manager
+def test_custody_does_not_restore_an_inherited_private_socket_route() -> None:
+    with AggregateScope(**LIMITS) as scope:
+        assert "XDG_RUNTIME_DIR" not in scope.environment(
+            {"XDG_RUNTIME_DIR": "/hidden"}
+        )

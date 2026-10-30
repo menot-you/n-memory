@@ -16,7 +16,7 @@ Swapping that writer to a canonical write (`db.write_boundary()`, what
 `@writes` does) makes the generation advance, and the case fails.
 
 The composites with ONE write (`add_relation`, `set_classification`,
-`record_import_block`, `append_dod_event`) have no second write to fail and
+`append_dod_event`) have no second write to fail and
 are not cases of (a): their declaration keeps the eligibility reads under the
 write lock, which the race tests pin.
 """

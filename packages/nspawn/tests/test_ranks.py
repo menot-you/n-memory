@@ -206,19 +206,12 @@ def test_property_fallback_classes_are_name_sorted(pool: list[Provider]) -> None
     assert [p.name for p in ranked] == sorted(p.name for p in pool)
 
 
-def test_the_unclassified_floor_ranks_by_thrift_not_by_name() -> None:
-    """The cheapest class must pick the cheapest route, not the first letter.
+def test_unclassified_ranks_by_thrift_not_by_name() -> None:
+    """Rank `unclassified` by thrift, not by provider name.
 
-    `unclassified` is the floor a dispatch falls to when the System1 cannot say
-    what the work is, and the owner's rule for that fall is "fail closed at
-    the lowest ceiling". Ranking it name-stable made the fall arbitrary: the
-    alphabetically first provider is not the thriftiest, so a dispatch could
-    fall onto a DEARER route than the class it declared — which is the one
-    thing the fall exists to prevent. Ordering the floor by descending
-    `thrift`, the same column `mechanical_fanout` uses, makes the fall a
-    descent by construction.
-
-    Found by two independent reviews, 2026-09-21.
+    A dispatch can declare this class or reach it through a cheaper observation.
+    Compare every cost axis before accepting an observed class.
+    A failed System1 observation keeps the declared class; it does not select `unclassified`.
     """
     cheap = _provider("zzz-cheap", strength=9, thrift=9)
     dear = _provider("aaa-dear", strength=9, thrift=1)

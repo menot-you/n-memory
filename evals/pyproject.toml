@@ -3,13 +3,12 @@ license-files = ["LICENSE"]
 license = "AGPL-3.0-only"
 name = "nmemory-evals"
 version = "0.1.0"
-description = "Scores the local nMEMORY binary against deterministic and external evaluation benchmarks"
+description = "Scores the local nMEMORY binary against deterministic benchmarks and LongMemEval"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "nmemory",
     "nott-database",
-    "tiktoken>=0.14.0",
 ]
 
 [tool.uv.sources]

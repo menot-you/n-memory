@@ -57,7 +57,7 @@
     "CHANGELOG.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "3969dce6e255aa56422ba5ce255f99d16aeebe44e265b476c8b4fcd7393dc323"
+      "sha256": "660081b44af28b157f956b47b9edf42b5e5c556ea279f56175e38d32bd066e52"
     },
     "CITATION.cff": {
       "executable": false,
@@ -67,7 +67,7 @@
     "CLAUDE.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "d9d78f3966362e48cb31167584c6088ee1ee377cfde787a410a7987f099ddad3"
+      "sha256": "1a2bdc8fb62eb2c3264544ab8b7b041c9958cdac4068f47082a49d9dfa061bd7"
     },
     "CODE_OF_CONDUCT.md": {
       "executable": false,
@@ -87,12 +87,12 @@
     "README.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "2b719fbe4387d32473546229f335481fe741516a37de951881f1aa569afbe13b"
+      "sha256": "be3d84b39469b68f14838b1eb935f9f7aaf2f0126fe3ee0107c891bed04929e0"
     },
     "RULEBOOK.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "191a71d33e8bcec76ff41db3b2d9310dce9b2f59292090cc44ab4665b6cdccaf"
+      "sha256": "50501e9ba897e54032cc9c8b664bd1ae81f4cbe83cfafe35301f98dff1e8f305"
     },
     "SECURITY.md": {
       "executable": false,
@@ -107,7 +107,7 @@
     "docs/ARCHITECTURE.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "d8e5f9c315281b437a7124902722fa0c35e0089751cf1d945e1d625bacb14c78"
+      "sha256": "90abdb3b6ac24a561141c24bf6432282ac89e03d02ceecb0f8e212cae88e9b60"
     },
     "docs/DOCUMENTATION.md": {
       "executable": false,
@@ -122,22 +122,22 @@
     "docs/PRIVACY.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "893dd7bf220ff2ae4233877de317bc32d26b45d7dd37cd2ae2c5081dc173e0db"
+      "sha256": "caeca89c67425c152b76cbae8b8c99cef14d6be528e482b36e89bb87e3c32f22"
     },
     "docs/QUALITY.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "c3565a9dc8c1488ea218ace93e209f18a38b89a46b9acfb1872b722dee74d4ed"
+      "sha256": "5304e9b07bbc9903265852c33b2ac81976211d64f7e99fe32aedc9ecc61bb917"
     },
     "docs/README.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "c8d45c79fa51189d32b6f359dfcc610d3c2a8b69dc964b7b067d7faaacd18e7f"
+      "sha256": "1a6f028b012247cbbf4c70bc2b3fdde499e9dc156dc080326a96b63fe625691c"
     },
     "docs/REFERENCE.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "0c554ea1b9536241c253b761215f18b46f17a1496a9f50218b4f0302acd252f0"
+      "sha256": "c819f72d9c5adc71c3339fc3892f54a39445dd0c497f4337d19d6f1b99ebacd4"
     },
     "docs/ROADMAP.md": {
       "executable": false,
@@ -147,12 +147,12 @@
     "docs/RUNBOOK.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "e19604c20c01ec72596cdc4c86dc1a8a14791dc6cc2ce3f7b2191a6a34a07673"
+      "sha256": "204c1bd21113ee9185f9089210babfd60bf6129d6ba0709f5a2ca71137d9158d"
     },
     "docs/SETUP.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "77351ef1dad3c117d1516d62d660a9ae081eb691553a4b6890b3f54ed66c16fa"
+      "sha256": "09d3f3b2fec69580ac6449ff13485641b88fe4b934f76448f1a8a5bd4018a189"
     },
     "docs/TROUBLESHOOTING.md": {
       "executable": false,
@@ -167,42 +167,37 @@
     "docs/components/nspawn/ARCHITECTURE.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "9507ae7e83f58c6fcb0914fed6edd706c7b3c46def118e502fcf04903c1fd8fc"
+      "sha256": "091ba695290053b89708576c91eff0baf445d1a7bde6764824a91aded4b428ce"
     },
     "docs/components/nspawn/QUALITY.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "4f92fc0adff4b98838dde9e234c2481dfa2a7abfd89c8fd36be3ff0d98a07bfe"
+      "sha256": "0b2710d0f58b746d0c27f42595f92d8ec2cf99d9b163a87ae606c5b3ebdbf951"
     },
     "docs/components/nspawn/README.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "790dfda6c041d9d5e67904275d14dbba668d6fadf51eafd2661e5c9d967660ca"
+      "sha256": "cbb378ee87bf387974daff285dd5f27851ffe30100ef3dd8e14f9c53e4572306"
     },
     "docs/components/nspawn/REFERENCE.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "97a4fd51df5618940c4a829c1bf4b076a71e444a5882690957ffdab83b58e846"
+      "sha256": "ae7537eebfc03bf04a13bc0e565b972b60d5a84a14888df03fdc76c8d4575411"
     },
     "docs/components/nspawn/RUNBOOK.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "5914daff86c54c1039eb694b4515efcf3b657716e5e1ad4cfbe10500b4109214"
+      "sha256": "5073642fc98ea36ab6a71d552f9a8f4a4e8d1fa1928cf11be51f3942804bacbf"
     },
     "docs/components/nspawn/SETUP.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "f54761d22bb8581c5ba70a41ec7de74000a843f6cd22b8dc4da8ef2a8858d7eb"
-    },
-    "docs/components/nspawn/setup-catalog.json": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "e38d088b4045b0a663d461df415f2f59ad8dcdc1a1858e15e79ea54126987972"
+      "sha256": "38c1f1e0f4ee0c6d3fe0f9973227f430c8cc54a88a084ab49efe46ba247feabd"
     },
     "docs/export-map.json": {
       "executable": false,
       "mode": 420,
-      "sha256": "4502e6d7c31ef4b21aef4e022b5b9a9520be0110bc988d07e4f806f003153fc6"
+      "sha256": "472a30ca7fc3117cbe44624631f121f612e74df14575d949564b2722fa1f1610"
     },
     "docs/figures/README.md": {
       "executable": false,
@@ -217,7 +212,7 @@
     "docs/figures/browser-security.svg": {
       "executable": false,
       "mode": 420,
-      "sha256": "5c0e9f501518c955b6c06e4d5d51689e779bc1a974939518669ea2071b196798"
+      "sha256": "9485db25c58e71d3e64f1767bc45ab1b9c997b4ecb118d7a2fe411f75dea829c"
     },
     "docs/figures/browser.svg": {
       "executable": false,
@@ -232,7 +227,7 @@
     "docs/figures/chart-tools.svg": {
       "executable": false,
       "mode": 420,
-      "sha256": "3b07a92642c32c576c124e03d8390263797d8b13804e066a69fe8fcf0139e00b"
+      "sha256": "b321b95138af1858fee7d35bc5205f2ba68e0d82f79a23a4aa20d744576be670"
     },
     "docs/figures/hero-napple-dark.svg": {
       "executable": false,
@@ -317,7 +312,7 @@
     "docs/figures/memory-system1.svg": {
       "executable": false,
       "mode": 420,
-      "sha256": "d37c5315810d2328cd5989f545825cb68bdebfc4a81d216fff637b958c7904c2"
+      "sha256": "2da39dbbeba09a7802fa66f5778adf9a559a4d26c9f8507925e60f7f323e9b10"
     },
     "docs/figures/memory.svg": {
       "executable": false,
@@ -332,7 +327,7 @@
     "docs/figures/plugin-lifecycle.svg": {
       "executable": false,
       "mode": 420,
-      "sha256": "e1d3e812ae55fb005da561fe004a821cf3e1ef4430fbd88b8d270c57994c3e72"
+      "sha256": "20d1ae4317ed467991ff3063ce060d3d8f7d8cb867fb1722c3c41b1f2352697f"
     },
     "docs/figures/plugin.svg": {
       "executable": false,
@@ -354,11 +349,6 @@
       "mode": 420,
       "sha256": "5fb7a81f63f9c84b217a092fbc9edba1f531c7b95e3b076631a07e4ec5c289ef"
     },
-    "docs/setup-catalog.json": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "f5cf2d31dd4a82fbed488ac0a1aae03369dc4b10781f7202127f47830f93b26b"
-    },
     "evals/LICENSE": {
       "executable": false,
       "mode": 420,
@@ -367,7 +357,7 @@
     "evals/README.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "1c33e04bc841b5e73da2217ac2728a26c29a5f060c6fa4db4348578733dfb323"
+      "sha256": "cb1319bf88868dbd90a0ce64e09a993f71dc08bb0b89ffd83de8c31f15ec123b"
     },
     "evals/nmemory_evals/__init__.py": {
       "executable": false,
@@ -377,7 +367,7 @@
     "evals/nmemory_evals/artifacts.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "17fc61100bd33423872a4fc46aead32ddae0b04e8d3d77528e129d52994eaf5e"
+      "sha256": "5c64a6325ce12e452720fe401cb16933dbee07a964081fb4e77d33ef5b307a1b"
     },
     "evals/nmemory_evals/capture_gap.py": {
       "executable": false,
@@ -387,72 +377,22 @@
     "evals/nmemory_evals/cli.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "68d5727da19655a421c2e4e444777758ef991e69ea8ef6abe6433433346d56c4"
-    },
-    "evals/nmemory_evals/comparison/__init__.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "495b7f3983bbf5c8257ec4e82c00e36c0e05c154d9cc11ec94768f90a717c4b4"
-    },
-    "evals/nmemory_evals/comparison/accuracy.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "b1f0b19e38406d9c5f6a06544339f46ac7d4be2d32463da9cf39a0e73f4c667d"
-    },
-    "evals/nmemory_evals/comparison/adapters.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "0673b051d0a29e1a46e55417db56e15317044fc0d9768c068e893e25b94a605d"
-    },
-    "evals/nmemory_evals/comparison/arena.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "e10dc9c35cee943ac8a12268905d64f6d580e89dc6b3c53088491f88a02d239b"
-    },
-    "evals/nmemory_evals/comparison/base.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "035a3ac8f6c6c88552b44e917483b070c52ffc1c555bc56b6290d114e8911311"
-    },
-    "evals/nmemory_evals/comparison/http_vendors.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "462426c126382a712aa7941bb7b54a6c3a8f8ddbd9eff892d4656c8fdd44c442"
-    },
-    "evals/nmemory_evals/comparison/locomo.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "466944fd00115ca6b4289033ffa15d293d7694c9a9aa4f0a3dedfde2e3c7a9b5"
-    },
-    "evals/nmemory_evals/comparison/precisionmembench.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "3a3766c4a27e47e9e519156b23d23211b40e0f8e77db664e417c8b9402b1fd57"
-    },
-    "evals/nmemory_evals/comparison/report.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "b72137016c83349f7eed1ea27899c4d7fa83edad0c090a04897b4989a4ec4478"
-    },
-    "evals/nmemory_evals/comparison/runner.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "7fdc782a970771ee67f7e4dc93e99cbacf17038d9108bcb51c34f580dd0c512e"
+      "sha256": "9898d1c8100ffb812cc04a39da584bbfb6bcd9463ed9d2d56713693d0179c927"
     },
     "evals/nmemory_evals/driver.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "e60f4f7be4233b38bc9d408715a26c5e7044ce0a0354611ff00041c98a98b6c5"
+      "sha256": "5d33237fb1ff647b32f33a490ab0fad12164e55248fa277dc436be565f6e2558"
     },
     "evals/nmemory_evals/e1.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "be490eaa7ea340fd6ba6962898af97a105422745f73ce650b24e843c6b465d6c"
+      "sha256": "afd1be39015b8dde02d3a1e735f913c790e70b488adab7e753834a974c84d073"
     },
     "evals/nmemory_evals/extract_eval.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "ee1b3eed97cac9bf0e176519e2a42dc4f10bd3367468d554ac1c0290f459f4ea"
+      "sha256": "45625237cb8c5ee8ae1c7c5b38544c5d987ce7215bdacfd7ddc563e0532339f8"
     },
     "evals/nmemory_evals/llm_proposer.py": {
       "executable": false,
@@ -462,12 +402,12 @@
     "evals/nmemory_evals/longmemeval.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "7cb926a5ba7cf2e27fb42746bf306832833765ebd31ccc2135811cc3a155ce23"
+      "sha256": "673102972a9933a88ec11321db584be2ce216f334c42b6d2cb34a1ac9f79ebd1"
     },
     "evals/nmemory_evals/main.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "f924ccb9cfee2d8f35c4c83f46fbab8f9cf5394396bd483da106dc5c745d26f9"
+      "sha256": "a3c53ea1564828fecdcd62c7e732d5125aa466359f7d521868e3271197644206"
     },
     "evals/nmemory_evals/narrate.py": {
       "executable": false,
@@ -482,7 +422,7 @@
     "evals/nmemory_evals/pilot.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "479b590b380008f28254282a9bef8d7e52a28b72d88afc8b703fc51a0bf81ec9"
+      "sha256": "2f38e5f58daa96894e0a12b63e4c3aaa538f5e9d0d3a2e0fdc74068af607a9ec"
     },
     "evals/nmemory_evals/py.typed": {
       "executable": false,
@@ -502,22 +442,22 @@
     "evals/nmemory_evals/renamed.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "22ad64ba133c6772d070a9efdbff9994c85cd4ba9f4cfd2189be5a2d33873490"
+      "sha256": "7ffbb2dd292efcbbed962baff37548396daf64c23169548d6cc5e4faaf32c554"
     },
     "evals/nmemory_evals/score.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "b008495782bcd0809c53aba9c9ae0487f472341d067dc414942b172544da056c"
+      "sha256": "697594574b1deb2253261e6f981d2438812c6373a864bb878550e8036961151c"
     },
     "evals/nmemory_evals/shadow.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "175b3ef9026044aebe9ae9595bc6efcc334bb7a8c83934717dd2e01a0583490e"
+      "sha256": "11a79a3a6631f30a300e9d44798a229e93581d681ab9090eddc0444ce8cb09ff"
     },
     "evals/nmemory_evals/synthesis.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "350cc2b1fa49842b092c5ca20d8603d72fdd7bcac7e436c409cf76c7ddf3f870"
+      "sha256": "c419693c136ee133da2ff2fec9a099940be87552bbc34d958cfa3fc5d14b7a1c"
     },
     "evals/nmemory_evals/world.py": {
       "executable": false,
@@ -527,17 +467,17 @@
     "evals/pyproject.toml": {
       "executable": false,
       "mode": 420,
-      "sha256": "5d6a61aac9ee1b7bee679379875f69ff9d511f334e61cafde4930ed0e0ba468b"
+      "sha256": "373ced4d81b6a54a44cba0c040c5c1eccd60084d0a88d13f6d70949c9b4c9728"
     },
     "evals/tests/conftest.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "e3711f782e3249bc76f563fafe7bfe9b56eae76fee87fd9beedb3578c500315e"
+      "sha256": "0cb9349999b87679ecb69c0bd03e7a19304c83461ce61b6e6a909d4b07b3e8d2"
     },
     "evals/tests/test_abstention.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "6464c41a002a7d7e7c814a8c92680f3b77bb2e4ac239379ac3ae4e8f9e04f33d"
+      "sha256": "3e0f9e38c5350b6122f1cfe56e755081b66d58782895e7c2549b07159bc1ed67"
     },
     "evals/tests/test_determinism.py": {
       "executable": false,
@@ -547,7 +487,7 @@
     "evals/tests/test_driver.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "2d3bfc467227f6e40c8d49e46f4af36482682ea99113393b982fd5f4ae87eef2"
+      "sha256": "a20020804d02572e543f2053f88654fc46a668782a020061d6974e94e3a2b7df"
     },
     "evals/tests/test_metrics.py": {
       "executable": false,
@@ -562,7 +502,7 @@
     "llms.txt": {
       "executable": false,
       "mode": 420,
-      "sha256": "4c064902248be04cfa729904d397a0aad3c5981cc345cf59ff184e192262fd4a"
+      "sha256": "653d128e98ae7c6379709ab298d4715f14d00ef59e0ae2f02b915c2c07b1be25"
     },
     "nmemory/__init__.py": {
       "executable": false,
@@ -582,17 +522,17 @@
     "nmemory/anchors.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "f150bd65e2a4e1232436059f181af284c5b861e9633afa1bdaa0a637d02def00"
+      "sha256": "f8a152caa2eaf1476e7bcbcd6dd2c69b41af9ff77c2b44da6c7bbf4ecbd95131"
     },
     "nmemory/audit_actions.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "0f0168fafbfa3672143a3c0fa5e95c396d52bfe49b16d44e17111eacfbc347dd"
+      "sha256": "8af998fe0b6d4bde8455a8c744dc64fd1f456a2a27363e5fcf13d4b62df1a5ab"
     },
     "nmemory/bridge.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "9ef79686f98ff08ba29b929f3d1e16c2229be7e51a4d3ef82d42a4876fc9ef89"
+      "sha256": "e4ff75a39869433ed9c5503760961f1e0fedfad9b4bef8a301eabb71cd645e43"
     },
     "nmemory/capsule.py": {
       "executable": false,
@@ -602,12 +542,12 @@
     "nmemory/capsule_ref.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "4d669ce75fe94b3f846b22175e8dabc902154d24bbceab431510ea014fa00687"
+      "sha256": "44d36f55705ed356b0ed79119a5f268e38d0700b20c13946217b8308dfbc9d5f"
     },
     "nmemory/capture.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "c23cfc8fd024919d1242da7339c7ae9b049541cabf22bf262bdd0f8ebda82301"
+      "sha256": "83ae61a1c915ebb26723d7e0be2ebbeccb7534bb7821f95c26598e2385e62d39"
     },
     "nmemory/classify.py": {
       "executable": false,
@@ -617,7 +557,7 @@
     "nmemory/cli.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "be8389ec19fe3dfb76ec0f65242db603f7c38943274ac43dac35bd750f76a2d2"
+      "sha256": "22d2de8952c80dbafea0f55f6ea38655fbc4c48e3b60a90b5c2dfb615cff2bdb"
     },
     "nmemory/commands/__init__.py": {
       "executable": false,
@@ -632,12 +572,12 @@
     "nmemory/commands/capsule.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "6d77b8bdd99f3aee2b5cfa28de1636ec97e7f195157a5351ed5dca299d16d31d"
+      "sha256": "e2000f42e6226668b5c9c220dda1ba112aa2447d91992ba35f7f470b0108caf2"
     },
     "nmemory/commands/common.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "73c89d6de40f80065da4e46beb72d6ab5f1c20bfa3f8fd5ffefee646ca0ef044"
+      "sha256": "ff8c0bbac2235dd6fa9fa87ed911b96b1556a19709ba3583afcf1a1ea0f28e40"
     },
     "nmemory/commands/context.py": {
       "executable": false,
@@ -663,11 +603,6 @@
       "executable": false,
       "mode": 420,
       "sha256": "2e6503a2282a5affaef88c6acc16dd37ad3ec243c7c0fbfb57c0edcdad2852c4"
-    },
-    "nmemory/commands/github.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "44303ec6efc47658396b0d2db940ddfc503ad124d81fc39f81f4b7e5dcad4669"
     },
     "nmemory/commands/index.py": {
       "executable": false,
@@ -702,7 +637,7 @@
     "nmemory/commands/quality.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "73bc9137b625270241d2fb4fc49f443d7115990eb9c1d75839012364f3ff59b2"
+      "sha256": "a948e96509eeae425e9effbaa594f37b4f47712194bec756e854304550f92aac"
     },
     "nmemory/commands/release.py": {
       "executable": false,
@@ -722,17 +657,17 @@
     "nmemory/config.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "9da4a5c3fbee56f082bd41724255a5620d675b1c215bda46d17798fc77c6601c"
+      "sha256": "851ba8983741aa39fc3ae1663500a9eb9e29de10b6eca154583ef754d4d98793"
     },
     "nmemory/consolidate.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "296691194148eb66fabf999c3ba27d81e872aa9937ddb87acbb2ca9b93bae9e1"
+      "sha256": "edb7824d982d091cb4ca0dbc37db2bde1930c7784cd1cf3ed7ab3f6310724f71"
     },
     "nmemory/context.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "23263a95eeded7e143252bd9a25320929c57a2e372bd7cfbb73a08edaa995e97"
+      "sha256": "1cc8c8a4ae7086e2ec81909dd7491e54339585339a36b5aae0532e215c946b22"
     },
     "nmemory/context_readers.py": {
       "executable": false,
@@ -742,7 +677,7 @@
     "nmemory/curator.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "0e2ba2da6368b90ad68941435ffc09830437c19bdb6f8f254086283307427a32"
+      "sha256": "3b546acbd0cf053f246d87d80560a19dd54fc5b98a48f515077f8cb1ffbcc0de"
     },
     "nmemory/curator_policy.py": {
       "executable": false,
@@ -752,7 +687,7 @@
     "nmemory/database.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "718a03355437d6267b624267d7357f5b1a63c75c77babc78ad50a1e7277e51ad"
+      "sha256": "9442297324d5a8e7deef626cba298c2b5422f87d88124263c8feb87611220bbb"
     },
     "nmemory/dod.py": {
       "executable": false,
@@ -762,12 +697,12 @@
     "nmemory/embedding.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "28b657917cee8af14d7c0d24161d2be3d482bf9c07203796504043ea319b7184"
+      "sha256": "0bc3014f0c15b8403d0362cf1d719c64c453a137a3602e9e8ab4a25b8905af5f"
     },
     "nmemory/embedding_index.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "47aacebcf2085781227f804a767ad884fc9ebcb81a2ad76610af072ff975db27"
+      "sha256": "549eb5f230cf2cf44a4b65f9f0acbb81ee3335b4c00b24bd321100792138a24e"
     },
     "nmemory/export.py": {
       "executable": false,
@@ -784,75 +719,60 @@
       "mode": 420,
       "sha256": "67d52a9e6d22ec7bc16bf58ca5918cca45e130544fa355e403b7cb3391389daa"
     },
-    "nmemory/github.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "5cab756674efbdb6a35cb00bd643c1d247f0aad001490e4a22227d2a8e35a9fb"
-    },
-    "nmemory/github_client.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "d0e712d863b1c32eb0fa604fbc85e9d118e030c19c0406cea286c96309868b6d"
-    },
-    "nmemory/github_plan.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "8ce77719d6d2c613ed4b144c32fa7adae2babdece0e4d2cfac5c253e0262c560"
-    },
     "nmemory/hooks/hooks.json": {
       "executable": false,
       "mode": 420,
-      "sha256": "2e376c388371b0dfc90af96cdca9e5c7832e2d6d1dbfdfbfb935858a62602a38"
+      "sha256": "213b10ff98ad1b62b046dd53bf7083353befd6a7d95a0e1478fce06a79853e99"
     },
     "nmemory/hooks/nmemory-capture-gate.py": {
       "executable": true,
       "mode": 493,
-      "sha256": "e47207c0d36d2a2123b71c1aafbed043f363f34d242916d27537946d7af548c0"
+      "sha256": "9126c0aaf5c23748894895836d136447cee0291fce64ae6d87c5c5c8821f90ec"
     },
     "nmemory/hooks/nmemory-recall.py": {
       "executable": true,
       "mode": 493,
-      "sha256": "0fec1d8aec20bada0ac18c02dba2625ad297028409d06767c4c2f925ebd76086"
+      "sha256": "d14aa197a02f4d9db013f0d9ca5fea3b7867d9564e52b7680d87a7cd82f9ba12"
     },
     "nmemory/hooks/nmemory-session.sh": {
       "executable": true,
       "mode": 493,
-      "sha256": "dd7eab20d813a8a7eb8301f206e571c4fea977bf18fafa32c065c0719f876cdf"
+      "sha256": "b90b94564869b44dedf4b80f505707672dc614e3939d0691211b73488a8777df"
     },
     "nmemory/hooks/renamed.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "f885cc6acf11635885ae07b4ed04e89c5725fef2793c34793c3326d3ce249e5e"
+      "sha256": "fcc12a500a8e7760a162ed17561587526a03f9ae4de8c245cf88634819727536"
     },
     "nmemory/hooks/renamed.sh": {
       "executable": false,
       "mode": 420,
-      "sha256": "2e7c08494b89f88ff98a594a28eaa019ea8a69e1873d55d5f17303a8417e4718"
+      "sha256": "cfad7104c4c06161a41497176bcd1692e00fc64a52e336a1d0b057b01bf86c9c"
     },
     "nmemory/hooks/system1-suggest.py": {
       "executable": true,
       "mode": 493,
-      "sha256": "9e4aeda0ed89fe3194b7923debfa61fe4fac24b506f558476dd78a0339cecc68"
+      "sha256": "a7ed1d78838f5c15b66c03c10b2b72850359c0bfe700e691c013080313e629c3"
     },
     "nmemory/hooks/system1.py": {
       "executable": true,
       "mode": 493,
-      "sha256": "8f00603d1f628ede11b4c6f85171cc21e4620721eed4d42118a5b75b93155a74"
+      "sha256": "5a31851bb3e552fec070680336113f41867b66956bc294d2686d0f636707ccc0"
     },
     "nmemory/hygiene.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "049895b3c5f5fdbb9fcda16ce085a43b2ad51afb0c0890dae6e7b54affed9baf"
+      "sha256": "fc7cf93ca8686321fd48715f27f5f1df58110e985f7f4aca1c3ff4da86e46192"
     },
     "nmemory/ingest.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "543a374f64f3cbae8c1860550eb92fd2f922378c6d4bc00d8e788e3141fe5c2a"
+      "sha256": "f4d60949197ccea107a42220b7f85ea493ff127977b108db8b974d63cb4c12f1"
     },
     "nmemory/journal.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "b232b10000f795bb5c81ef09cd3eed63ce79ebe57a784f4394434e3157475030"
+      "sha256": "d0e6bbedb5db8ce550d0dcf86c6f17516e3bff4bc41cbee66a4338eb8d6a4074"
     },
     "nmemory/language.py": {
       "executable": false,
@@ -897,12 +817,12 @@
     "nmemory/queries/board.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "5e1370feeba24d6bceaf24a75b08a8258cccc5dcc98c045a601baa397985a6f5"
+      "sha256": "d4a2fa2841b85c93dafbdfddc776b65e364157373433102dada247a7c7e52077"
     },
     "nmemory/queries/census.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "0e1a6c5dc494b34a41823584a8a58d2032ccae63fb87e16c82b232baa825a81a"
+      "sha256": "23bf4c32065ba6cf280cf5cd43302c9fe2a7b71e1d902bd55e10fa7717088832"
     },
     "nmemory/queries/curator.py": {
       "executable": false,
@@ -927,17 +847,17 @@
     "nmemory/queries/journal.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "7da6ff2c054549ab316cfc7fcc6a9bde2dfc0cc93a4fa76e64efea552f38aecb"
+      "sha256": "9ff0428732761e95fe3ff65298213f3dbdf5a7b07f0450af3b0d9104b1dc8501"
     },
     "nmemory/queries/sidecars.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "b39ee5f9b5849f5ca479fac22f58bf94987f471611f8ca4beeb686ef4583b066"
+      "sha256": "d345b735d360a1c7f9da15e5ce3ac50bbaca586984701be8c320c1c8cc735856"
     },
     "nmemory/queries/staged.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "c7c6de176369fb67b8df8869c399e247d8b780ae4bca4919d53fed7cc454f892"
+      "sha256": "b41946bc70fa9d0bbff8bb43fb785e9712aa007f34041467fc185419cea991c2"
     },
     "nmemory/queries/standing.py": {
       "executable": false,
@@ -957,7 +877,7 @@
     "nmemory/renamed.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "22d4d75d42c36ab4a1d308bd7d42cc346fe26b6b5d1d298e44153b8d0793edb2"
+      "sha256": "062a03a55ac2b07415f30b1193bd6ea2ff2fb6e6cb35d6a95f7eef519227e9cb"
     },
     "nmemory/repositories/__init__.py": {
       "executable": false,
@@ -967,7 +887,7 @@
     "nmemory/repositories/aliases.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "f401ea89465671a711f50f7f4e31c89b4c59ca2c5578aa694925aa4f390a0d13"
+      "sha256": "842e8662e5175820120a3269e9407c81820bd19fabafe9dbea6f6d008c922532"
     },
     "nmemory/repositories/anchors.py": {
       "executable": false,
@@ -977,7 +897,7 @@
     "nmemory/repositories/audit.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "ec60ab0363618081b61a1c9380715cf595d37a17374acbb3a0f4c992b8d16808"
+      "sha256": "0ea47ce57798c44d1bee413c02ef4392434c5c35c0f78b5be50bc4e21dab14a1"
     },
     "nmemory/repositories/base.py": {
       "executable": false,
@@ -987,7 +907,7 @@
     "nmemory/repositories/capsules.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "106d4ac387d029b3f3683499d02d80dba34892bc8267a8778157b5b2b7a14c2c"
+      "sha256": "c0fee57718e399a66fc3d0b9f473bf23360dd407ff2cc5a434f2eefb499a9a52"
     },
     "nmemory/repositories/classifications.py": {
       "executable": false,
@@ -997,7 +917,7 @@
     "nmemory/repositories/corpus.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "195442e3482335594631f0831a55f798f2c700a0b13f155d0e1cd4bde3d90202"
+      "sha256": "96e309f789482418a6c8cf7693dd39dc241542ff543385e7e71822d2248498ea"
     },
     "nmemory/repositories/dod.py": {
       "executable": false,
@@ -1022,7 +942,7 @@
     "nmemory/repositories/relations.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "c1afb8e05c04d2b6bc3b81b1f0f7cad2d2dd62d8976074f387d3b0f6fbf88168"
+      "sha256": "97ee5e84b357d9cba73e9fb976dab28cd7e96ba012309ea841fc9a392ec81369"
     },
     "nmemory/repositories/reviews.py": {
       "executable": false,
@@ -1034,15 +954,10 @@
       "mode": 420,
       "sha256": "92677c914350bcf53ee794a657871643e9e1be2fcbd4af381ed20e1013fae933"
     },
-    "nmemory/repositories/sources.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "78da0041d61592a956d4575322460e01035ae3310d6ac3b47fd5bf0e6cc7e924"
-    },
     "nmemory/repositories/substrate.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "20d0e51456357ff1df90578a916382bcd26fb583f8565ffb1ffbf6d1b8b7d6fa"
+      "sha256": "6de077b594148dc58d0b254e7a7550c9d4f09f0aace5fcba9318cfff68797208"
     },
     "nmemory/repositories/tiers.py": {
       "executable": false,
@@ -1052,12 +967,12 @@
     "nmemory/repositories/traffic.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "2f466990f629e3b8638ea6ee4075d39dff63ef52c8856945c298d53b46863bbd"
+      "sha256": "3412543db5a66efde1f7854a685e4f7cc19ff6c0455ebeb712f1ae53a744eff2"
     },
     "nmemory/retrieve.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "3758e63d7e28ab6e158ceb0acac18cc51df3b6b942d95228356dd1ed426390f4"
+      "sha256": "4982dc00e3e3f50781d582f8a2c863768c2e3c84c4bbf44c502feff305ac0edd"
     },
     "nmemory/rules.py": {
       "executable": false,
@@ -1082,7 +997,7 @@
     "nmemory/server.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "35f6025bada412e8aecf18beee1912575e52d297a4bfa4da0814eb1b7ab45a9b"
+      "sha256": "95a160b754a106d367a5bf6a5355293ed09d33b96115c02d2ebac470f429547c"
     },
     "nmemory/space.py": {
       "executable": false,
@@ -1092,22 +1007,22 @@
     "nmemory/staleness.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "a6820b7ba7894ec28b539a596f8a7111bd1d64c05bf3ff46796ba109d92fef76"
+      "sha256": "d6372beb6c79cbfb0ce0b11825764176f729a8447544613e674d8d0b5ea89986"
     },
     "nmemory/store.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "d65467622f2f330f8f8e20608e7a27c9d8b12ca7f669143cf5d736f8aaab1726"
+      "sha256": "c9a04ce3512276d43c45b83db4540e86b2994de5ffadcc892a6a25682d1f48f0"
     },
     "nmemory/subproc.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "bfef2e8bb2ff0a1f4f31af8e6aaf79f08bbd62cee96046c8b98d54a2cd1ba0a6"
+      "sha256": "8a00f73b8696502a33faac082ed38b01407c5e51ba9b892cfa0c94b0265d6fc5"
     },
     "nmemory/substrate.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "3b6b01afc12cc120d5b4ad309f65c2a9089376841add177dac336f8c7cb717fa"
+      "sha256": "273239e51b4420c6e82449278d921a1d78acccb76d164f9a3c4176a67905f5e4"
     },
     "nmemory/system1.py": {
       "executable": false,
@@ -1122,22 +1037,12 @@
     "nmemory/tools/__init__.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "043cce303d4126ea083965a82cfcba857912e0d52cb4426a966e10aca1cfa12b"
-    },
-    "nmemory/tools/alias.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "3907b7bbb5e4d152a7dbdf3814383c5f721840fd697c1dd9450b36875c6138a9"
+      "sha256": "4afdc79b4dc0aad72f09b8bfe830a0400421f2faab4278b2531499ce1a78e444"
     },
     "nmemory/tools/board.py": {
       "executable": false,
       "mode": 420,
       "sha256": "8b58b9d5c05474162b7ae26e15627105b236fc63725db3e020bde9ea54a3b585"
-    },
-    "nmemory/tools/bootstrap.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "7eab30df55c59334ae9486f7b36d97a154cf785792264d8e183fe1d4fa540c5e"
     },
     "nmemory/tools/classify.py": {
       "executable": false,
@@ -1147,27 +1052,17 @@
     "nmemory/tools/common.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "5f83021aab72275c5ba645b52935c8d00908fe4705e35cbddaf6c395ea22bb83"
-    },
-    "nmemory/tools/consolidate.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "5247a0fba6a0c8bd5e3dbc9f4956dc94354e1410b34c67c4b4c0cb0576828a88"
+      "sha256": "c79b225e9317ee29406271a301d13ce31e656c9c6831aa81529eaa17df5ef7d1"
     },
     "nmemory/tools/context.py": {
       "executable": false,
       "mode": 420,
       "sha256": "d824c3f7c380e7e7c26844aa9584b241f0a72fae3c7a055aa13ba09e4bf7a642"
     },
-    "nmemory/tools/coverage.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "32ea5297ef951cad054f4b4c98948970b2f1239befcd5f955f43fe2a5cdb79d6"
-    },
     "nmemory/tools/digest.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "9ff3329e85c7e12a148b132eddf19a928c87bb61294e6c3e49e98ec00e754e93"
+      "sha256": "8df18c514d3c8964716f48cb921177cbd1128387d181eb6a85b23f59d83032a1"
     },
     "nmemory/tools/dod.py": {
       "executable": false,
@@ -1179,35 +1074,15 @@
       "mode": 420,
       "sha256": "914362939e1af83fce838e0b099f901bb40a9e6050338872088fab3f1520d182"
     },
-    "nmemory/tools/export.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "e465dfed2cb6ce75f7b2bf303cb5c4a1fdc5517037db3f1c475505a034856437"
-    },
-    "nmemory/tools/extract.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "06cce3aceb815464e456004df3490d66ec96b3280157b913711d707cfb2e3c73"
-    },
     "nmemory/tools/get.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "4069279fb3fad1f3ea9b620aadfe8801d58862eda558134ebfe4939a9ce929c1"
-    },
-    "nmemory/tools/import_.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "6039e7187a467da6197886d0609c59a89e5efe59daab6d5cf935413448986b12"
-    },
-    "nmemory/tools/index.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "407e36c00dc63808793f71c3c5d0363a370a9dcf1be4d41be17daa17b2fd1070"
+      "sha256": "f0843f18edc26c8464a0dfa34302ea40286b1d8cfd717f57c78f7f95d8df273b"
     },
     "nmemory/tools/ingest.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "8a99d44f3064caa28ed294420ccc9eae12aa3779a8abdc1078246bd94f21c0b0"
+      "sha256": "8276e5a5ca254842bec67b61de019bfae021a46dec431c93fdb0fbaf83dc8898"
     },
     "nmemory/tools/list_.py": {
       "executable": false,
@@ -1234,11 +1109,6 @@
       "mode": 420,
       "sha256": "d7835ebbb497db798a8124659d16851cc2c33b3c27ed8149494a69bb0fd42fe7"
     },
-    "nmemory/tools/reanchor.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "02145e78a8b6e41043ce3156dfb7bd89209e952c7d6dca025c8370ba06b0d1eb"
-    },
     "nmemory/tools/relate.py": {
       "executable": false,
       "mode": 420,
@@ -1252,7 +1122,7 @@
     "nmemory/tools/review.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "d58ef49ea0142c31aeff64f8e106d4af14c8386765bef8d443253e8892d6b1c5"
+      "sha256": "f621c6b6781190ebda387ef087c58d5b1a06fb25280d7300cfd508c1d4c72da3"
     },
     "nmemory/tools/session_finish.py": {
       "executable": false,
@@ -1262,12 +1132,12 @@
     "nmemory/tools/session_start.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "442e9f2300773dcaaba7c0ff19e9b696fcef4867011ae05a91af02a42f2a39dd"
+      "sha256": "12596b8dc16a7482a3336a7836f158c034f35c665bb7a25cb4abf7da45bd5295"
     },
     "nmemory/tools/validation.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "4816f00cc8eda1a1592c9dd593bd2a1a545b1230abcd385bf6ebfa4f4d3a5419"
+      "sha256": "fa32ec38b12b6b62070758ed2093e460f25425c50015d386bf790848224b604f"
     },
     "nmemory/tools/work.py": {
       "executable": false,
@@ -1277,7 +1147,7 @@
     "nmemory/tools_schema.json": {
       "executable": false,
       "mode": 420,
-      "sha256": "08c71fb3c54375c3d779c543c45f15488d87ace1a342dab85b0f3437599f5b18"
+      "sha256": "2abb4651e74143f1ed297f2de2659756cb97264da0d001372b07d9d91bc8fd2e"
     },
     "nmemory/wire.py": {
       "executable": false,
@@ -1297,22 +1167,17 @@
     "packages/database/README.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "beccc07ab57b6711346e3ab7f51ac9efa8d18e26b5f2ad0341752204370f67c9"
+      "sha256": "3948386d454caaa75c8e74fa1862b30a24144c35d4e2d46f2af870c3430a101c"
     },
     "packages/database/nott_database/__init__.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "7cb409fab11f0996a07e8a194c33913709023cb1ce8db04d421822d7b248c2ec"
-    },
-    "packages/database/nott_database/_directory.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "b4d56e20514ea751ceb904676e56f3596bb74d6e7d2c68841a770fcc69ca6caa"
+      "sha256": "a959ad6633ab0a5f6d12314c9dde0377c243106e4d1652e78d17a5c83b0f9a5e"
     },
     "packages/database/nott_database/captures.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "d45bc58dffadcf5e3c1ed5f02b87453bd2b1c0a0440ef1fc28d85bb4ff256b59"
+      "sha256": "dc199ef700937ff9276676090577d7907f0916b8da6d19741fbb7b42e27fb3c0"
     },
     "packages/database/nott_database/py.typed": {
       "executable": false,
@@ -1322,7 +1187,7 @@
     "packages/database/nott_database/pytest_plugin.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "2522908a183b85ee2f01778d9cd8de8676044048383e7683cadfe00488abefdf"
+      "sha256": "dc635fada70af5b9800920c8ee7cd9b74aa6683314911f716081ce187b99eca8"
     },
     "packages/database/pyproject.toml": {
       "executable": false,
@@ -1332,22 +1197,22 @@
     "packages/database/tests/test_captures.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "52b77bde2918979bd5c4de0ce9fda6b169040821cd7b1c1457eca50d0d1e17e5"
+      "sha256": "bc5ad054ad71cadc6f72da8b12be8162dbdb9d4b8c715ec796b1a79b56205ec7"
     },
     "packages/database/tests/test_database.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "cdf3aa71b30c68165354cc973ece86fdeca08b7e00c06ffc08484ff47c546154"
-    },
-    "packages/database/tests/test_directory.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "544fba8a13398883ab24b0baf1c1450a3ef937bf1641a8a36032f50b1479b55c"
+      "sha256": "0d6281aa2c01a5e4a6fb4a68c57cf5446782fdd69607c9b2a67c1a31c2d32bc6"
     },
     "packages/database/tests/test_live_store_child.py": {
       "executable": false,
       "mode": 420,
       "sha256": "0c14df3c25ed520e6108bc45180824f5ccfa8716d4c17258ade578facd6e375c"
+    },
+    "packages/database/tests/test_pytest_plugin.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "af996ec0e8321041a6a9b2b3fc1fcfdf220d9d3891c588a23122bb1866318c4f"
     },
     "packages/netdoor/LICENSE": {
       "executable": false,
@@ -1407,12 +1272,12 @@
     "packages/nspawn/README.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "82092d368788c0e9d6c893ac1e51e9fe19fbb07aff88082804f9855d25ce241a"
+      "sha256": "9994f8cab770623d6cdfb87931597851d33ec45728d2a2344e7c173a02d1ded6"
     },
     "packages/nspawn/RULEBOOK.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "3d9f2679fff5bc703d06dcb1deed4610aff5f411551b07fa6c97dab0f5c319a8"
+      "sha256": "5aaca0e73f9c990b85923390fdaa11bcb11bbe431ef4e4e00a7238fb33d27f01"
     },
     "packages/nspawn/nspawn/__init__.py": {
       "executable": false,
@@ -1432,32 +1297,32 @@
     "packages/nspawn/nspawn/agy_acp.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "94e633f3610fe20684d91e419b9301886d24eeda36a3e2638d3907af23f072ae"
+      "sha256": "5d57f001bd1a520f345deeabed01f20ea50620fead1a7634790e8014bac64464"
     },
     "packages/nspawn/nspawn/agy_restricted.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "f4ef34cfdaf0bac0c13dbc01c4a884db2641f18a51b0969d3d3967202fdc2846"
+      "sha256": "30d9f36ed9cb7d0e95856786f2d76379c6c8e8a1b0ba3fd55b62678a13afe937"
     },
     "packages/nspawn/nspawn/app_server.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "50ddeb150ed243c326759721c7ead54a516fe75894b5f5b39328f585bea2da5e"
+      "sha256": "b290d9e1d52cc981e7e85d3478fb8095683b9f354cc1e7e2b5a1545cb4cf920b"
     },
     "packages/nspawn/nspawn/child.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "cf9fa31b8abdd7de46a45623061224a9eaa47a14f0c00d93d17d158e771e304d"
+      "sha256": "ff090e9aee9c2eddd4b65a2a084459741544cb76a9c3c8d4f419bd0ddf2b82e1"
     },
     "packages/nspawn/nspawn/classify.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "c4e4a4bb5cc6fe37e88b2adbc21ef4f7b2e4b9d42893d9aa1d6525890b23cf02"
+      "sha256": "24d2678fcd88c24006014dcfd8824afd04481d918bf8a19a25e588f808630799"
     },
     "packages/nspawn/nspawn/claude_catalog.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "628262061df6f053d79a76ce8cad592d2b93f03ad964618f6861168dae82807a"
+      "sha256": "f5ccb82262c47e020ec710f510b7104412c1cea96d6681ee17dddad858c319d8"
     },
     "packages/nspawn/nspawn/claude_child.py": {
       "executable": false,
@@ -1467,7 +1332,7 @@
     "packages/nspawn/nspawn/claude_restricted.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "4fe89b7972316fbfe1a3138a19584e169fcbf48f1444f71c1aa0bf7a24749385"
+      "sha256": "315d236e0f1d5151a2c8dbf1290c67be9f76c21f8079a4f1ffe3a45859088d13"
     },
     "packages/nspawn/nspawn/claude_sessions.mjs": {
       "executable": false,
@@ -1477,7 +1342,7 @@
     "packages/nspawn/nspawn/cli.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "c0802b6f36a0d25c132b6f540941fb9f1acc1ebb3e6d92e847389a1019e9337b"
+      "sha256": "001f496fc3fe7f05dcc4518d304a8915cebefba5ed31bde13455bd8b2251972c"
     },
     "packages/nspawn/nspawn/cli_notice.py": {
       "executable": false,
@@ -1497,42 +1362,67 @@
     "packages/nspawn/nspawn/command_exec.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "1d14b6cfab8092635e39996a13485515ff90974a195bae941d3e6fcd949c7205"
+      "sha256": "24ef83e946a4cfe02c6aab609a1a0fda345810c7043f074d1bb53d4e7c645f49"
     },
     "packages/nspawn/nspawn/command_terminal.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "f2cf86bad84a3f0e1353297ff6e92d54f92a070106e5fe40c2a03c1022f2f73d"
+      "sha256": "44df715863b21d29a9e762bb1525abb11dc135db74058248f8fe9782ca520311"
     },
     "packages/nspawn/nspawn/config.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "77dc702daf2900d5abc48567a9cf84fd43276c28a66533f3576e3065a3dae472"
+      "sha256": "31f13d8a31fd5de65bcf9bdb1af01781d51a5d46eab86dc178b6965cffe247e9"
     },
     "packages/nspawn/nspawn/custody.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "b65cda75fb855716efa5187b1f834b39675b179445808770a3ac90e48881468e"
+      "sha256": "ca8752ee328948ca0395c8360a5d45e0a22c6c746ac48a0e6441525fe04f40b1"
     },
     "packages/nspawn/nspawn/driver.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "5f50cf3ae1d3f41718fedc06fe681428e6ada918d32f7973c2d7d6c4a9339d88"
+      "sha256": "d333f210c1e98042d35f05d5e86a83e763e26c8647ca42ea344c573dd5bc7afc"
     },
     "packages/nspawn/nspawn/errors.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "f858365de7f6d050ee4ee4db96c1b5711b99fd3661bb157682ce9c66198c7ed8"
+      "sha256": "3312bd7ae396802efd6b9ae53146541becc692e21ec811535b614d1a436970dd"
     },
     "packages/nspawn/nspawn/inference.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "b350f72cc6a98a5d1096ce5aa00ed7e95a067f1b7d259cec9a5485bfcb0fcbf9"
+      "sha256": "f54aac78ff98a68e1e8ad529f09de93527417a079ce53ace3fc4cdae5dd12eef"
     },
     "packages/nspawn/nspawn/install.py": {
       "executable": false,
       "mode": 420,
       "sha256": "581925cba4870951a7fc721259f2d3b10707b556ebab4f93905dc695da098cce"
+    },
+    "packages/nspawn/nspawn/journal/__init__.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "d90ff3c44ca9d9f59181b648f93442b77ae897ad7910a1e522e5c4f3587905df"
+    },
+    "packages/nspawn/nspawn/journal/activity.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "1031c33b3ceddeaf193d47938a4e32476072cc6b2d0ea6d1323f13b898aebe40"
+    },
+    "packages/nspawn/nspawn/journal/claude.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "0d7e47ac94570a0733d3052d3109f3b5b9c6dbaa9c1d89e5a8015f9a7ba4dc21"
+    },
+    "packages/nspawn/nspawn/journal/serve.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "32e1e1bf18ca6b1e9f82490d6d4d2c3c9c5542eb0bbe507bbac458b9c5d22d33"
+    },
+    "packages/nspawn/nspawn/journal/show.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "b5ba5506428393f583eddec7487cbcb7ffdeb4d353f00b2ed2962e478b41ddc8"
     },
     "packages/nspawn/nspawn/limits.py": {
       "executable": false,
@@ -1542,17 +1432,17 @@
     "packages/nspawn/nspawn/main.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "3c0f7f3b71b529c543dc5689da5a073f02fce47237487a6674c76bdbda920c19"
+      "sha256": "77c014a7f4f12fb750a61ea885816b2d96dc61c1c71480d207c7ecfc12589bce"
     },
     "packages/nspawn/nspawn/mcp.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "2839dc6e86b65427e05d39396f5d9c81647e1ca0a2ad55205ce3e29546c03b0b"
+      "sha256": "3048f61eb62bb7bc4b6a7b96ff09a299d61e35ac2214ded9181f4f94affcaf19"
     },
     "packages/nspawn/nspawn/native.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "a7e2ed49c0fd4a11b3db8f6c9cf6ce53003971b723061b902ecf744d90298830"
+      "sha256": "9f1c73f2b5f34e851064eec257bbadd010473458c90fce8641f48c11418223fd"
     },
     "packages/nspawn/nspawn/network.py": {
       "executable": false,
@@ -1562,17 +1452,22 @@
     "packages/nspawn/nspawn/notify.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "75386b417c891aa9af2f83136429d04a72473b5249ecbb56b70cd57535b3420c"
+      "sha256": "043c5ee836422f68d5527a3edfe055d047bc549b3834207ff1c53ced1d8017d5"
+    },
+    "packages/nspawn/nspawn/operations.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "e70399442f537b8ffaeaeba730b3e243ab56a270a85e061be990ca2da4fff50f"
     },
     "packages/nspawn/nspawn/owner_roster.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "5b49cd689cbe655f3011a3a5f52c40b8f067677c61fcba55856df77c5bf5698d"
+      "sha256": "3519caf4230d68a87463dd081e586f177804b76c723c9c69334bbe3f60f39360"
     },
     "packages/nspawn/nspawn/picker.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "e70755d4b51a889b1a153f98d5a593e47ff049202710dea9074b06dbd7eb2398"
+      "sha256": "4f74d4972ad956aa0428df32cbea38b4dfbc32b4554854a6fcf0fe6133b1effb"
     },
     "packages/nspawn/nspawn/process_identity.py": {
       "executable": false,
@@ -1599,6 +1494,11 @@
       "mode": 420,
       "sha256": "1fecb8df4b03042587af1da40d86449eeb63e25022c084f31057b0370ef4c591"
     },
+    "packages/nspawn/nspawn/red_witness.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "203c5cee89b2b65fac154719688bddb054c61266b28447c733afc652ea4d7074"
+    },
     "packages/nspawn/nspawn/redact.py": {
       "executable": false,
       "mode": 420,
@@ -1607,72 +1507,92 @@
     "packages/nspawn/nspawn/registry.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "e7be88f3cdf239a60e37be1d88fa5523540e971241a76b816cdbcb53d05d27e7"
+      "sha256": "8a9725ce80660200c1ae49222c018927b6c3a435fd54723c4e9c0e852e93c633"
     },
     "packages/nspawn/nspawn/renamed.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "c4d6df9e9c21c9431baefcf1be9c641ecc9a32165bdc52e2f09bf06f089490b7"
+      "sha256": "d3d825121c746207f5e8e3c0046a44a61128b4c63dab81c70385d220efb2c616"
+    },
+    "packages/nspawn/nspawn/review_cap.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "5a48f47fa9705e3388f26adfaeac22920aca6ebe61038bb40c98cf9a8f16c6f5"
     },
     "packages/nspawn/nspawn/route.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "61316c473a109b13e85cf809001940d0e78bec0582d957a09265a327face5e8a"
+      "sha256": "a9d16321b53e77577149350466dbd8018dccd67cf66c46066004cd110888ccd5"
     },
     "packages/nspawn/nspawn/rows.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "0a6efc4e3cb0b2868bc5937f5741f9b94c8b9fb597c366552d859298ad93cc12"
+      "sha256": "aaea530172c987e7f05e83c85d718fe6cb325bfddda75c2a2bdf1da17ba6a3da"
     },
     "packages/nspawn/nspawn/schema.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "7a492efd168240afd6caf8bf193ec322926b42bfa7a3fe56e075f3744600b223"
+      "sha256": "b5920b664aa28b1646e130ac44ad3cdb081e4ca267c607112aa770a95a372da4"
     },
     "packages/nspawn/nspawn/schema/admission.v1.schema.json": {
       "executable": false,
       "mode": 420,
       "sha256": "b8b939c74684ffc7cf81eb42d7563e33ad0208c5e572871fc286a69e47f3e7a9"
     },
+    "packages/nspawn/nspawn/schema/run-list-caller.v1.schema.json": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "6fc0e67772c273aa2455a91f847bc99172d090c8034165bc3043c8180c1e9e73"
+    },
+    "packages/nspawn/nspawn/schema/session-journal.v1.schema.json": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "0bba827f02e36fd8576071f30a0c72f8f80a64fbf01f11122870cafe76d2a75b"
+    },
     "packages/nspawn/nspawn/session.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "ec1ed5b3e3521cc05669c4fa1c7489451b4528cda5dc5f389a18b746cb5b3db4"
+      "sha256": "41c3eed29831936b854c8258205cb852c4d22055bfe77d82b63d5c7824e78c19"
+    },
+    "packages/nspawn/nspawn/steer.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "64976a495a5c7294f893c067810abe097af198b7aa836981bd47c97c4ea6770d"
     },
     "packages/nspawn/nspawn/supervisor.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "698970061a272f6ce3d12d80c66fb814e6fa09540a77b8db161ba52f86618a37"
+      "sha256": "c9f4ed8c62ba13da95c0c43169336a8b4d37d96e91f800c1021779b407b59e86"
     },
     "packages/nspawn/nspawn/system1.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "f2a23a81a983d4604d56a3f8b475495c076398a925f2b03b9ba38abea9f6c673"
+      "sha256": "fe4385e746501219eeea041528eb07d73fdc47e6ff484768fd5130637c7cdf20"
     },
     "packages/nspawn/nspawn/terminal.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "6f01f821fec8d6c75933cd8666184c44bd9ee60594ad48459cf2e5185642c3be"
+      "sha256": "b3e326eac2a27a88a2164d4e7655314cbabff9920a10cae8f8d9a6e2ad382c9f"
     },
     "packages/nspawn/nspawn/threads.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "2947e09934748b325ea306b0b6e1e56baa4a5268238e5e90df88acfcefb84ee2"
+      "sha256": "32dab20afceb19ccc47cf1aadc1bd12e974ec81b0a4e6793e63eaea5185b0c33"
     },
     "packages/nspawn/nspawn/vendor_home.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "ac1c41167664ca9bc5f181b1644aaadfd6792f7ea1f4959bb166d4c6d5eafb51"
+      "sha256": "9b6bf8069ebfa30c3343a510ae7687dcba6058497a17cf426dc3f1957b3ed40e"
     },
     "packages/nspawn/nspawn/wire.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "5ab8f8f71f33c693e560ce871ea228b4cd1b87d1032c56129eed61cf70af2b25"
+      "sha256": "fc3da85a2c6696ec35c654869e8884833e1d06113f4d3b73b85c752879c486b5"
     },
     "packages/nspawn/nspawn/worktree.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "6baf3632f552027a65538216e4db2dffb82d77c4654e45c949655ad3a1392429"
+      "sha256": "1a236485f91f4675ae375c82a3285513880d1819989ee7584a4154d2de8ea31a"
     },
     "packages/nspawn/pyproject.toml": {
       "executable": false,
@@ -1687,7 +1607,7 @@
     "packages/nspawn/tests/conftest.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "7f36943198684ce818396248f36ba8c8eb6802c1bd52f20b300b74e1ff4ba272"
+      "sha256": "f2800704256e9faa2048dd547e27012a5c9140f457aaaf4999b624f5870311bd"
     },
     "packages/nspawn/tests/fake_session.py": {
       "executable": false,
@@ -1769,6 +1689,16 @@
       "mode": 420,
       "sha256": "ccc8439f4add662fd0799ffa0f87438295784556275e3cb48ceb53d0c9a2bd70"
     },
+    "packages/nspawn/tests/fixtures/journal/claude-session.expected.jsonl": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "28c5744db94cacabfcc287585fbe74af69c2c53b94975f8ac2e47a6b5c7b2f3b"
+    },
+    "packages/nspawn/tests/fixtures/journal/claude-session.jsonl": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "f4ece5116c97cccfeda2ea325904cde261acc972923d5d3daad53cdba846a6c9"
+    },
     "packages/nspawn/tests/fixtures/mcp_l6_fuzz_corpus.json": {
       "executable": false,
       "mode": 420,
@@ -1789,6 +1719,11 @@
       "mode": 420,
       "sha256": "62017f3289bbb5c8d53fb5fd746f85ced7996df976888c5b36bd9997425b6066"
     },
+    "packages/nspawn/tests/fixtures/run-list-caller.json": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "a612c606fb790dd050ad61b5492377b9fcb2bb08a9a453faaace4cfc28047eeb"
+    },
     "packages/nspawn/tests/harness_isolation_inner.py": {
       "executable": false,
       "mode": 420,
@@ -1799,6 +1734,11 @@
       "mode": 420,
       "sha256": "a1c0d6970f53ab7a43371f495beacff8f058f09a516d7bc5da15632b3b291cea"
     },
+    "packages/nspawn/tests/live/__init__.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "db7f38252374375c666dad2f16ddfd1a6d31e21eca4d1d30b25087477708feb3"
+    },
     "packages/nspawn/tests/live/conftest.py": {
       "executable": false,
       "mode": 420,
@@ -1807,17 +1747,17 @@
     "packages/nspawn/tests/live/fake_claude.py": {
       "executable": true,
       "mode": 493,
-      "sha256": "e04e4809f89e46c178fdf297b452a53429f5d92ee055c19c03b455ca83ad7a6c"
+      "sha256": "e319224e0b8b9947a5367de1e9c74abda5567ae954da25f9890e0f50eb82bbb8"
     },
     "packages/nspawn/tests/live/fake_codex.py": {
       "executable": true,
       "mode": 493,
-      "sha256": "52e4278e29c2afd8e50bd5a3d42efa7915925bfebb606bb688702d2aa2dfdd3f"
+      "sha256": "711ece96f7efea6c406c68354e94b0b5ec87999b8c15b318162385b996337f72"
     },
     "packages/nspawn/tests/live/live_support.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "e8baa34bdb48abd93b36ec36b0e12a93e6a7bb847aff6e0115254e2610e178d9"
+      "sha256": "6ab8aa5bb51d3209b7d2e511e6db8482b48505c6a88e1ea35f2c2ef51d6ee3e5"
     },
     "packages/nspawn/tests/live/matrix_probe.py": {
       "executable": true,
@@ -1832,12 +1772,12 @@
     "packages/nspawn/tests/live/test_contract_red.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "092462941ad15987bfdf73bb3906a39c5fe2968912df094eb8e869b57e24315a"
+      "sha256": "ffe0b421d293abfe822c09a302448cc21a66fa4e9f7a21c9711b577eea21adfd"
     },
     "packages/nspawn/tests/live/test_driver_survival.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "3ea9a5c700406df143ecac705a948054b2c0731250320dc29a81260fb96efe3f"
+      "sha256": "bc5eaf868ee340c9810b45d50884ca7b33a48ca77fea50a8de86ca09e0c58308"
     },
     "packages/nspawn/tests/live/test_matrix_probe.py": {
       "executable": false,
@@ -1847,12 +1787,27 @@
     "packages/nspawn/tests/live/test_notice_session.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "2f6d34f3aa4e403e1dcfe35e6e4ec2f26bd173e2bd0bbc8a99209bfe97b351e1"
+      "sha256": "e4be293dd2ae76ad5bb52d9a5f4e3c45303a475d516f17f5f7119b91164a2904"
+    },
+    "packages/nspawn/tests/live/test_operation_admission.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "9ba9d93625c2c7230a3934cae5d4c27318a9c89807636e422b764b7a9c18c7c6"
+    },
+    "packages/nspawn/tests/live/test_steer_channel_live.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "e0508b5abe6274acf1f53ae2ba4f45400aa947a5063e4be8c8e41977958fb939"
+    },
+    "packages/nspawn/tests/live/test_writer_real_claude.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "204f187b5913c3b5414fb5afdad797de1b3ff60014b73d8db0159823d375fa02"
     },
     "packages/nspawn/tests/mcp_fakes.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "3e35c61f3707a9dbc82ef4aad9658dcad5b71678801e8fbba49371d40ae61646"
+      "sha256": "cae5d221d2ed1eb29c9a86f923ffdeff66745e22161198883435f676fc7361ac"
     },
     "packages/nspawn/tests/needs.py": {
       "executable": false,
@@ -1882,22 +1837,22 @@
     "packages/nspawn/tests/resources/plugin/NOTT.md": {
       "executable": false,
       "mode": 420,
-      "sha256": "8dac878163401f8fed64af46d41cdccc0c5697c92db847769e4fa9e5ace06c49"
+      "sha256": "47cacbce62da59d9728349dbf12e04e691d92dd9205643e14aef3fcc3731449a"
     },
     "packages/nspawn/tests/resources/plugin/hooks/nspawn-notices.sh": {
       "executable": true,
       "mode": 493,
-      "sha256": "8997303cb5a6b0750de5ce9b47010c1ee7ac47ea4596a015bfb58e019d7fa714"
+      "sha256": "c201626500a72f7323fa91e63ead4bcf96aab445a8fa19e6498eace34f010d2f"
     },
     "packages/nspawn/tests/resources/rails/organization.toml": {
       "executable": false,
       "mode": 420,
-      "sha256": "46e605ae8c57eb8c0f6c4aeaf97369ca8693a044895ce4a215dc0d36d39004e9"
+      "sha256": "c2a87edc763196d3523cab8a084a18b395968e602c4bb526fde09b7d737b5189"
     },
     "packages/nspawn/tests/resources/templates/nott/spawn.toml": {
       "executable": false,
       "mode": 420,
-      "sha256": "800c757988e08e4a707d72289cb2e7ea6fd4be7cce0d00f9e7f210477f8bebdf"
+      "sha256": "10200ceacad52885d023c022ef0530300d11d46924188888ed87f692759fb155"
     },
     "packages/nspawn/tests/sample_roster.py": {
       "executable": false,
@@ -1912,17 +1867,17 @@
     "packages/nspawn/tests/supervisor_support.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "1977a9afae74b37cac43035d9a4a685d76ee499fa67b4353f6a1d64f4e8e68a4"
+      "sha256": "b668342eea7d0030d1a94a7652241371a1ee00eba3ba7b7333743e6fb0220233"
     },
     "packages/nspawn/tests/test_account_add.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "f6463576c06bd59e9c1502cc8145d4ba8829869e8790244e85daa15769221c66"
+      "sha256": "6e940a8fe311ae07eecd40b08ef44ab0485076d8a87e66a58bb8a5787e7d347b"
     },
     "packages/nspawn/tests/test_account_key.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "ef684d7eea3032f8d04354d0001250fe8640a6b5d810392d752e90b8b4113d85"
+      "sha256": "9bf8682635ef96e9d779de2dc9ec0c57f36fa9de0beeeb305675e0f65aa3a062"
     },
     "packages/nspawn/tests/test_admission.py": {
       "executable": false,
@@ -1932,7 +1887,17 @@
     "packages/nspawn/tests/test_admission_control.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "92243544b4b8b767776c3140dfad7dd598f4cc3c779d8a2127c03bc5246f28f0"
+      "sha256": "b3f4f25055cd98f197474bb1eedb05944c4d03de30f064f95eaef2f6d9760849"
+    },
+    "packages/nspawn/tests/test_agent_prompt.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "834d925a57add781f49500bfdd98d287c666fead1d7ab0c59089facd5257a833"
+    },
+    "packages/nspawn/tests/test_agent_suggestion.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "40e9ddad3fa0e91b2a152165969af1b1765000f75bf04916fc25442f90dd354f"
     },
     "packages/nspawn/tests/test_agy.py": {
       "executable": false,
@@ -1942,7 +1907,7 @@
     "packages/nspawn/tests/test_agy_acp.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "dd9721dcb8cedf4066dd3e16696bce7a0c5244ed0a17bd3c491e5cf360f52287"
+      "sha256": "cc487919690db7022dd6f22462c15631e417578309630ccd6369d706a46e7348"
     },
     "packages/nspawn/tests/test_agy_admission.py": {
       "executable": false,
@@ -1952,7 +1917,7 @@
     "packages/nspawn/tests/test_agy_restricted.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "64e498af4d9e5f18905b1a33ba30916f21c1207cc93a5f118ada89520683c5bc"
+      "sha256": "830ec446625e617c9efe20a9785eaf7be020fdcc7a82793b4dc0f90464b4cb75"
     },
     "packages/nspawn/tests/test_app_server.py": {
       "executable": false,
@@ -1962,22 +1927,37 @@
     "packages/nspawn/tests/test_batch.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "cf51a61101d769a76cc18e23c34f62408ac6c63c997df1033c81a5d4bd97c22e"
+      "sha256": "e0af377c01c3ff6a43107c65a059c5517af72d4f90107e7ece96293a0606d482"
     },
     "packages/nspawn/tests/test_broken_hooks.py": {
       "executable": false,
       "mode": 420,
       "sha256": "b628ddc9bd54a62f91d7bac52dd1bb4a61179ca2b629a891b70313966002060a"
     },
+    "packages/nspawn/tests/test_busy_heartbeat.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "d64504a39bfdb68d351d06df8174eec1e2dc027f1e85ee7d823b1fee708f4d97"
+    },
+    "packages/nspawn/tests/test_busy_worker.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "f0f9d43cad8ed97f91785387efd894af69098c4ac973f1de7a86c57d28b50abd"
+    },
     "packages/nspawn/tests/test_caller_notice.py": {
       "executable": false,
       "mode": 420,
       "sha256": "27ab5d5f88e208347efccb6237b82fc4babe50626d2adbaa074769e1d3ef9dd3"
     },
+    "packages/nspawn/tests/test_campaign_notices.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "6146af062b5fa8f21e156fa01fe404aa96b8f7f3a1e7b114d55f5aba701fc318"
+    },
     "packages/nspawn/tests/test_child.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "f7b5e384b73860f9b1fe95d3d0dc69bd50bbdfc470d999a6860ae829f7ce6f05"
+      "sha256": "03703ea1ff41d17ce69f0de3d9e97c38edeb1f5f4b9befccc88744adfd9aef12"
     },
     "packages/nspawn/tests/test_child_addr.py": {
       "executable": false,
@@ -1992,12 +1972,12 @@
     "packages/nspawn/tests/test_child_env_denylist.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "c637322b86d4e64b2caab0914a9925d81de6042d32dc6c4bbf921f4d88716365"
+      "sha256": "6865039b88480649d172957fc90e0573e7bbea86d0d6a53354cf1903e396d521"
     },
     "packages/nspawn/tests/test_child_read_only.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "71a5c4df8c72a8ecc26b38a47f6782e58a6dc2a504b787b2918803131b1d6f02"
+      "sha256": "e764d515ec9e6e8414c59c76c67963277aa73fb90497ac49b709b94e0756a175"
     },
     "packages/nspawn/tests/test_class_fast_lane.py": {
       "executable": false,
@@ -2007,12 +1987,12 @@
     "packages/nspawn/tests/test_class_observation.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "2e0ff7c1748516bb6cb9b7a1acf50552e8bb477cfdd178c9382b74855960ff6a"
+      "sha256": "3da06e6c867c269347bf7a76827690dbfc938e9b458594462fee3a962f6ec47a"
     },
     "packages/nspawn/tests/test_classify.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "1ad5aec8e5d10bbc5a02086cd0b9203f0c11a949193cb34aec776d766aa6ae2c"
+      "sha256": "7241ced93b6045d421928e41a3452a72f54fa7103e1e6679426734c0bdfc46ec"
     },
     "packages/nspawn/tests/test_claude_child.py": {
       "executable": false,
@@ -2022,47 +2002,47 @@
     "packages/nspawn/tests/test_claude_profile.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "d60ce1f4f422baacc53ebb308435f7dceeda0ba65ceecc0deb75433f05d378fc"
-    },
-    "packages/nspawn/tests/test_claude_restricted_launch.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "f8caff910bbd261fd46881b65429aecef2de492f18f12577ed611d806635cb50"
+      "sha256": "2a29cd5143101c038cb6349ce5a87e6bd7dffe8a4cf57d024997462fb746e2f7"
     },
     "packages/nspawn/tests/test_cli.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "17b84e89843e78e7e2538cce984a3107d0c915c3cdc14f1781f4cf5025c0fb13"
+      "sha256": "3a1ec566f07d414033c8b5c952d0726b2ae8ef8d62979a9f9917bd672ff31517"
     },
     "packages/nspawn/tests/test_cli_fleet.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "5214bb7c2a9faba757c8b43fb94091ecfb87c185ce4d9810bbbdd2cbecfdcc8b"
+      "sha256": "340d52c31f59d61717f306d46918f5a8e357bc901f22afac406c398edd776e13"
     },
     "packages/nspawn/tests/test_cli_notice.py": {
       "executable": false,
       "mode": 420,
       "sha256": "de0e1ac58c91644979b63aafa1e8780813c4565007a17f942ae18411d810bf9d"
     },
+    "packages/nspawn/tests/test_cli_start.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "915b435a267a95c91404241ac728ea066a8665a16b34e4f5dc5bf282f1229e1b"
+    },
     "packages/nspawn/tests/test_client.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "5d039bba8b6e7a046c5640d289f139945d4eab4b5888e0bb39f2747246d03fc4"
+      "sha256": "c2ed5240d37534b8776b9b8b015d99ff94153f930a27afe092776f0581f05017"
     },
     "packages/nspawn/tests/test_colab_provider.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "e6a3b88ff3ff49b5781bc00c02ee1e071a43a43331219accf2e5ec5bd4e2a4e6"
+      "sha256": "9e1e260f797b6665fd6af2e7e25d89465505aed6a8e4d3df0248a3c68fac5567"
     },
     "packages/nspawn/tests/test_command_migration.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "54c9cef7efe350a3ee8b5d73b8602c63121f8b70b89f98e7178281d0f9166e78"
+      "sha256": "5dc4f1cd5b24f20639840d730927b14ed55532a6db898540ed0febe3ca28d86f"
     },
     "packages/nspawn/tests/test_command_session.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "0451166b6fa50791b4a962cb8d07474bf57b88122da02bd67b30baad02e587cb"
+      "sha256": "24e286a60c24cc00261ca90b9592848bfbb0795656a2f63e8c4299c4c5e6d9f9"
     },
     "packages/nspawn/tests/test_config.py": {
       "executable": false,
@@ -2074,15 +2054,20 @@
       "mode": 420,
       "sha256": "64333223da3a981e827c16ee89ca52aef3930dc5298bb3a984f5bcf02a8f1b5d"
     },
+    "packages/nspawn/tests/test_credit_refusal.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "f50dd6bbbcd0de0ca3ca66a9c5ba88d5438939bf6f76a477d3f6b43de94e7611"
+    },
     "packages/nspawn/tests/test_custody.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "9761a120aa5187fa607f58dce84eaf1aa3ab553f6b3d3583667e8c6f84fb6287"
+      "sha256": "7e927d0c467f10b900b446c48894d5fc4d0c6f4ade562face628203d3d5d9236"
     },
     "packages/nspawn/tests/test_daily_usage.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "2c906a07c421387177e181b319d9836517f40dee3fe78df1d6bb1bc396b38b90"
+      "sha256": "427f306523408ae5663a50c42dd53df56526191d5d9ad11520fc0700d0e52147"
     },
     "packages/nspawn/tests/test_database_cli.py": {
       "executable": false,
@@ -2092,7 +2077,7 @@
     "packages/nspawn/tests/test_dedup.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "87dff8f946ecf931ff956e9c1ecfb229d57a5a8f1055e759cf8889cb4f5407d7"
+      "sha256": "c536fd985c06f9584d9dd67da669a00ab1ca333813797b1faee42f17de10c45d"
     },
     "packages/nspawn/tests/test_direct_kind_admission.py": {
       "executable": false,
@@ -2102,27 +2087,37 @@
     "packages/nspawn/tests/test_driver.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "9a9afa14d5556d5950fda6ff04a29e0ef7d5db1285ab5143ea8ee2598b00c466"
+      "sha256": "708451d168cc3aa8ff17126446b580de783c0a680a5b34c6d0a63ca1393611be"
     },
     "packages/nspawn/tests/test_driver_exit.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "460bade93fd874fb7432199d147a2f1841b2e4e968ff86d18b802363d80b6f05"
+      "sha256": "5fb244f629f15f4039a4bf264f7c2e9fa58625c2357017d775c7e776c69e95b0"
     },
     "packages/nspawn/tests/test_driver_launchd.py": {
       "executable": false,
       "mode": 420,
       "sha256": "811b9791388c39ada5d7a2905f0b90b6f07ee0cda7aac310e9c9976293dc2540"
     },
+    "packages/nspawn/tests/test_driver_replay_regression.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "90b18346220198523129a74f8dbf0a84803bb49711e4971d35e9f326695126ae"
+    },
     "packages/nspawn/tests/test_driver_review.py": {
       "executable": false,
       "mode": 420,
       "sha256": "976cd0755b0126ad78633c4c78dc9a7eb0e46a5558b9a949140de5959d161157"
     },
+    "packages/nspawn/tests/test_dynamic_accounts.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "fa2f3778b7d72d1fb671733fca3fea851dd9deea139d47d7b2870daa1ed121f5"
+    },
     "packages/nspawn/tests/test_effort_class_policy.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "00a1287c1097208c69add707d7fb82f64d3178e0bc40ffc94bc077f71523418f"
+      "sha256": "176242af92a9276f64612a9566ba0c886caa76c6db71ddbca0f26d44023af1d8"
     },
     "packages/nspawn/tests/test_effort_route.py": {
       "executable": false,
@@ -2132,7 +2127,7 @@
     "packages/nspawn/tests/test_errors.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "1aa91974c4308024992581cf518f7dec338b3cd59ebb85aabccd4fb8371f56b0"
+      "sha256": "db4ee29b191b454dfb8573e2bbe1d9100b16a80008ab0946cdd2f2b790d4f030"
     },
     "packages/nspawn/tests/test_exhausted_wall.py": {
       "executable": false,
@@ -2142,12 +2137,12 @@
     "packages/nspawn/tests/test_f7_diff.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "a72031d010747b2b6f598b07a35515b41b3b717f376812b5246e6e3f08520a7e"
+      "sha256": "1a3703a05df9654f64762178c683ab403542403a1b9bae6b297582129054a46c"
     },
     "packages/nspawn/tests/test_failover_router.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "f0f788245cb903932109764537e9731f8094e6e2367d7564a016b1888d64a94c"
+      "sha256": "5412da9716abfcc6f426087cc88ec84f1a9651686c3a506c076799e4a4ff5785"
     },
     "packages/nspawn/tests/test_fixture_data.py": {
       "executable": false,
@@ -2172,32 +2167,62 @@
     "packages/nspawn/tests/test_goal_u4_system_prompt.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "7cea86ff5cbdb3488d35893b0214199eb472c09cbc3ceefca987bb1af6f08d95"
+      "sha256": "15d0e58861c4333e0abfef3864df442c11723e79b461411d9de009be9a7c2b24"
     },
     "packages/nspawn/tests/test_harness_isolation.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "aa5bbef87240518c6e07809062bafd3c6d9270d1fdee706080af7fe162a5294b"
+      "sha256": "6a88bc57e4ddb6a85ffd814739bb67b25adbd2d4be23eb78e46cc108874260a8"
     },
     "packages/nspawn/tests/test_host_control.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "6bd2129284f11541ceb45e53a241fa295236b4416f03128c1511247a85c226d8"
+      "sha256": "8308a4cd86d6cf2d45f428c862cd300b9cf286ffc08efcfd1739a4d793961ca4"
     },
     "packages/nspawn/tests/test_implementation_claim.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "44b5fb1f962164c84dc09a0f864fd37dcec269cdc55f42674733d32f12fb1963"
+      "sha256": "138ebdf9c28b0b0b00ac34aedb103493e61b88eb89e2d8e0bba316165cd3d091"
     },
     "packages/nspawn/tests/test_install.py": {
       "executable": false,
       "mode": 420,
       "sha256": "9030f76e4dc46d4ed36ed57212f79dfa1b9a2143d44cc45839e458d6ec06e862"
     },
+    "packages/nspawn/tests/test_journal.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "195a351280eb11846822e84caa4fee22d704cbaa27455919f6ed3c871f42feeb"
+    },
+    "packages/nspawn/tests/test_journal_activity.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "af95567f588c444c76365a9aa8a30ae50e35df5cd2fed4d233b8e21c549c8be1"
+    },
+    "packages/nspawn/tests/test_journal_chain.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "42d22e22a4e31d51f96499484c270fc2668416f29cb87b2bac2ae48940a6e6cd"
+    },
+    "packages/nspawn/tests/test_journal_cut3.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "a64e85cbdfdb87fd208b64c7df3e53dd690b036ae01913c6a970575b6afcd968"
+    },
+    "packages/nspawn/tests/test_journal_show.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "3627925847a96f57f94ee103ea06635a17481b31423f4c00e1268c7bf49ebe1c"
+    },
     "packages/nspawn/tests/test_limits.py": {
       "executable": false,
       "mode": 420,
       "sha256": "340869dc8e72fded8c2bf500933eff3328fa4206adc43119d359b545a39dd0c6"
+    },
+    "packages/nspawn/tests/test_live_fixtures.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "a47a6694349d59922467261809cb4c230fb314ada99a60a110b29383879dd426"
     },
     "packages/nspawn/tests/test_main_sdk.py": {
       "executable": false,
@@ -2207,17 +2232,17 @@
     "packages/nspawn/tests/test_managed_session.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "eef3e34db8c0161d95d4e1f5ebabe6e468829d5f136f25ea31c971154f8cd343"
+      "sha256": "bfaff287c1e41ace95ef1f029fe615cbecae99843e16818ccaf8141a0f9f8493"
     },
     "packages/nspawn/tests/test_mcp.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "27b4c86bde8fcf0cfa9328c08794e38145d8a2ba41e298a6e53303aa1c2c20a9"
+      "sha256": "5f5504552b78f29abd7651ca41eaa61d9fa57c5acad2d29fdfc8fbec53f12ce7"
     },
     "packages/nspawn/tests/test_mcp_contract.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "4fa57ea9cc2fb14ec7192fdf0cb90ed724efc66387abebd4aa656f91b75c02dc"
+      "sha256": "3c4fa5af3ee52b51bb2e4773cd2aaae435b72ca015641a7f0351b38b85aad285"
     },
     "packages/nspawn/tests/test_mcp_frame_ceiling.py": {
       "executable": false,
@@ -2227,17 +2252,27 @@
     "packages/nspawn/tests/test_mcp_l6.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "6d75e59290d5fd9d9e620033b1704b9dc5c1d40daf0f75c8a2ad559cf94f1931"
+      "sha256": "57ad35af225b121a25f10fbb66a267274c6795fd2870c77286d198807f89e5d1"
+    },
+    "packages/nspawn/tests/test_mcp_reader.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "c42cede22099cf447362eea574db5f7aef36eb88c61c52aa91e93d8d79364b51"
     },
     "packages/nspawn/tests/test_memory_policy.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "14dba87fbca496f4ece80827ec73c4e302c86261636751238ec3603f0a80a37f"
+      "sha256": "e41dac6e1f2d57bb21c72615283c89a3db2b312b89285408170746a86aba6a82"
     },
     "packages/nspawn/tests/test_model_catalog.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "4bc01a318c7ba2f7b81302adb5421c8f15a0056ee91762f22a629db45186377d"
+      "sha256": "911c225961c4df7ecd12988a9dc374d1290e8862552b111f84a3906603f42906"
+    },
+    "packages/nspawn/tests/test_monitor_status.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "47af6a798a3743ee65631db9584376ad03de7dc04159c659757cdedca7f8b603"
     },
     "packages/nspawn/tests/test_native_account_reset.py": {
       "executable": false,
@@ -2247,7 +2282,7 @@
     "packages/nspawn/tests/test_native_accounts.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "459e92505e719eec3305a89ddd887151ee384a126331ef1f3867d3ffe9911394"
+      "sha256": "70cc49e5764fbe53c06f26a65d8187462deb563980c96f23f743f764b6e2567f"
     },
     "packages/nspawn/tests/test_native_credentials.py": {
       "executable": false,
@@ -2257,12 +2292,12 @@
     "packages/nspawn/tests/test_native_environment.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "cc106d88cb3bfec03faa500d8ea8aaac231ec96db9ff2599b8330e7ee0823a80"
+      "sha256": "097b87a9c0d60a77ba4e4d0667ae52109a1a1f3a9408d5babce2299161c380ee"
     },
     "packages/nspawn/tests/test_native_execute.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "a53749c7f0c3732f331703b83329662551c930be026956b7b10fd5c144ca5e42"
+      "sha256": "cd05e01240b0651713d92835dea558620c04a65c6979e7bc3d211b112a2e6bc6"
     },
     "packages/nspawn/tests/test_native_final_text_cap.py": {
       "executable": false,
@@ -2282,17 +2317,12 @@
     "packages/nspawn/tests/test_native_session_registry.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "b274df8e7efecee066bc4785fd8822b029e77bb843f53d0f63ba4f76f7f5da90"
-    },
-    "packages/nspawn/tests/test_native_socketpair.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "d90af4e8707d984d8ba98a62d98254866efba77dd46a66af31295a3e6f19e9c2"
+      "sha256": "dcc3d44c6eee81c8781cce0077e6702f18b9914fb88360a2d44ad9291b58ceaf"
     },
     "packages/nspawn/tests/test_native_write.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "36ef8c13e4826f2a4a233260fece452800bcc810d4687a6b58a8c12eff58d308"
+      "sha256": "ed7970aad8e14bd5a0ed409d9a309c58be3bf2e3781e2100498df8088544e3ed"
     },
     "packages/nspawn/tests/test_needs.py": {
       "executable": false,
@@ -2302,27 +2332,37 @@
     "packages/nspawn/tests/test_node_owner.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "eb521bdeb9eee8516ea9a22dbb4689ba59bf7bd2ff90197bc0f6a7625ec4c1fd"
+      "sha256": "06e1fab6b5876426d529ce2a5f49db5a62201c0c1edb0bd9121e0cfe84632794"
+    },
+    "packages/nspawn/tests/test_node_scratch.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "2cb752a522785e196a2e6ce4bdc25f7564127d5561c902297e0b4294ed008674"
+    },
+    "packages/nspawn/tests/test_notice_option.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "70898ee823aaf34e15da5391b751605624021f743ea698479c308b0d6415b6d8"
     },
     "packages/nspawn/tests/test_notice_outbox.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "86d87c52740f802ce8452ec8abe203f5afe3bf0ecf9c7e35f58fd0d167f9c212"
+      "sha256": "8f99a8e6f62557f1313f6de5b052a84571819960354dfa0ec1dee6b3d3a0dc7a"
     },
     "packages/nspawn/tests/test_notice_swarm.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "b10fb82a8cda0b2399dde220d21330803ecb4381ed6fe7cb89d79d042e5754a1"
+      "sha256": "27a80b16cc0c47bde4a2295c52d5cb799739e6605beb81ea835139a88f9b8901"
     },
     "packages/nspawn/tests/test_nspawn_system1_dotenv.py": {
       "executable": false,
       "mode": 420,
       "sha256": "8b41b5e321f9e196ecc4d4d65044a106060b0d8afd0a69a46fd1c00f99bdb613"
     },
-    "packages/nspawn/tests/test_orchestrator_profile.py": {
+    "packages/nspawn/tests/test_operation_admission.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "d9685dc117bace34135623354a35cf4f3b33e582741a6f31eb33a23e64306080"
+      "sha256": "b2398b1215ddfa01c2a0e960a514f31c51ec5c0440c955f10c83bf767de75655"
     },
     "packages/nspawn/tests/test_owner_recipes.py": {
       "executable": false,
@@ -2332,32 +2372,37 @@
     "packages/nspawn/tests/test_owner_roster.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "49622dce545a49c885c0ecf2e0fceb1ec1fd4f24802211b68adce0f3a85d6c44"
+      "sha256": "e57da1159c0af3769d0d559d9415b1d0357789d02d94ae2b8d78bf46781cb68a"
     },
     "packages/nspawn/tests/test_owner_roster_write.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "eb82f172f7842584c19e81d6e2d339cce10edf0143a75ed621dda438800715f7"
+      "sha256": "77ff2b5e61c0db4d3c32249371a69d48ca28d163f0cf0db492e86f88c0ae5678"
     },
     "packages/nspawn/tests/test_picker.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "9bbd257dc904cc0dc5e39dda5a64c43b76330ddb651bbfa4ce49ed26f8c475cb"
+      "sha256": "09b5ee868c059782f2644529a00931482320f6f0764d45cec90ce4537b42a871"
     },
     "packages/nspawn/tests/test_picker_apikey.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "4301246998b8d0238f9a4cd466d0e3374f9c3639b7332ef2d7c32f5b5d2bbd8f"
+      "sha256": "8f38f15a86c5ef7c77985088672ca62573bd5c40b0f7887f7f732b4fd426797e"
     },
     "packages/nspawn/tests/test_ping.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "14fbfeffe6c84623230a22e7fab7c8f962327ce64523aaa5379d14cf2aa53aa6"
+      "sha256": "99eff184428120d0e6e29924c5a0548c82cfb6d66c072682629c36c4b039c8d6"
     },
     "packages/nspawn/tests/test_plugin_sources.py": {
       "executable": false,
       "mode": 420,
       "sha256": "8ba04931446d7aac8b8bb3894164361c4a15cce38834de144928f0f86bd6300a"
+    },
+    "packages/nspawn/tests/test_private_endpoint.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "0b75c2c0219ed8fb029efc603857b244bec58a30f6b8af7d3119047c438ac378"
     },
     "packages/nspawn/tests/test_process_identity.py": {
       "executable": false,
@@ -2372,7 +2417,7 @@
     "packages/nspawn/tests/test_profile_launch.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "61327b93eafd6717a6a5a04b38031b923640ab8bec7abd63c570b69b72407b8a"
+      "sha256": "ef560a133eb76668e7a4189e3fa42417ad9c500bd1f95a570cd987342f317688"
     },
     "packages/nspawn/tests/test_pump.py": {
       "executable": false,
@@ -2387,17 +2432,27 @@
     "packages/nspawn/tests/test_ranks.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "79ffc0e411efeb9cdbd61844490a7b04eeeed4d5f0e96134e7ba8e9d0e494233"
+      "sha256": "06dd0e5f055801898b32c45777a7c43317b5c041f91a73020033868fe4a2ec04"
+    },
+    "packages/nspawn/tests/test_reader_cage.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "586257894f4e88c9b01f417f48d1d53624f085fb9207c5fb365eacda5b11abd1"
     },
     "packages/nspawn/tests/test_reaper_orphan_honesty.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "644ad9628640592c32e2ccfd6539ee8bf18317219b795f2b51f6c1e56becce5f"
+      "sha256": "2a7bfe33708e557f8c556bcee30b900b79920f3543b88094e1291e2d6e10df9d"
     },
     "packages/nspawn/tests/test_recipe_metadata.py": {
       "executable": false,
       "mode": 420,
       "sha256": "0b82e6c0f21c4f2350c58c9a6fc10eb6114dac4b5546a8dba0496be824fad7c3"
+    },
+    "packages/nspawn/tests/test_red_witness.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "d6a31d5124d30376d1853995693b4cf86bd32b1856e663d47f510c90d088967c"
     },
     "packages/nspawn/tests/test_redact.py": {
       "executable": false,
@@ -2407,7 +2462,12 @@
     "packages/nspawn/tests/test_registry.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "fb3517d8f058d2eb00804a1df2750e0782a59e5f8b3ee1f7c8510441987a0b31"
+      "sha256": "7f8b64b3747946a1c295b47a0162656199fdf093a3d4b9afb59131381d6bb69e"
+    },
+    "packages/nspawn/tests/test_registry_attributions.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "1904970f1cb49469e9cf267746e88c0baf703fb1bebc0ea7296def2efd0eae5c"
     },
     "packages/nspawn/tests/test_registry_orphan_close.py": {
       "executable": false,
@@ -2427,62 +2487,122 @@
     "packages/nspawn/tests/test_renamed_variables.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "d101376ce70cb286b3c3b66ed5979fb7c1446203f1b25c0e48290b75b1909232"
+      "sha256": "d230246b02d9851d293e34533c96a0478f09bfd3bfaa7db27b1836160998b44c"
     },
     "packages/nspawn/tests/test_result_failure_reason.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "df45836bb80ebc16ef0f9560303f70ead8d355114ec0913f25f2e408580bb61c"
+      "sha256": "f13d5f3d459305301a139cc7de16a3a0905a172e0cfde0b0df871b2515bbfc2c"
+    },
+    "packages/nspawn/tests/test_retro_cures.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "0cba33a1ab85b2712fe05f4fef34cc8faa2cc1d135d55ec995008866b47b2ae0"
+    },
+    "packages/nspawn/tests/test_review_candidate.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "afd33eef77be5116d5185af24ca3966e253395eca17f8daa4ab9309c336d56b5"
+    },
+    "packages/nspawn/tests/test_review_cap.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "b776854a4cd5b99edea77ee079523c834a9b418f81a648e651cf1320fa5fc3d5"
     },
     "packages/nspawn/tests/test_review_failover.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "1f09cc5e37396ec9ca66ca4f14cf5c2a44fc07ff23d70c668e813e8eb0e613ec"
+      "sha256": "3eb39527969774a9312121646ce08f4e32b8e8b7dacd8c9b06e83a9b839c88ba"
     },
     "packages/nspawn/tests/test_review_preference.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "02c4934b1e4d9be18ecc3b30a8488c7d655fdacad733cb903f25f4ddaa008074"
+      "sha256": "c759f85274e549fe7e73353b45509b60855eb715da12752d7b91e33fd8e76b70"
     },
     "packages/nspawn/tests/test_review_producer_wire.py": {
       "executable": false,
       "mode": 420,
       "sha256": "b9544b5d6cb1e8725a59fefe2849a8b8511de8c6d57ef2efb56c43f54bfa1d31"
     },
+    "packages/nspawn/tests/test_role_routing.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "4141d1f12d8b7a7629b983858e48d4f042a58722f9632828f2f4d540e35a377a"
+    },
     "packages/nspawn/tests/test_route.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "50836e6f0ad035b5d2f01c31810b8a734277d937f5b10a46f331241570079057"
+      "sha256": "8611c0444bc490c279d4fdf0466eb1457ed8157906a3ac70fe69579f5279f2ff"
     },
     "packages/nspawn/tests/test_route_node_wall.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "a26bfe9c21a5d1532b342b8205c73c9c1ab9a5b0fc00069bcc9c54f476e999c3"
+      "sha256": "6590c078fab29428beb60a780611b38a0bcfbebbcc1ab6e47dc0e74dd14d57c0"
+    },
+    "packages/nspawn/tests/test_route_seal.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "04ab4fee329e15e2116df0601582acf5d711cd21602534bbea16f7bf2adc1f2a"
     },
     "packages/nspawn/tests/test_route_transition.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "f4a085c529d8e0d64b9ee812e36a086124e3a9eee4a8d896dea36f305a32c328"
+      "sha256": "2bf551c1ba35b7a05779664bd14dc740c8d90a2b33b13a0e6032c9b659cebbde"
     },
     "packages/nspawn/tests/test_rows.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "f24ec508d434a9c5718f0ad4e6fbd3cbdb9b5151553e6e9da6b4a3f98d7fb0c1"
+      "sha256": "08dd202fd9f53821de0d23c51c06237a5754a4c1bdcd7debc3ca0e886a846ac3"
     },
     "packages/nspawn/tests/test_run_effort.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "7500edb3176ee9fe0e64259097dee4dfc3a97736817736ac6f9857e355673bca"
+      "sha256": "0343ddffb7af1283e2b1435e08d7e3ae8077e3b19bea28372347807f63bb1d24"
     },
     "packages/nspawn/tests/test_run_effort_binding.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "ba141258b35326feb5af41a14dc1d7e2a7179682319ae920e60fef432cb29989"
+      "sha256": "c6c105d63e5ba935752c102eca2d7e1c853b3aa2bd7418fb76ce27ac81dfec5e"
     },
     "packages/nspawn/tests/test_run_effort_public.py": {
       "executable": false,
       "mode": 420,
       "sha256": "096de6660610a41fc2d5dbf6d3f7a8166ea396fe6ab8a52feb710c6ed1b0480f"
+    },
+    "packages/nspawn/tests/test_run_lease.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "61eae1b3d94c39682b67e5b3c0cd49009c68a5f6e248671f0023286b44e0449c"
+    },
+    "packages/nspawn/tests/test_run_list_caller.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "89f23c34c42c32b9f674787baa94b5f09d5d9c7c63f8fd0561253f503f1cbddc"
+    },
+    "packages/nspawn/tests/test_run_list_default.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "e8e652bd7c7be703503c1aaabd52aa8a58f8277513f5dd533751caf97ec3d072"
+    },
+    "packages/nspawn/tests/test_run_list_notices.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "baf7b72560449e071cd962c6f973baafcf2975ae7709a5d00404fbe5ce4c7360"
+    },
+    "packages/nspawn/tests/test_run_live_progress.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "3a4802cda4f68db508cc4f277624cc97e691e1fbbe80d7b78ebe9bfb79cec915"
+    },
+    "packages/nspawn/tests/test_run_slice.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "49e1022b9b8269e0cb75535adda42c2af80564eb4fa3009fcd35cd20d200b822"
+    },
+    "packages/nspawn/tests/test_run_slice_review.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "e8bbf14b607c0aed40586d2c7fb194555e8feeb8469a875b69098f97e5281ae5"
     },
     "packages/nspawn/tests/test_runtime_manifest.py": {
       "executable": false,
@@ -2492,7 +2612,7 @@
     "packages/nspawn/tests/test_schema.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "b03d5551f61d7cd739439d10e77e09d4e8850bc37c6168f67eebf5af76a7af45"
+      "sha256": "aaf36aa440ec44ecefb50add3e6c9f7cf905a53162c24bb2a929f0147e85e7f4"
     },
     "packages/nspawn/tests/test_server_instructions.py": {
       "executable": false,
@@ -2507,47 +2627,77 @@
     "packages/nspawn/tests/test_single_spawn_config.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "153deb3ed1c58d4d4cd738e2556be4984bb2491ee09716d872c1d1bd33a12d35"
+      "sha256": "235f96cd96a76f62e060bbb4624a52069daafd8d5e096f1ef88bf0232d2518f2"
+    },
+    "packages/nspawn/tests/test_slice_cleanup_regressions.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "89688eeea136ce97f7119b098d459d930b9bc82335bdefbed952eaaacb91a251"
+    },
+    "packages/nspawn/tests/test_slice_reconcile.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "132c326197fa4e2752725644c3711a5a149eb71d82ecaebc24a01d4c00d26ed5"
     },
     "packages/nspawn/tests/test_spawn_and_wait.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "9917aa7d140a37dbd24447fe89c9107e2ee54517705182600e8f8339e0bb7b2f"
+      "sha256": "6356023ed98417d092934e529fc98ae770e1be4c2142b56dc760e59b2a1e0cc9"
+    },
+    "packages/nspawn/tests/test_steer_channel.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "9cded18fe30e7fc047d085112cf4982df5dde35446e9c73efee527f34d093e6f"
+    },
+    "packages/nspawn/tests/test_steer_loop.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "f248ba50eea3e47b0154bb522c19e8cc28d246976be0dbebdb92fb7a0666ca29"
+    },
+    "packages/nspawn/tests/test_steer_queue_atomic.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "197218bd2a6cdec99e9e0092b7ece875d0852de87d3c1a6476af9f6dd11da79b"
+    },
+    "packages/nspawn/tests/test_steer_take_failure.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "a972147201ed54ea1e18cf2eb8bbb3b8a817a8ce6a1f7a87c15bf82e37d24df0"
     },
     "packages/nspawn/tests/test_structured_inference.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "c1e339d3fd46baf1bd832db9164fda410985bc197b49b93aa9b9829458e36539"
+      "sha256": "35268cf1fc908427600a427937152594c4fde396405878872a507505acdd80f5"
     },
     "packages/nspawn/tests/test_supervisor.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "8952cb435f71960e6aa000f38ceb601b17d793d478245cab2fc2aba582f9dbe5"
+      "sha256": "2ff9d7d81f669648163be1ebcf62797827db8a0dddc83d49852b02a1e62d0120"
     },
     "packages/nspawn/tests/test_supervisor_close.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "90287c74bed69586a6e054f757ec48b822dacbfc67b4ec07b7d70b911415ec4f"
+      "sha256": "32e384262dbbb3fd029db426f4347c805831fe0ef4960195ae79febf2852e4f5"
     },
     "packages/nspawn/tests/test_supervisor_drive.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "7cfa85d2c76bab0e44ad1452fc58af2aa17870ff81b7ee4fee5589027cbaffad"
+      "sha256": "2c4d9de209a179b0b73ece8d04b8ee829cfee8e54ffb1a578e5deee5452a498d"
     },
     "packages/nspawn/tests/test_supervisor_failover.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "1806e333518a50ea952b67a648d6f5278b79f6d1079e7c1012011f3230523dae"
+      "sha256": "8352f9561fd40c3a55e98cfb48ff143e62f2f3f9efdaed0cd615b68a18f9ced4"
     },
     "packages/nspawn/tests/test_supervisor_layout.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "d5a6e555b2ec08b63355dcf740bfb016e79e2472b50ecaccade5795e3e63e71e"
+      "sha256": "d7ce0841d6005fa9576efff7651846a53ee78d79a5afdd92dd6953a04b7ac773"
     },
     "packages/nspawn/tests/test_supervisor_quota.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "a3de64d4b4b37d1090ab2aefa35caa664c51424f0412a9cc9a3d79bf878f5de3"
+      "sha256": "1fc36d4959c1ef8e05fd683a059fe27d538cfcd19832feddf7083009862020cb"
     },
     "packages/nspawn/tests/test_supervisor_route_bootstrap.py": {
       "executable": false,
@@ -2562,22 +2712,32 @@
     "packages/nspawn/tests/test_system1_roster.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "11f440d401aa8c0e5cb56c19edba7505d71b7fe6fba8c131380ecf4a9591ad76"
+      "sha256": "1985f62620a89c912f4984833f3de63d7728824078de5695a9170459504ebefb"
     },
     "packages/nspawn/tests/test_terminal.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "ab549cc3f20d74f32b14498e49b1cc9dc4d941c73a12278c3fc64ce3774ab8cf"
+      "sha256": "40d936167031e705ed7e0a2ff78b2ca0eb86541aa72bee54be20b5d66f1bf147"
     },
     "packages/nspawn/tests/test_terminal_receipt.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "e0282bf2f854b0175cd14c11831c01e7456ed663ac13cce597dc00df68a1b66c"
+      "sha256": "3f3c57be507703829ec27523244b437e2864cbf00960237e82220ca8bd2d888a"
+    },
+    "packages/nspawn/tests/test_thread_journal.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "ab80f1df948c1c4a3ddb76aeee642e3766d9a72e6350d4321b65c76513d75ad5"
     },
     "packages/nspawn/tests/test_thread_list.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "00306959195a93021dc88ff028178dfa83cd28c5b8950c54f62724c842776668"
+      "sha256": "a6ffadce8c86dac02efaa854b7609efb0031152dff1e63bcbc059af5faafb0bc"
+    },
+    "packages/nspawn/tests/test_tmpdir_guard.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "246e16856e25d170437f81c47033a8f4deb665e79e96e6cee182b40ac3112add"
     },
     "packages/nspawn/tests/test_tool_schema_grammar.py": {
       "executable": false,
@@ -2594,6 +2754,11 @@
       "mode": 420,
       "sha256": "9c847dadd109cddd7b7bb37e8d9ef8dc358416eb2536446e53e07b63cbee43fe"
     },
+    "packages/nspawn/tests/test_unset_credential.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "7f2ff14da625f6b19262c1066e8c1b5a178b3a990b6c4c70680e3523338ca4d8"
+    },
     "packages/nspawn/tests/test_vendor_home.py": {
       "executable": false,
       "mode": 420,
@@ -2607,7 +2772,7 @@
     "packages/nspawn/tests/test_wire.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "7d8170e198d99e7ca82c2e1369ba575174b94bd4b33c32b1f5af6003f8cbf2f4"
+      "sha256": "7e139ff56c544c5c23409c904940f4988685ddea93037c980588d82c8d77cb78"
     },
     "packages/nspawn/tests/test_wire_2_1_251.py": {
       "executable": false,
@@ -2622,7 +2787,22 @@
     "packages/nspawn/tests/test_worktree.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "ef0d85222e11dd61a17c931a9b4dfb5c04680e2853ad746e4f4be86404afe8bc"
+      "sha256": "26bc2c63b147b14b6c543359270a9d204e4e70ce84e3af4df742e7d38578d544"
+    },
+    "packages/nspawn/tests/test_writer_cage.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "de67afdd66fcf8a2e90e90453624cae9429a87b633c5c4bc3c2a30b8d22ee7b7"
+    },
+    "packages/nspawn/tests/test_writer_hook_binding.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "dfb24307108ff8fe6e0e3af8d1c326fda7117292c736faf69b93fb19fe8048e3"
+    },
+    "packages/nspawn/tests/test_writer_plugins.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "9199e906a993e5eea786e6b69f04f4738155e64975d2c844b048c342be91701f"
     },
     "packages/nspawn/tests/workspace_root.py": {
       "executable": false,
@@ -2647,12 +2827,12 @@
     "packages/socket/nott_socket/door.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "1f580a809affb7cbb1533b839d409354a2e394952016aa2f41237ca3e0931131"
+      "sha256": "d0b390e58962e2ea2c7b55ed33c4f1a663b84052ecdf8a12e2ad5343778f1625"
     },
     "packages/socket/nott_socket/mcp.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "ebd266eba361820dd1e16d7e72b6d4e8b7d8bbde3d45084408c0206dacc2b6bb"
+      "sha256": "0c85d5f4af2779921ab1b61301f744df2e5a0d42802908060a94a0f760c31ff9"
     },
     "packages/socket/nott_socket/py.typed": {
       "executable": false,
@@ -2677,7 +2857,7 @@
     "packages/socket/tests/test_mcp.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "0ec65f39fcf3794c49e4d8ac32b610fa82e659c63f372eb914d93190641cc265"
+      "sha256": "cec48109429a2fd4675b88d3c747942df8df1da279a59f37194167be2d9f534b"
     },
     "packages/system1/LICENSE": {
       "executable": false,
@@ -2702,7 +2882,7 @@
     "packages/system1/nott_system1/renamed.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "425e24ffe8da0f55a4b46cbfb11bd4676855eb816a11ab43e0baf812fe7d7f0c"
+      "sha256": "04f8ebfef52b8181760947c55c203f116778244347ac44ba294f3cc4f79f172c"
     },
     "packages/system1/pyproject.toml": {
       "executable": false,
@@ -2737,7 +2917,7 @@
     "packages/system1/tests/test_renamed_variables.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "ad2b425daa11cc10a9c94aa327f3281be8e0413262a357af93743205cbb674ca"
+      "sha256": "e0c7267aad30ed98792066f047accfb0d6b6efe1ecb2c3efa38e38ce65ee7216"
     },
     "packages/system1/tests/test_transport.py": {
       "executable": false,
@@ -2747,7 +2927,7 @@
     "pyproject.toml": {
       "executable": false,
       "mode": 420,
-      "sha256": "36a7ea0e45a3ebff16a43db97185e46058b8a579d20fca51692d3b7a33b2167a"
+      "sha256": "b77434607232f00fc59b52cbee0b778e02d59f3611a53b357e34e6b9e45d57ba"
     },
     "templates/nott/spawn.toml": {
       "executable": false,
@@ -2762,17 +2942,12 @@
     "tests/conftest.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "c3d2f2cc181b55efb64fa500d7ee009e0a590877fc4c0e26d5278b01d3579f3c"
+      "sha256": "b030d049fc5fa578feb5f6b9bfe634a76141d6a87769dc3d613eba2564098de6"
     },
     "tests/election_child.py": {
       "executable": false,
       "mode": 420,
       "sha256": "7149dbf8280f8f0d5d37cc0bf2e0834bf1fdbf2b1da54b5a178688032cd37f04"
-    },
-    "tests/fixtures/github-pull.json": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "0343169775b35b933dc5057cbe873bd27ad0eaebefd6307bd36763bf0bd46f3f"
     },
     "tests/fixtures/language_vectors.jsonl": {
       "executable": false,
@@ -2783,6 +2958,11 @@
       "executable": false,
       "mode": 420,
       "sha256": "cf334704147be7f86250e92ef4b785e4e93c2c000dfac86792758db42b9d2710"
+    },
+    "tests/mcp_helpers.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "8ff9f6e61b74eef1c1817bc3ea46f14960d9e5b591913070b8f2feaf6e7690bb"
     },
     "tests/stdio_peer.py": {
       "executable": false,
@@ -2817,27 +2997,17 @@
     "tests/test_archive_sees_every_surface.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "9c6c6ce26c90c2ccd58f354404896d6fa064fea0d003509b197e4444581af4af"
+      "sha256": "44327e84d48253367ac7fa37b54f267b53c37a9a025f2df55051de5bb468bc5f"
     },
     "tests/test_board_show.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "b692caa1b59238bfb436b9f4259ba47a479baffab7850cac582b2a7dac0e9cb6"
-    },
-    "tests/test_bootstrap.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "a263b2a794618c3a51f64ebbeda4e0456e633f6fc674ae09f7a2ad3efc0b29c5"
-    },
-    "tests/test_bootstrap_connections.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "0f67cd22f305fa28d87cf0dac70b42b6ffb1631fa7e0a6a6f48dd15f06cbd384"
+      "sha256": "3b8a162725b52e95bbecda3eeea05a2bc7041f5678f49384b97db43c1c425d51"
     },
     "tests/test_bridge.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "dd7e5d03741fec3795bb627c3b7215b1044e4599a49e3de9a91b6496e9280fba"
+      "sha256": "2a1572e83a8684c4bc20ef6b155a781e4d30f6c883548312e85e8bb28951c8f9"
     },
     "tests/test_capsule_list_paging.py": {
       "executable": false,
@@ -2847,7 +3017,7 @@
     "tests/test_capsule_ref.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "a03e37f28eca51a0ceaee1f307481051b35ca61f43a8c8d81826c8058cef8654"
+      "sha256": "b12c55e3028b0d6d94c152d492f6a66d2ffef4b7cb5f46ad8208d31e03d5d845"
     },
     "tests/test_capsule_validation.py": {
       "executable": false,
@@ -2862,12 +3032,12 @@
     "tests/test_capture_gate.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "bfc1e1f95fc42222f52a0c5b7fc964ae9370e9e01c435539e9b02d4890730357"
+      "sha256": "5cb7528e051b1060cc7e2d3e7b7935a4af42aea8d92dd6c35033bf08cbdd0ef7"
     },
     "tests/test_capture_only.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "cc1862e0ad03c5bca23a185f1b3f894779b7e94d33cec8267eefdc7398183a2c"
+      "sha256": "72234b67b17d5a9210e5809e1bd649d677db5125b0c09b8be3af156483ec6b37"
     },
     "tests/test_capture_session.py": {
       "executable": false,
@@ -2877,12 +3047,12 @@
     "tests/test_cli_contract.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "6a1dc3c71f127dabc2f2b6bb2bacf43257bff6c2526aaf0fbb3152c93c53db14"
+      "sha256": "a07ff975de58a9f10c8510fbd4ea4d21274bb97764c52058882472eeda0d8061"
     },
     "tests/test_cli_database_snapshot.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "5e6041806c5c06f27d37799a39f63c9bbb091e22403f5c4f5ff12be4b6cc6857"
+      "sha256": "a83e56353b2407674628cdb5f95f8973d08541103e6c33e61db8a995abf068df"
     },
     "tests/test_cli_digest_census.py": {
       "executable": false,
@@ -2892,7 +3062,7 @@
     "tests/test_cli_parity.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "5c4736a47bfc1ac05d40a166007e968e8cd5ef409ad5c7fcaff6d8c4963b4443"
+      "sha256": "ae4de54f24e09c613d7de04342fc7c0e312a8e27b39a04793dfc3e50071372b9"
     },
     "tests/test_cli_store_errors.py": {
       "executable": false,
@@ -2912,12 +3082,12 @@
     "tests/test_commands.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "b200df017efc377e5786304eb391f6b756161f12dcdb5362474f660feeaf3637"
+      "sha256": "0ee89efada5d22156f08a63d50c54da5e62f4c0753ded29abef6b5cedddf98c7"
     },
     "tests/test_config.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "95e07fc06ce097c898e38614d6744121a6bca1e850b6ce551b0c140765d37c68"
+      "sha256": "428d47e345166c8641d1d8955ef66bf509c553c94af8bb3293da2a6f44b74188"
     },
     "tests/test_conftest_fences_the_host_identity.py": {
       "executable": false,
@@ -2932,17 +3102,12 @@
     "tests/test_consolidate.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "103344c9582ac85bae9a090cb9326485c007d02982f3f15601499e003cba1f4e"
-    },
-    "tests/test_consolidate_connections.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "decfe87760402791698a1781c00f773e96303b7e182990e3c3e46c929ff07221"
+      "sha256": "d97cf9fc63f570c3bd7ea30731c73c9cc806633bb8074f808d68adb0f42840e9"
     },
     "tests/test_context.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "862ccad677106c874bf01ed03eb1a909a98343c7af8fd09c4ca2a0691f267b80"
+      "sha256": "9b8fd8d6b812595b412305a2d28875149c2a0f7ee25bd50083c01ab30444d57e"
     },
     "tests/test_context_code.py": {
       "executable": false,
@@ -2952,12 +3117,12 @@
     "tests/test_context_corpus_rank.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "e2d79e26549bee3d0407781886ab8df0e0cf98f5d70fb059a6fffbe6c64a1049"
+      "sha256": "cb5b7dd1d1ac8953384354eb201693f584a1541bda1be6de10e73ec43e463b42"
     },
     "tests/test_curator.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "87f94a5895f5ffe21c7a9725114c18e1a2c273b266c711f8141dd76b410f39e8"
+      "sha256": "247a5f0eb61a3f146baef88991eef6ceb4f678e87f52613f6afea3e595d689b9"
     },
     "tests/test_curator_daily.py": {
       "executable": false,
@@ -3037,7 +3202,7 @@
     "tests/test_embedding_selfhosted.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "1eb8d438528216140947c30b21af2101d9825dd19dc53cb66a11c853239b98cc"
+      "sha256": "3241125a6a75cde96f7245c3dbb621f416482037abb507b2ef9805017d6a3813"
     },
     "tests/test_embedding_worker_owner.py": {
       "executable": false,
@@ -3077,17 +3242,12 @@
     "tests/test_fail_closed.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "1e817e6c0e0d3e58e8f14083a3858c825000fc1aa4e9086a3c5f779b60e31a92"
+      "sha256": "672cedcdb03765e09da6f1b41a3bb58d679ad86ca80ff282e0be012d745a4f3f"
     },
     "tests/test_forget.py": {
       "executable": false,
       "mode": 420,
       "sha256": "ddc74debabfdb10a90ade40b6e49d23cd416b7f5f15c9cbfdb97488682217160"
-    },
-    "tests/test_github.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "74deb781488899c3ec1b17154367c0edff99327bec29bb9e50c30b7c982e4d53"
     },
     "tests/test_http_serve.py": {
       "executable": false,
@@ -3097,7 +3257,7 @@
     "tests/test_hygiene_report.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "2236b8bbc8a6543740bbb21ee729a4aea17f7c9b3fb30a9032e9ac2ae7f455d1"
+      "sha256": "366c089a7d5c5bf4305eff3c06a01c3f07ed79a91efd14855eab6621fbdd4602"
     },
     "tests/test_inbox_rate.py": {
       "executable": false,
@@ -3108,11 +3268,6 @@
       "executable": false,
       "mode": 420,
       "sha256": "0519c87c082cae7698fd5f6d5eb2571e4cd217e34a9d2c2deb4eb5f15de4a047"
-    },
-    "tests/test_index_root_fence.py": {
-      "executable": false,
-      "mode": 420,
-      "sha256": "7c26c3e3652b954d454c55bc653ba6345844e461f4bf382d548adceea091bab7"
     },
     "tests/test_ingest.py": {
       "executable": false,
@@ -3137,7 +3292,7 @@
     "tests/test_ingest_language.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "e074fc1bb14f98cd58c6fbfa8a67c59e7a2843e0a3ab8d2a26ae1aeae0780cfd"
+      "sha256": "ad1a3f975556650a3345c6d0278e903e52834c4742efeabcf7a50c321d123316"
     },
     "tests/test_ingest_revision.py": {
       "executable": false,
@@ -3167,17 +3322,17 @@
     "tests/test_journal_eras.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "cb415afb238612fbf10a35762e9b32fe453450390ea482f35872ec0891b39cd2"
+      "sha256": "f58b98f49b7f66ab6b828d15942dbf244f6b418768115d6edd695cf9ef3bc73b"
     },
     "tests/test_journal_replay.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "d1acef267c3c932b32bf88e6d825cd6668f48cb77ea544fb97631b2317452ae6"
+      "sha256": "c941d67668e4a7805ff68f962e5dd472e130cb4c54a05e5635e44ed930c4f9bc"
     },
     "tests/test_kind_gate.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "8f0c05d022e155d63e593afd215792e6dbd44ffedfa46a2457ef6ac5f3d39466"
+      "sha256": "0ea20b6f3b7db2cd23e91329f352206e05ea8e83be31a30cf5365fca5a4debe0"
     },
     "tests/test_lazy_store.py": {
       "executable": false,
@@ -3207,12 +3362,12 @@
     "tests/test_memory_only_install.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "55e9ad5d53a4319fe25f4fe55a160c25da7f0e9d5d1284ea4eb880907a4d6a9e"
+      "sha256": "44dece0171197341a07ce5b5032b7b10da04ddcb6362536de670eae3bd5b3503"
     },
     "tests/test_memory_read_cost.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "57c6f24bd2963136e53bfdac855298369062dccf11fa4c6f6c4f63d67ebea1fe"
+      "sha256": "70e4db0c65211074cdc7fc1c7bd90b8b07454bcbbd68aaa88347f3d337917b03"
     },
     "tests/test_mutant_memory.py": {
       "executable": false,
@@ -3232,7 +3387,7 @@
     "tests/test_no_engine_literals.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "6627c6878e66807c54977d3dcd038b3825f8b03c4f94ca424b02f60ac467b65f"
+      "sha256": "a1764b9657f9d43a08da38d82c723e8f06179073c11b7f6670620d21f3c11598"
     },
     "tests/test_outcome_list.py": {
       "executable": false,
@@ -3257,22 +3412,22 @@
     "tests/test_project_canon.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "d7d1cb80f8ceb40ca2748b47c58b4199dd2686a00d606bfd32c1ffb6902e990e"
+      "sha256": "0f6570dce516b4b3faf9e941b1efb794419ad2859d60d72a9c994b97e799a617"
     },
     "tests/test_project_onboarding.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "a99d84536c9ff98d76ee9a84a089976bb865b78d9e86a583cbb6993fbd15eac1"
+      "sha256": "c22d7ce6463b0beb2fbeeca13bb595ddd0a63492aafded1b273310270972bfee"
     },
     "tests/test_project_scan.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "c38ba347cb9b3c7bbcd929cf92ae2bde54a23c09c84cd3bfa53cb9f2aad97bb2"
+      "sha256": "1b585834ee60dff0f1c551b9dde27af16710f6ad97825cd4d9aad4794b9b576b"
     },
     "tests/test_property.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "b321659241414d1a52fab8e2f3a3c3824745b8e3dd7c5df44304eedd6701b7ac"
+      "sha256": "839dfb80c4889dd7970104e8d579129b1549e05c514a805696222cf3fee6af50"
     },
     "tests/test_proposal_export.py": {
       "executable": false,
@@ -3297,17 +3452,22 @@
     "tests/test_read_only.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "f257648fc1a3011fa1069df6da6f1d143da5fc43f37ddf86ed190451762f0db2"
+      "sha256": "2dab61f8335e63a594abf015c80c36bb2b382d9665bcf167ad286ae23364dd79"
     },
     "tests/test_read_surfaces_are_countable.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "d22e0eb31dcd17f130d0f1d622d440a4d5596fb5a70caea21104daa8e978f8ec"
+      "sha256": "97ca163f1563d6efc2f13737046c5602ca2e70956a1abda0c58e54729dfc5407"
     },
     "tests/test_recall_bootstrap.py": {
       "executable": false,
       "mode": 420,
       "sha256": "bff6cf6e2cc148130814769182f3f3db9470d194839ab82741b9c1a58d18a615"
+    },
+    "tests/test_refusals_name_served_tools.py": {
+      "executable": false,
+      "mode": 420,
+      "sha256": "13705bc07975c0cb2ae259341435a9ff3fdc65377da527129bdb137496f4b377"
     },
     "tests/test_relation_revocation.py": {
       "executable": false,
@@ -3317,7 +3477,7 @@
     "tests/test_release_export.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "c4fe1fd79b0ecbc05d978e3786e5855318879d15432fde95a90afd1f9dd56623"
+      "sha256": "e31ad815dfb3a2b3fa77419c1eefcaab03b60e0a5ee32d792b4fa4626a228513"
     },
     "tests/test_release_self_exit.py": {
       "executable": false,
@@ -3327,7 +3487,7 @@
     "tests/test_renamed_variables.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "4f36c3917daf8e6f01533bc7018a04cc4c8bf6b75e5bca4c1cbbdc34e9ff0e0a"
+      "sha256": "907d5f3edc1b5399c3c8471881f03b2b793bc74ed55d335084e2312825c8a300"
     },
     "tests/test_retired_tool_names.py": {
       "executable": false,
@@ -3337,7 +3497,7 @@
     "tests/test_retrieve_blends_and_limits.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "5258a52803c08cbdf9140a1ca6d765393e626200ebfda23b88eb097df4597c83"
+      "sha256": "b9a290ff24f6dc5fd8028905c97cbef57ffffbd603217354be8e572230b28414"
     },
     "tests/test_retrieve_confidence_not_rank.py": {
       "executable": false,
@@ -3377,22 +3537,22 @@
     "tests/test_retrieve_known_at.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "090566826731eb820f9edf2c8e549eeca8a411e0173274b0e1eb84c43a4f1956"
+      "sha256": "7b14ce8c7be158b9d2e337179275dcd37aad8ec911af7a9258d8aea80e06d8fe"
     },
     "tests/test_retrieve_outcomes.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "2f6f32b648f08bb26e661eb15d157197233d56411323326da6c0e7384adaeff3"
+      "sha256": "afd5402c4a18ea52390e0d8637c996da4dc94b7e809437de86380ff49ceb29d7"
     },
     "tests/test_retrieve_params_passthrough.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "8dd76977aadffd687d42c8441d2ee9326ce4477d9fcfb09c7a90ee508c6ef644"
+      "sha256": "c36e22e2b8e980e545c96d27283ee885c84db803b56133d0f4a397ca578c6d1e"
     },
     "tests/test_retrieve_patch_100.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "1e7764090e7ba25ca02e9d5e439858d504ab1e85dd6c3fbe5b97ec4cb5c7d083"
+      "sha256": "3f3acdcc5ce182c713d17a882bd3b6a21b3898dad8f5cae70af3806d1ff4e921"
     },
     "tests/test_retrieve_patch_edge_cases.py": {
       "executable": false,
@@ -3412,12 +3572,12 @@
     "tests/test_retrieve_scope_effort_topic.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "9fdce927c143fafad8b3b52987eab3fc4130fa2347f28cb194c61098db9c12a3"
+      "sha256": "f6884f7571a849c109c12b51e67681835a06ed675b996bfc69eca1658c65467f"
     },
     "tests/test_retrieve_session_id.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "a21926dacba31e28973a882d63230e1d5675927718afe091db7f0d7e31472e47"
+      "sha256": "7b971e93706a28242872bcdc72f3fa5f70da7b19a76162b5ccad9220025f6917"
     },
     "tests/test_retrieve_standing_fence.py": {
       "executable": false,
@@ -3427,7 +3587,7 @@
     "tests/test_retrieve_time_window.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "164622afd93f39e418a4b3a43c196d7d8ec0bb8eac1b848d6096ceb1b162c2ed"
+      "sha256": "9a5a2e98a77f5a17f9a228077e2d74836154a8d60420e7c5fd95445de1fe9a05"
     },
     "tests/test_retrieve_trust_boundary.py": {
       "executable": false,
@@ -3452,7 +3612,7 @@
     "tests/test_retrieve_vector_lane_accounting.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "5242c9d418ae040bd881bfbd05c3902685fa9fc25a4a24581020f09af4d1a5f6"
+      "sha256": "0675c811290f634564778951869c8f2cc4d8162ffcf3df77efe9b630b6fe7840"
     },
     "tests/test_retrieve_vector_margin.py": {
       "executable": false,
@@ -3462,7 +3622,7 @@
     "tests/test_revoked_supersession_restores_archive.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "6aeae4e8fa326dae2a0cc8909af0303fe3c73f81cd1ce270f252ed7633639b23"
+      "sha256": "6d34d36aa4ffecb28da6bc5d3dcd38de2fb868361ba56b2dd15c6794d076d53e"
     },
     "tests/test_rules.py": {
       "executable": false,
@@ -3497,7 +3657,7 @@
     "tests/test_session.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "545d495abb239a5baebb5cbadc0750656455a579ef9de8c151f3a4db0e920355"
+      "sha256": "c1eee4104954dac8a0c04f2cabaefa89f1e1ba1899f5463d750cac7918298fc9"
     },
     "tests/test_session_handoff.py": {
       "executable": false,
@@ -3517,7 +3677,7 @@
     "tests/test_source_quote_standing.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "e43bb284823ea1811827cc2e954ed00ed2c1a4b50be14e2958ea89ddfe68fdba"
+      "sha256": "00158d75c22cc5415287644ff194d4156d07ff70d203ca605334d5c8edd28df7"
     },
     "tests/test_sqlite_store.py": {
       "executable": false,
@@ -3597,12 +3757,12 @@
     "tests/test_system1_observations.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "e3ceca690f01f2aa9cc14e517f5689fb650f0d27af01c558bd94c8ecd01aa29f"
+      "sha256": "34218c043882fbb103ca5320c0c59222c26f6cb3e8d752caf7b62c4953a6e5b3"
     },
     "tests/test_taint_covers_the_source_quote.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "075f42d2d8e103b4d6ad71d540d9323944f68ce51800169442ccde7fdec10e2f"
+      "sha256": "16c44bdb2e772e93713c71365e852bc9bf67c2e32e83f446e93b6286504ca2a5"
     },
     "tests/test_task_is_served_again.py": {
       "executable": false,
@@ -3612,7 +3772,7 @@
     "tests/test_term_groups.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "e3b98969634647fd1f15932d2ebbf2c2dbe686ed985ed61b4fed65d5d85a9949"
+      "sha256": "3ec3e5a5eb9f5d7d7cb1db98678f07c273c98fdb7374f8275d5368e536d82e76"
     },
     "tests/test_term_index.py": {
       "executable": false,
@@ -3637,32 +3797,32 @@
     "tests/test_tool_capsule_ids.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "8c9fff3624d5b4e7faa5d28b7fb23cced0d3e5d13188bcd5d8c0e7f37b1cd67d"
+      "sha256": "d8df631b2659dd33333b98d6813b7a3dccd77fb20cc144f9822cd2df56d0d83d"
     },
     "tests/test_tool_registry.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "3e0a5f0cc823ff0b7da780f1e40cdac24fa54eb6c5331777547320afb86985df"
+      "sha256": "602ac540ff2b6f70c2bab15dea613e81cd994b9209e9475c7e1c23182372f792"
     },
     "tests/test_tools.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "568866816071a13a682177453f5b078660c5f7c2ceb278265c3d3065e2065520"
+      "sha256": "c7adfeda4280486b538a75b765a8924147f2b1dd350ebd22e9371ee69bc1e3c1"
     },
     "tests/test_tools_schema_budget.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "413df9a102d3bf98ba0969a88096bb192a8e0a683d406098499888164acf6a14"
+      "sha256": "b384e9a5ae6826411ac2ebb0aeb9708133d2a81f750c13b10a4ff024ca288b06"
     },
     "tests/test_unit_of_work.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "13caaea8a431db6f38687b87601ef276825ac9d3342be037f3aadacd472fe7eb"
+      "sha256": "c6d25d5084d05f703d9f7fbe093361002434f8e796ccd93967e9cd0efd9a54c3"
     },
     "tests/test_vector_lane_parity.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "e51aa5dea2a19249ea255eb18e04801b3928d5ce55b0565c244b9c60e6ad671d"
+      "sha256": "7a58c4c7cd0a7ac72830933ee9c80a8f18adb774bf954026aa9640c9dadc0108"
     },
     "tests/test_version_parity.py": {
       "executable": false,
@@ -3672,7 +3832,7 @@
     "tests/test_view_connections.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "b93296aa6eebb68ab065b8de43e4b460860a9888429f419cb1e038aa38ccd904"
+      "sha256": "db4ee074bd6291d680b4707cebd2d1e395d9dbfc692c2e498fdca4473977568f"
     },
     "tests/test_viewer.py": {
       "executable": false,
@@ -3727,7 +3887,7 @@
     "uv.lock": {
       "executable": false,
       "mode": 420,
-      "sha256": "399a3c394591fd3e9e532f8b1c43d1cc75d511a0892d754287524776adcfdad3"
+      "sha256": "834bb6eb118b056e9ae383f4b460e1c805426df432aa39247d71ddd71ee226f1"
     }
   },
   "license": "AGPL-3.0-only",

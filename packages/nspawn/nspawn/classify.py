@@ -5,10 +5,8 @@ writes `judgment`. Here a third party reads the prompt and says what the work
 is; the effective class is the CHEAPER of the two, so the observation can only
 close escalation, never open it.
 
-Every failure of the observation is one door: the class falls to
-`unclassified` and, because a declared class may be cheaper than that, the
-effective class is still the `min` of the two. Falling closed that raised a
-ceiling would not be falling closed.
+Every failed observation keeps the declared class. A missing observation
+cannot justify a lower effort or a different model.
 
 This is not in `picker.py` (pure by contract: no vendor call), not in
 `system1.py` (configuration of the verbs, not a domain rule) and not in
@@ -104,8 +102,7 @@ _COLUMNS = {
     "verification": "strength",
     "mechanical_fanout": "thrift",
     "design": "design",
-    # The floor ranks by thrift as well (`ranks.py`), which is what makes the
-    # fail-closed fall a descent instead of an arbitrary reshuffle.
+    # Unclassified ranks by thrift, as it does in ranks.py.
     UNCLASSIFIED: "thrift",
 }
 _THRIFT = "thrift"
@@ -264,14 +261,8 @@ def _is_cheaper(roster: Roster, candidate: str, against: str) -> bool:
     Measured by an independent review, 2026-09-21: every class in the host
     table moves both axes together, so no test built on it could see this.
     """
-    # The fail-closed floor is scored like everything else, with no exemption.
-    # An earlier cure exempted it from the two routing axes so the fall could
-    # always happen, and that was the hole: `unclassified` ranks name-stable,
-    # the alphabetically first provider is not the thriftiest, and a dispatch
-    # declaring `mechanical_fanout` fell onto a DEARER route with the System1
-    # merely down. Falling closed means never dearer, not always
-    # `unclassified` — when the floor is not cheaper, the declared class
-    # standing IS the closed fall.
+    # Compare every observed class on all axes, including unclassified.
+    # A failed observation never reaches this comparison.
     candidate_cost = _cost(roster, candidate)
     against_cost = _cost(roster, against)
     # Either side undeclared is a comparison that cannot be made, and an
@@ -365,7 +356,7 @@ def _observe(prompt: str, roster: Roster) -> tuple[str, float | None, str | None
 
 
 def resolve_execution_class(
-    declared: str, prompt: str, roster: Roster, *, pinned: bool = False
+    declared: str, prompt: str, roster: Roster
 ) -> tuple[str, str | None, ClassObservation | None]:
     """The effective class, the warning when it is not the declared one, and
     what System1 was sent and said.
@@ -374,21 +365,15 @@ def resolve_execution_class(
     measure against, the System1 is not asked at all, and there is no
     observation.
 
-    `pinned` is true when the caller pinned an effort or a provider. Only a
-    confident answer inside the class vocabulary lowers a pinned dispatch. No
-    answer, an unsure answer, an invalid distribution, or an answer outside the
-    vocabulary is a failed observation: it is no evidence against the pin, so
-    the declared class stands (measured 2026-10-16: `planning` with
-    `effort=high` was refused against the `unclassified` ceiling whenever
-    System1 was down).
+    Only a confident answer inside the vocabulary can lower a dispatch.
+    A failed observation keeps the declared class.
     """
     if not roster.classes:
         return declared, None, None
     observed, confidence, failure = _observe(prompt, roster)
     effective = (
         observed
-        if not (pinned and failure is not None)
-        and _is_cheaper(roster, observed, declared)
+        if failure is None and _is_cheaper(roster, observed, declared)
         else declared
     )
     observation = ClassObservation(

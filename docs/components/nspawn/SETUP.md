@@ -3,7 +3,6 @@
 Verified on 2026-10-18.
 
 This page owns the optional developer setup. Product operation stays in the [runbook](RUNBOOK.md).
-The [catalog](setup-catalog.json) records this project's 161 decisions, source references, validation, and proof limits.
 It uses the toolkit revision `de66fe371a49f5a4d3b521759e5c401f390b6424`.
 The project keeps its current Python workspace, public interfaces, and package boundaries.
 NOTT process, nMEMORY, nSPAWN, and nBROWSER are optional developer capabilities.
@@ -65,12 +64,11 @@ Use the official instructions only when the selected task needs the tool:
 
 Keep OS package management separate from project configuration.
 Use the existing declared SDK preparation command only for its tests.
-Do not install another browser, change accounts, or register a service to fill a catalog row.
+Do not install another browser, change accounts, or register a service for this setup.
 
 ## Toolkit choices
 
-The table summarizes the 22 guides. Guide 17 has two entries in the full catalog.
-The JSON keeps all tools, skills, prompts, templates, and machine prerequisites.
+The table summarizes the 22 guides.
 
 | Guide | Tool | Decision |
 | --- | --- | --- |
@@ -90,7 +88,7 @@ The JSON keeps all tools, skills, prompts, templates, and machine prerequisites.
 | 14 | Chrome DevTools | Use scoped nBROWSER diagnostics when needed. Full tracing is unproved. |
 | 15 | Codex workflow | Use the root CLAUDE.md contributor contract. Native discovery is pending. |
 | 16 | Vercel skills | No web stack. Reuse applicable prose or discovery guidance on demand. |
-| 17 | Next.js runtime and bundles | Both catalog entries are inapplicable. Keep the current stack. |
+| 17 | Next.js runtime and bundles | Both are inapplicable. Keep the current stack. |
 | 18 | PostgreSQL skills | Inapplicable. Keep SQLite through nott-database. |
 | 19 | GitHub CI repair | Use existing CI and diagnosis for an actual failure. No repair task is open. |
 | 20 | Security review | Use the pinned prompt and existing read-only review method. See quality. |
@@ -107,9 +105,7 @@ Use the [runbook](RUNBOOK.md) for product restoration.
 
 ## Proof and next observations
 
-The catalog's `observations` owns the current integration results.
-Installation, configuration, native loading, and execution are separate fields.
+Installation, configuration, native loading, and execution are separate observations.
 Native trust, authentication, roster admission, quota, and browser startup require their own observations.
-The integration owner updates those results after the final battery.
 Static files do not establish full toolkit delivery.
 Read [Quality](QUALITY.md) before a completion claim.

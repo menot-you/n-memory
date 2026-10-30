@@ -18,7 +18,6 @@ Capture only the data that the project needs. Never capture secrets.
 | Browser captures | Page pixels under the selected retention mode | Host grant required for managed retention |
 | Native agent client | Prompts, tool results, and recalled context | Client authentication and provider policy apply |
 | Web search | Search terms | Every configured keyed provider can receive the query |
-| GitHub sync | Selected graph records | Explicit repository and effort fence |
 
 Gemini and OpenAI embeddings use external services when their credentials enable them.
 An OpenAI-compatible endpoint can use a local embedding server.

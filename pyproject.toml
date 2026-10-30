@@ -15,7 +15,6 @@ dependencies = [
     "nott-system1",
     # The one door to the store file (SQLite), and the vector distance it runs.
     "nott-database",
-    "sqlite-vec>=0.1.9",
     # The official MCP Python SDK serves stdio and Streamable HTTP (`server.py`,
     # `serve.py`): framing, handshake and protocol version are the standard's.
     "mcp>=2.3",
@@ -107,11 +106,15 @@ ignore_names = [
     # nmemory_kind_classify's scope argument; "global" is a wire value of
     # ClassificationScopeParam in nmemory/tools_schema.json.
     "GLOBAL",
-    # RelationKind.CONTRADICTS and PROPOSES are reached only through
+    # RelationOrigin.IMPORT is reached only through from_str, which reads the
+    # stored origin of a relation row; "import" is a stored value.
+    "IMPORT",
+    # RelationKind.CONTRADICTS, PROPOSES and GROUNDED_IN are reached only through
     # RelationKind(value): they are wire values of nmemory_relation_add's kind in
     # nmemory/tools_schema.json.
     "CONTRADICTS",
     "PROPOSES",
+    "GROUNDED_IN",
     # io.RawIOBase protocol members of embedding._ReadsWithin: io.BufferedReader
     # calls them, never by name.
     "readable",
@@ -149,7 +152,6 @@ source_modules = [
     "nmemory.export",
     "nmemory.extract",
     "nmemory.extract_llm",
-    "nmemory.github_plan",
     "nmemory.journal",
     "nmemory.project",
     "nmemory.relation",
@@ -223,7 +225,7 @@ forbidden_modules = [
 #   application:    the MCP tools, the CLI commands and the services;
 #   infrastructure: persistence (database, the Store as Unit of Work, repositories,
 #                   queries), the embedding space, and the adapters (subprocess, git,
-#                   gh, context readers, embedding HTTP client, environment, files);
+#                   context readers, embedding HTTP client, environment, files);
 #                   `lexical` reads NOTT_NMEMORY_TOKEN_CACHE and `language` loads its
 #                   model, so neither is pure yet;
 #   domain:         pure modules, no I/O (also held by the forbidden contract above).
@@ -234,9 +236,9 @@ containers = ["nmemory"]
 exhaustive = true
 layers = [
     "__main__ : cli : serve : server",
-    "anchors : commands : context : curator : embedding_index : github : hygiene : ingest : portal : project_scan : retrieve : rules : rules_writer : staleness : system1 : tools",
-    "anchor : bridge : capture : config : context_readers : database : embedding : github_client : language : lexical : provider : queries : renamed : repositories : space : store : subproc",
-    "audit_actions : capsule : capsule_ref : classify : consolidate : curator_policy : dod : export : extract : extract_llm : github_plan : journal : project : relation : substrate : taint : wire",
+    "anchors : commands : context : curator : embedding_index : hygiene : ingest : portal : project_scan : retrieve : rules : rules_writer : staleness : system1 : tools",
+    "anchor : bridge : capture : config : context_readers : database : embedding : language : lexical : provider : queries : renamed : repositories : space : store : subproc",
+    "audit_actions : capsule : capsule_ref : classify : consolidate : curator_policy : dod : export : extract : extract_llm : journal : project : relation : substrate : taint : wire",
 ]
 
 [tool.pytest.ini_options]

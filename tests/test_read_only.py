@@ -154,7 +154,7 @@ def test_normal_server_keeps_the_complete_catalog() -> None:
 
     tools = instance.get_tool_definitions()
 
-    assert len(tools) == len(MemoryServer.SUPPORTED_TOOLS) == 27
+    assert len(tools) == len(MemoryServer.SUPPORTED_TOOLS) == 18
     assert "nmemory_board_show" in {tool["name"] for tool in tools}
     assert "nmemory_work_list" in {tool["name"] for tool in tools}
     context_tool = next(

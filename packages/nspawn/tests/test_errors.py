@@ -152,26 +152,6 @@ def test_wire_text_carries_the_code_contract() -> None:
     assert errors.NERR_1101.code_str() == "1101"
 
 
-def test_from_code_falls_back_to_the_sentinel_rather_than_raising() -> None:
-    assert errors.from_code(1101) is errors.NERR_1101
-    assert errors.from_code(4103).code == 4103
-    assert errors.from_code(1) is errors.UNKNOWN
-    assert errors.from_code(-7) is errors.UNKNOWN
-
-
-def test_classify_keeps_the_oracle_rule_order() -> None:
-    # "no codex binary" satisfies rule 1; nothing earlier can claim it.
-    assert errors.classify("no codex binary on this host") is errors.NERR_1101
-    # A reason matching BOTH rule 1 and rule 2 must resolve to rule 1, which is
-    # the whole reason the order is preserved rather than sorted.
-    both = "no claude binary: version check failed"
-    assert errors.classify(both) is errors.NERR_1101
-    # The broad "spawn " rule is last, so a guardian reason wins over it.
-    assert errors.classify("spawn guardian saw no clean receipt") is errors.NERR_2005
-    assert errors.classify("spawn refused") is errors.NERR_2002
-    assert errors.classify("something nobody catalogued") is errors.UNKNOWN
-
-
 def test_the_root_error_carries_its_catalog_entry() -> None:
     raised = errors.NSpawnError(errors.NERR_1103, "line 4, column 2")
     assert raised.entry is errors.NERR_1103
@@ -199,15 +179,15 @@ def test_nerr_1104_names_the_source_that_WINS_before_the_fallback() -> None:
 def test_nerr_1104_path_formatting(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from nspawn import supervisor
+    from nspawn import config, supervisor
     from nspawn.errors import NERR_1104, NSpawnError
 
     missing_path = tmp_path / "nonexistent" / "spawn.toml"
     monkeypatch.setenv("NOTT_NSPAWN_ROSTER", str(missing_path))
-    monkeypatch.setattr(supervisor.config, "resolve_roster_path", lambda: None)
+    monkeypatch.setattr(config, "read_store_config", lambda: None)
 
     with pytest.raises(NSpawnError) as excinfo:
-        supervisor._read_roster(str(tmp_path))
+        supervisor.read_roster(str(tmp_path))
 
     assert excinfo.value.entry is NERR_1104
     err_str = str(excinfo.value)

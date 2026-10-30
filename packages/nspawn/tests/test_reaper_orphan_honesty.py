@@ -86,12 +86,8 @@ def rival_reaper(rival, tmp_path):  # type: ignore[no-untyped-def]
 
 
 def test_a_swept_instance_takes_its_row_back(owner, rival, rival_reaper) -> None:  # type: ignore[no-untyped-def]
-    """A missed window cannot erase the instance FOREVER.
-
-    `mark_orphans` DELETES the stale peer's row and `heartbeat_instance` is an
-    UPDATE: without re-registration it returns False forever. 59 instances with
-    orphans in live registry, zero with row.
-    """
+    """A removed instance must register again before its next admission."""
+    rival.remove_instance()
     owner.mark_orphans(now=100_000, stale_after_ms=1_000)
     assert rival.heartbeat_instance(100_500) is False
 
@@ -104,6 +100,7 @@ def test_a_run_admitted_after_the_sweep_is_not_orphaned(
     owner, rival, rival_reaper
 ) -> None:  # type: ignore[no-untyped-def]
     """The defect seen from outside, and there is no load in this function."""
+    rival.remove_instance()
     owner.mark_orphans(now=100_000, stale_after_ms=1_000)
     rival_reaper._tick(now=101_000)
     rival.insert_run(_row("r-novo", phase=RunPhase.RUNNING))

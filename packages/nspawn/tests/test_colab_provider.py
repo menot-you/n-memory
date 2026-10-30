@@ -251,7 +251,7 @@ def _pull(
     registry: Registry, monkeypatch: pytest.MonkeyPatch, now: int
 ) -> dict[str, str]:
     monkeypatch.setattr(supervisor.time, "time", lambda: now)
-    return supervisor.pull_compute(registry, supervisor._read_roster())
+    return supervisor.pull_compute(registry, supervisor.read_roster())
 
 
 def _colab_quota(

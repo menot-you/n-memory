@@ -12,6 +12,7 @@ the standing verdict is recalculated live against the current file:
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -293,13 +294,8 @@ def test_source_quote_reanchor_effective(tmp_path: Path) -> None:
     )
     cid = ingest_res["outcomes"][0]["id"]
 
-    # Reanchors to f2.py
-    ok(
-        server.call_tool(
-            "nmemory_capsule_reanchor",
-            {"capsule_id": cid, "anchor": "f2.py:1", "reason": "moved to f2"},
-        )
-    )
+    # Reanchors to f2.py, as the curator's repair path does.
+    server.store.anchors.reanchor(cid, "f2.py:1", "moved to f2", datetime.now(UTC))
 
     ret_res = ok(
         server.call_tool(

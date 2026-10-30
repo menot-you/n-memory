@@ -37,7 +37,9 @@ def failed_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Same unambiguous a1/acme control as F8; no plugin_root is declared.
     secrets = tmp_path / "secrets"
     secrets.mkdir()
+    secrets.chmod(0o700)  # whatever the umask
     (secrets / "acme.token").write_text("synthetic-unused")
+    (secrets / "acme.token").chmod(0o600)  # whatever the umask
     source = tmp_path / "roster.toml"
     source.write_text(
         '[defaults]\nmodel = "m1"\n'
@@ -46,7 +48,7 @@ def failed_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         f'secrets = "{secrets}"\nmodels = ["m1"]\n'
     )
     roster = Roster.read(source)
-    monkeypatch.setattr(supervisor, "_read_roster", lambda cwd: roster)
+    monkeypatch.setattr(supervisor, "read_roster", lambda cwd: roster)
     monkeypatch.setattr(supervisor, "_lane_of", lambda cwd: None)
     monkeypatch.setattr(child.os, "environ", {"HOME": str(tmp_path), "PATH": "/bin"})
     launcher = Mock(side_effect=AssertionError("launcher unexpectedly reached"))
@@ -58,6 +60,7 @@ def failed_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     instance = object.__new__(Supervisor)
     instance._lock = threading.Condition()
     instance._children = {}
+    instance._commands = {}
     runs = tmp_path / "runs"
     runs.mkdir()
     instance._run_root = runs
@@ -65,10 +68,12 @@ def failed_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     instance._writers = {}
     instance._unpublished = {}
     instance._failovers = {}
+    instance._agent_launches = {}
     rows = {}
     registry = Mock()
     registry.instance_id = "f8-memory"
     registry.writer_scope.return_value = None  # a Claude run records no slice
+    registry.writer_red.return_value = None
     # This in-memory store keeps no journal, so every run reads the unknown profile.
     registry.effort_profile.return_value = EffortProfile()
     registry.read_run_events.return_value = []

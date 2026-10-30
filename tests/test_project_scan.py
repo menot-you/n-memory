@@ -222,9 +222,13 @@ def test_scan_has_one_read_only_native_run(
     from nspawn.registry import Registry, store_path
 
     plugin = tmp_path / "plugin"
-    plugin.mkdir()
+    (plugin / "agents").mkdir(parents=True)
     (plugin / ".mcp.json").write_text(
         json.dumps({"mcpServers": {"nmemory": {"command": "/bin/false", "args": []}}})
+    )
+    (plugin / "agents" / "worker.md").write_text(
+        "---\nname: worker\ndescription: The default child.\n---\n\nDo the brief.\n",
+        encoding="utf-8",
     )
     roster = tmp_path / "spawn.toml"
     roster.write_text(

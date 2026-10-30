@@ -44,7 +44,7 @@ from nmemory.anchors import audit_all, confined_file, parse_code_anchor
 from nmemory.queries.curator import curator_candidates
 from nmemory.repositories.capsules import ListFilter
 from nmemory.store import Store
-from nott_database import RefusedError, directory_bind
+from nott_database import RefusedError, admit_directory
 
 from nmemory_evals.driver import DriverError, validate_disposable_store_dir
 from nmemory_evals.path import directory_check, directory_open, file_read, file_replace
@@ -180,6 +180,12 @@ def _fixture_directory(path: Path) -> Iterator[int]:
     try:
         validate_disposable_store_dir(path.absolute())
         with directory_open(path, create=True, fresh=True) as descriptor:
+            # The preflight stops at the first missing component. Admit the
+            # directory again now that each component exists.
+            try:
+                admit_directory(path)
+            except RefusedError as err:
+                raise ShadowRefusal(f"fixture directory refused: {err}") from err
             yield descriptor
     except (DriverError, OSError) as err:
         raise ShadowRefusal(f"fixture directory refused: {err}") from err
@@ -502,8 +508,10 @@ def open_shadow(path: Path | str) -> Iterator[Store]:
     except DriverError as err:
         raise ShadowRefusal(f"shadow store refused: {err}") from err
     try:
-        with directory_open(target.parent, create=True) as descriptor:
-            target = directory_bind(descriptor) / target.name
+        with directory_open(target.parent, create=True):
+            # The preflight stops at the first missing component. Admit the
+            # directory again now that each component exists.
+            admit_directory(target.parent)
             for suffix in ("", "-wal", "-shm", "-journal", "-write.lock"):
                 candidate = Path(f"{target}{suffix}")
                 if candidate.exists() or candidate.is_symlink():

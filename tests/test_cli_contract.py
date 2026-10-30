@@ -227,27 +227,6 @@ def test_capsule_show_tombstone_is_a_domain_refusal(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "args,cause",
-    [
-        (
-            ["github", "sync", "--config", "/nonexistent/sync.toml"],
-            "cannot read config",
-        ),
-    ],
-)
-def test_cli_operational_failure_preserves_cause_without_traceback(
-    tmp_path: Path,
-    args: list[str],
-    cause: str,
-) -> None:
-    default_store_path()
-    result = _run(args, tmp_path)
-    assert result.returncode == 1, result.stderr
-    assert len(result.stderr.splitlines()) == 1
-    assert cause in result.stderr and "Traceback" not in result.stderr
-
-
-@pytest.mark.parametrize(
     "args", [["database", "create"], ["capsule", "retrieve", "test-refusal"]]
 )
 def test_cli_database_directory_refusal_uses_d18_exit_two(

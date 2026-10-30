@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from ..capsule import parse_rfc3339
 from ..database import Cursor, Database
-from ..journal import AuditEvent, ReplayReport
+from ..journal import ReplayReport
+from ..repositories.audit import audit_event_from_row
 
 
 def replay_report(cur: Cursor) -> ReplayReport:
@@ -13,21 +13,7 @@ def replay_report(cur: Cursor) -> ReplayReport:
         "SELECT seq, at, actor, action, subject, reason, chained_hash FROM audit_events ORDER BY seq ASC"
     )
     rows = cur.fetchall()
-    events = [
-        AuditEvent(
-            seq=int(r[0]),
-            at=parse_rfc3339(r[1]),
-            actor=str(r[2]),
-            action=str(r[3]),
-            subject=str(r[4]),
-            reason=str(r[5]) if r[5] is not None else None,
-            chained_hash=str(r[6]),
-            # The RAW string from the column: the Rust era signed nanoseconds
-            # that `parse_rfc3339` trims. Without it, that era is unreadable.
-            stored_at=str(r[1]),
-        )
-        for r in rows
-    ]
+    events = [audit_event_from_row(r) for r in rows]
 
     # The LIVE universe is identical to `list()`, and both branches MUST be
     # disjoint: `journal.py` merges universes if an id appears in both, whereas

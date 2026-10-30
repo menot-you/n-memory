@@ -20,7 +20,7 @@ from test_agy_acp import bare_agent
 from nspawn import agy_acp, native, route, terminal
 from nspawn.mcp import NSPAWN_TOOL_BY_NAME, McpError, McpServer
 from nspawn.redact import SecretNeedles
-from nspawn.registry import Registry, RegistryError, RunKey
+from nspawn.registry import Registry, RegistryError, RunKey, now_ms
 from nspawn.rows import (
     Backend,
     NativeSessionContext,
@@ -43,7 +43,12 @@ def stamp(day: str, zone: str = "UTC") -> int:
 
 
 def admit(
-    reg: Registry, ident: str, *, owner: str | None = "node:a", at: int = NOW
+    reg: Registry,
+    ident: str,
+    *,
+    owner: str | None = "node:a",
+    at: int = NOW,
+    activation: dict[str, Any] | None = None,
 ) -> None:
     reg.admit_run(
         RunRow(
@@ -61,6 +66,7 @@ def admit(
         False,
         at,
         1000,
+        activation=activation,
     )
 
 
@@ -91,10 +97,6 @@ def observer(
     *,
     subscription: bool = False,
 ) -> tuple[Supervisor, Any]:
-    admit(reg, "managed")
-    sql(reg, "UPDATE runs SET phase='pending' WHERE run_id='managed'")
-    sv = Supervisor(reg, tmp_path / "runs")
-    create_run_directory(sv._run_root_path, "managed", dir_fd=sv._run_root)
     selected = SessionActivation(
         provider=provider, account_route=provider + ":fixture@subscription", model="m"
     )
@@ -105,6 +107,12 @@ def observer(
             profile_digest=route.document_digest(profile()),
             grant_root=str(tmp_path),
         )
+    # Admit at the real clock with the activation, as nSPAWN admits a session
+    # run: a fixed past date reads as an open exec once the clock passes it.
+    admit(reg, "managed", at=now_ms(), activation=selected.data())
+    sql(reg, "UPDATE runs SET phase='pending' WHERE run_id='managed'")
+    sv = Supervisor(reg, tmp_path / "runs")
+    create_run_directory(sv._run_root_path, "managed", dir_fd=sv._run_root)
     return sv, sv._session_observer("managed", selected, SecretNeedles.none())
 
 

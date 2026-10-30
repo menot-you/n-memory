@@ -19,6 +19,7 @@ from .capsule import (
     headline_of,
     sha256_hex,
 )
+from .capsule_ref import prefix_for_kind
 from .capture import CaptureContext
 from .classify import CandidateKind, ClassificationScope
 from .consolidate import ConsolidationRecord, TierMove, protective_tier_moves
@@ -38,12 +39,11 @@ from .relation import CLOSING_KIND_VALUES, RelationKind
 from .repositories.aliases import AliasRepository
 from .repositories.anchors import AnchorRepository
 from .repositories.audit import AuditRepository
-from .repositories.base import EmptyField, StoreError
+from .repositories.base import StoreError
 from .repositories.capsules import (
     CapsuleRepository,
     EventTimeRange,
     Tombstoned,
-    UnknownCapsule,
 )
 from .repositories.classifications import ClassificationRepository
 from .repositories.corpus import CorpusRepository
@@ -54,7 +54,6 @@ from .repositories.pins import PinRepository
 from .repositories.relations import REVOCABLE_KINDS, RelationRepository
 from .repositories.reviews import ReviewRepository
 from .repositories.sessions import SessionRepository
-from .repositories.sources import SourceRepository
 from .repositories.substrate import SubstrateRepository
 from .repositories.tiers import TierRepository
 from .repositories.traffic import TrafficRepository
@@ -75,7 +74,6 @@ class Store:
         self.tiers = TierRepository(db)
         self.classifications = ClassificationRepository(db)
         self.traffic = TrafficRepository(db)
-        self.sources = SourceRepository(db)
         self.epistemics = EpistemicsRepository(db)
         self.pins = PinRepository(db)
         self.substrate = SubstrateRepository(db)
@@ -355,25 +353,6 @@ class Store:
         return applied
 
     @writes
-    def record_import_block(
-        self,
-        source_key: str,
-        block_hash: str,
-        capsule_id: str,
-        ordinal: int,
-        now: datetime,
-    ) -> bool:
-        if not source_key.strip():
-            raise EmptyField("import block source_key")
-        if not block_hash.strip():
-            raise EmptyField("import block hash")
-        if not self.capsules.get(capsule_id):
-            raise UnknownCapsule(capsule_id)
-        return self.sources.insert_import_block(
-            source_key, block_hash, capsule_id, ordinal, format_rfc3339(now)
-        )
-
-    @writes
     def set_classification(
         self,
         capsule_id: str,
@@ -511,21 +490,6 @@ class Store:
         s_obj = ClassificationScope.from_str(scope) if isinstance(scope, str) else scope
         self.set_classification(capsule_id, k_obj, s_obj, now)
 
-        prefix_map = {
-            "fact": "fact",
-            "procedure": "procedure",
-            "decision": "decision",
-            "task": "task",
-            "epic": "epic",
-            "plan": "plan",
-            "brainstorm": "brainstorm",
-            "doc": "doc",
-            "constraint": "constraint",
-            "capability": "capability",
-            "failure_pattern": "failure-pattern",
-            "dod": "dod",
-        }
-        k_str = k_obj.value if hasattr(k_obj, "value") else str(k_obj)
-        typed_prefix = prefix_map.get(k_str)
+        typed_prefix = prefix_for_kind(k_obj)
         if typed_prefix:
             self.capsules.set_handle_prefix(capsule_id, typed_prefix)

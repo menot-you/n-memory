@@ -18,8 +18,6 @@ from typing import Final, NamedTuple
 from nmemory_evals import artifacts, longmemeval, narrate, synthesis, world
 from nmemory_evals import main as harness
 from nmemory_evals.capture_gap import EvalRefusal
-from nmemory_evals.comparison import accuracy as comparison_accuracy
-from nmemory_evals.comparison import arena, locomo, precisionmembench
 from nmemory_evals.driver import DriverError
 from nmemory_evals.pilot import PilotError
 from nmemory_evals.renamed import RENAMED, RenamedVariableError, refuse
@@ -123,12 +121,6 @@ def cmd_capsule_score(argv: list[str]) -> int:
     return 0
 
 
-def cmd_arena_compare(argv: list[str]) -> int:
-    args = _parse("arena", "compare", argv)
-    harness.run_compare(args)
-    return 0
-
-
 def cmd_proposal_score(argv: list[str]) -> int:
     args = _parse("proposal", "score", argv)
     return harness.run_extract_eval(args)
@@ -156,80 +148,6 @@ def cmd_artifact_diff(argv: list[str]) -> int:
     args = _parse("artifact", "diff", argv)
     harness.run_diff(args.left, args.right)
     return 0
-
-
-def cmd_arena_run(argv: list[str]) -> int:
-    args = _parse("arena", "run", argv)
-    if getattr(args, "benchmark", "longmemeval") == "locomo":
-        cell = locomo.run_locomo_cmd(args)
-    else:
-        cell = comparison_accuracy.run_accuracy_cmd(args)
-    print(json.dumps(cell, ensure_ascii=False, indent=1))
-    return 0
-
-
-def cmd_arena_probe(argv: list[str]) -> int:
-    args = _parse("arena", "probe", argv)
-    linha = comparison_accuracy.run_abstain_cmd(args)
-    print(json.dumps(linha, ensure_ascii=False, indent=1))
-    return 0
-
-
-def cmd_arena_judge(argv: list[str]) -> int:
-    args = _parse("arena", "judge", argv)
-    # D18: `0` first · `3` the defeat sentence fired (finding) · `2` refusal.
-    prereg = arena.load_preregistration(args.loss)
-    if not args.results and not args.precision_report:
-        raise EvalRefusal(
-            "arena judge with no cells: pass --results, --precision-report, or both"
-        )
-    tabela: dict[arena.Cell, float] = {}
-    colapsados: tuple[frozenset[int], ...] = ()
-    if args.results:
-        tabela |= arena.load_table(args.results)
-    if args.precision_report:
-        # A conflict between the two sources is a refusal, not a
-        # silent overwrite: the 2nd pass of the #609 review showed the
-        # same run giving exit 3 with `--results` alone and exit 0
-        # after the report overwrote the cell.
-        pass
-    if args.precision_report:
-        conhecidos = frozenset({"nMEM", *prereg.live})
-        das_corridas = precisionmembench.table_from_reports(
-            list(args.precision_report), conhecidos, prereg.b_grid
-        )
-        divergentes = sorted(
-            f"{c}: --results {tabela[c]} vs report {v}"
-            for c, v in das_corridas.items()
-            if c in tabela and tabela[c] != v
-        )
-        if divergentes:
-            raise EvalRefusal(
-                "the two sources disagree on the same cell, and picking "
-                "one was picking the result: " + "; ".join(divergentes)
-            )
-        tabela |= das_corridas
-        colapsados = precisionmembench.collapsed_budgets(
-            [
-                precisionmembench.read_precision_report(p, b_grid=prereg.b_grid)
-                for p in args.precision_report
-            ]
-        )
-    verdict = arena.judge(tabela, prereg, args.expected_sha256)
-    print(
-        json.dumps(
-            {
-                "preregistration_sha256": verdict.preregistration_sha256,
-                "fired": list(verdict.fired),
-                "sentence": verdict.sentence,
-                # Budgets that resolved the SAME configuration: they
-                # count as one observation, not as several columns.
-                "collapsed_budgets": [sorted(g) for g in colapsados],
-            },
-            ensure_ascii=False,
-        )
-    )
-    return 3 if verdict.fired else 0
 
 
 def cmd_synthesis_judge(argv: list[str]) -> int:
@@ -281,26 +199,6 @@ COMMANDS: Final[dict[tuple[str, str], Command]] = {
         "the E1 41-item feedback capture and recall benchmark",
         cmd_capsule_score,
     ),
-    ("arena", "compare"): Command(
-        "[--binary B] [--systems S] [--run-id R] [-k N] [--out DIR]",
-        "the comparative benchmark over the gold set",
-        cmd_arena_compare,
-    ),
-    ("arena", "run"): Command(
-        "--system S --budget N --corpus F --out DIR [--checkpoint F]",
-        "one accuracy_B cell: seeding, window, fixed reader, fixed judge",
-        cmd_arena_run,
-    ),
-    ("arena", "probe"): Command(
-        "--system S --corpus F --out DIR",
-        "the A.3 arm: _abs probes against the seeded store",
-        cmd_arena_probe,
-    ),
-    ("arena", "judge"): Command(
-        "--loss F [--results F] [--precision-report F ...] [--expected-sha256 H]",
-        "the pre-registered loss verdict over a results table",
-        cmd_arena_judge,
-    ),
     ("synthesis", "judge"): Command(
         "--preregistration F --results F [--expected-sha256 H]",
         "the three rules of PRE-REGISTERED-SYNTHESIS.txt over one run",
@@ -308,7 +206,7 @@ COMMANDS: Final[dict[tuple[str, str], Command]] = {
     ),
     ("proposal", "score"): Command(
         "[--dataset F] [--proposer deterministic|llm] [--timeout-s N] [--json] [--out DIR]",
-        "precision and recall of nmemory_turn_extract against the gold set",
+        "precision and recall of the deterministic extractor (nmemory.extract) against the gold set",
         cmd_proposal_score,
     ),
     ("transcript", "audit"): Command(
@@ -354,30 +252,6 @@ def main(argv: list[str] | None = None) -> int:
     if not args:
         print(USAGE, file=sys.stderr)
         return 2
-    if args[0] == "locomo":
-        try:
-            refuse(os.environ, RENAMED)
-            parsed = harness.build_parser().parse_args(args)
-            report = locomo.run_locomo_cmd(parsed)
-            print(json.dumps(report, ensure_ascii=False, indent=1))
-            return 0
-        except RenamedVariableError as err:
-            print(f"nmemory-evals: refused: {err}", file=sys.stderr)
-            return 2
-        except SystemExit as e:
-            return int(e.code) if isinstance(e.code, int) else 1
-        except EvalRefusal as err:
-            print(f"nmemory-evals: recusa: {err}", file=sys.stderr)
-            return 2
-        except (
-            harness.BenchError,
-            PilotError,
-            DriverError,
-            artifacts.ArtifactError,
-            longmemeval.DatasetError,
-        ) as err:
-            print(f"nmemory-evals: {err}", file=sys.stderr)
-            return 1
     command = COMMANDS.get((args[0], args[1]) if len(args) > 1 else (args[0], ""))
     if command is None:
         # The same redaction as argparse's errors: argv may carry a URL.
@@ -386,7 +260,7 @@ def main(argv: list[str] | None = None) -> int:
         print(USAGE, file=sys.stderr)
         return 2
     try:
-        refuse(os.environ, RENAMED)
+        refuse(frozenset(os.environ), RENAMED)
         return command.handler(args[2:])
     except RenamedVariableError as err:
         print(f"nmemory-evals: refused: {err}", file=sys.stderr)

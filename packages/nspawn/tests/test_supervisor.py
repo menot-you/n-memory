@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import os
 import signal
 import stat
@@ -211,14 +212,14 @@ def test_read_roster_refuses_when_nothing_declares_a_roster(
     monkeypatch.setenv("NOTT_NSPAWN_CONFIG", str(tmp_path / "absent.toml"))
 
     with pytest.raises(supervisor.NSpawnError) as refused:
-        supervisor._read_roster()
+        supervisor.read_roster()
     message = str(refused.value)
     assert "NOTT_NSPAWN_ROSTER" in message
     assert "spawn.toml" in message
 
 
 def test_read_roster_reads_the_real_file(roster_home: Path) -> None:
-    roster = supervisor._read_roster()
+    roster = supervisor.read_roster()
     assert roster.defaults.plugin_root is not None
 
 
@@ -677,6 +678,33 @@ def test_execute_refuses_duplicate_session_id(
         sv.execute(
             "second", str(tmp_path / "b"), session_id=row.thread_id, read_only=True
         )
+
+
+def test_an_account_less_read_only_run_offers_no_continuation(
+    registry: Registry,
+    tmp_path: Path,
+    roster_home: Path,
+    wired_success: None,
+    fake_picked: picker.PickerResult,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A route with no account (its credential from the env) has no native
+    history a resume can find: its run offers no continuation, as before."""
+    from nspawn.rows import RunPhase
+
+    monkeypatch.setattr(
+        supervisor.picker,
+        "pick_execution",
+        lambda *a, **k: dataclasses.replace(fake_picked, executed_account=None),
+    )
+    sv = _sv(registry, tmp_path)
+    accepted = sv.execute("plan it", str(tmp_path), read_only=True)
+    status = sv.status(accepted.run_id, timeout_ms=20_000)
+    assert status.phase is RunPhase.COMPLETED, status.failure_reason
+    row = registry.get_run(accepted.run_id)
+    assert row is not None and row.executed_account is None
+    assert status.session is None
+    assert registry.session_profile(accepted.run_id) is None
 
 
 def test_execute_propagates_picker_refusals_untouched(

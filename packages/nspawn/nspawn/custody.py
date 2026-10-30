@@ -67,11 +67,29 @@ def user_manager_environment() -> dict[str, str]:
         raise ControllerRefusal(
             "aggregate custody requires the controller's user manager"
         )
+    # XDG_RUNTIME_DIR makes systemd prefer its private manager socket. Only the
+    # public bus is exposed to a native writer; use it on the host as well.
     return {
         "PATH": "/usr/bin:/bin",
-        "XDG_RUNTIME_DIR": str(runtime),
         "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime / 'bus'}",
     }
+
+
+#: How long one systemd call may take. A daemon-reload blocks the user manager.
+SYSTEMD_CALL_SECONDS = 5
+
+
+def _operation(argv: list[str]) -> str:
+    """The call a refusal names: the tool, its verb or D-Bus method, and its unit.
+    Options, bus names, object paths and signatures are left out."""
+    words = [
+        word
+        for word in argv[1:]
+        if word != "call"
+        and not word.startswith(("-", "/", "org.freedesktop"))
+        and "(" not in word
+    ]
+    return " ".join([Path(argv[0]).name, *words[:2]])
 
 
 def _systemd_call(environment: dict[str, str], argv: list[str]) -> str:
@@ -81,14 +99,23 @@ def _systemd_call(environment: dict[str, str], argv: list[str]) -> str:
             env=environment,
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=SYSTEMD_CALL_SECONDS,
             check=False,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise ControllerRefusal(
+            f"aggregate systemd operation unavailable: {_operation(argv)}: "
+            f"no answer within {SYSTEMD_CALL_SECONDS} s"
+        ) from exc
     except (OSError, subprocess.SubprocessError) as exc:
-        raise ControllerRefusal("aggregate systemd operation unavailable") from exc
+        raise ControllerRefusal(
+            f"aggregate systemd operation unavailable: {_operation(argv)}: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
     if result.returncode:
         raise ControllerRefusal(
-            f"aggregate systemd operation refused: {result.stderr.strip()[:512]}"
+            f"aggregate systemd operation refused: {_operation(argv)}: "
+            f"exit {result.returncode}: {result.stderr.strip()[:512]}"
         )
     return result.stdout
 
@@ -96,6 +123,34 @@ def _systemd_call(environment: dict[str, str], argv: list[str]) -> str:
 def weigh_custody_parent(environment: dict[str, str]) -> None:
     """Give the custody parent its CPU weight before anything starts under it."""
     _systemd_call(environment, list(WEIGH_CUSTODY_PARENT))
+
+
+def writer_unit(run_id: str) -> str:
+    """The writer slice of a run. Its name carries the run, so a slice that
+    systemd made after its start was refused still names the run it was for."""
+    try:
+        return f"nottcontroller-{uuid.UUID(run_id).hex}.slice"
+    except ValueError as exc:
+        raise ControllerRefusal(
+            f"run {run_id!r} has no UUID to name its writer slice"
+        ) from exc
+
+
+def writer_run(unit: str) -> str | None:
+    """The run `writer_unit` named `unit` for, or None for another name. A slice
+    named at random also parses: only the registry says whether the run exists."""
+    name = unit.removeprefix("nottcontroller-").removesuffix(".slice")
+    if name == unit or len(name) != 32:
+        return None
+    try:
+        return str(uuid.UUID(hex=name))
+    except ValueError:
+        return None
+
+
+def _manager_group() -> Path:
+    uid = os.geteuid()
+    return CGROUP_ROOT / "user.slice" / f"user-{uid}.slice" / f"user@{uid}.service"
 
 
 def aggregate_group(unit: str) -> Path:
@@ -122,12 +177,7 @@ def user_scope_prefix(*, parent_slice: str | None = None) -> tuple[list[str], Pa
     """Shared native scope launch contract; systemd enrolls before executor exec."""
     user_manager_environment()
     unit = f"nott-gate-{uuid.uuid4().hex}.scope"
-    parent = (
-        CGROUP_ROOT
-        / "user.slice"
-        / f"user-{os.geteuid()}.slice"
-        / f"user@{os.geteuid()}.service"
-    )
+    parent = _manager_group()
     prefix = [
         "/usr/bin/systemd-run",
         "--user",
@@ -147,7 +197,9 @@ def user_scope_prefix(*, parent_slice: str | None = None) -> tuple[list[str], Pa
 class AggregateScope:
     """Trusted parent slice shared by the native client and every executor command."""
 
-    def __init__(self, *, memory_bytes: int, tasks: int) -> None:
+    def __init__(
+        self, *, memory_bytes: int, tasks: int, unit: str | None = None
+    ) -> None:
         if (
             type(memory_bytes) is not int
             or type(tasks) is not int
@@ -157,12 +209,26 @@ class AggregateScope:
             raise ControllerRefusal("invalid admitted aggregate resource limits")
         self.memory_bytes = memory_bytes
         self.tasks = tasks
-        self.unit = f"nottcontroller-{uuid.uuid4().hex}.slice"
+        selected_unit = unit or f"nottcontroller-{uuid.uuid4().hex}.slice"
+        aggregate_group(selected_unit)
         self._environment = user_manager_environment()
+        self.unit = selected_unit
         self._closed = False
         self._lock = Lock()
         self.path: Path | None = None
         self._call(list(WEIGH_CUSTODY_PARENT))
+        try:
+            self._start(memory_bytes, tasks)
+        except BaseException as error:
+            # systemd can run a start whose caller stopped waiting, so a failed
+            # start still stops its unit; the refusal names both calls.
+            try:
+                self.close()
+            except ControllerRefusal as cleanup:
+                raise ControllerRefusal(f"{error}; {cleanup}") from error
+            raise
+
+    def _start(self, memory_bytes: int, tasks: int) -> None:
         reply = self._call(
             [
                 "/usr/bin/busctl",
@@ -191,30 +257,22 @@ class AggregateScope:
                 "0",
             ]
         )
-        initialized = False
         try:
-            try:
-                fields = shlex.split(reply)
-            except ValueError as exc:
-                raise ControllerRefusal(
-                    "systemd returned a malformed aggregate job"
-                ) from exc
-            prefix = "/org/freedesktop/systemd1/job/"
-            if (
-                len(fields) != 2
-                or fields[0] != "o"
-                or not fields[1].startswith(prefix)
-                or not fields[1][len(prefix) :].isdigit()
-            ):
-                raise ControllerRefusal(
-                    "systemd did not return an accepted aggregate job"
-                )
-            self.path = self._await_group(fields[1][len(prefix) :])
-            self.verify()
-            initialized = True
-        finally:
-            if not initialized:
-                self.close()
+            fields = shlex.split(reply)
+        except ValueError as exc:
+            raise ControllerRefusal(
+                "systemd returned a malformed aggregate job"
+            ) from exc
+        prefix = "/org/freedesktop/systemd1/job/"
+        if (
+            len(fields) != 2
+            or fields[0] != "o"
+            or not fields[1].startswith(prefix)
+            or not fields[1][len(prefix) :].isdigit()
+        ):
+            raise ControllerRefusal("systemd did not return an accepted aggregate job")
+        self.path = self._await_group(fields[1][len(prefix) :])
+        self.verify()
 
     @classmethod
     def recorded(cls, unit: str) -> Self:
@@ -230,6 +288,44 @@ class AggregateScope:
         recorded._lock = Lock()
         recorded.path = scope.parent
         return recorded
+
+    @classmethod
+    def idle_units(cls) -> dict[str, float]:
+        """Every controller slice whose group holds no process, with the time
+        (epoch seconds) systemd made its group. Read from the kernel's cgroup
+        tree, so a user manager that a reload blocks does not block this read."""
+        manager = _manager_group()
+        idle: dict[str, float] = {}
+        for parent in (manager / CUSTODY_SLICE, manager):
+            try:
+                groups = sorted(parent.iterdir())
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise ControllerRefusal(
+                    f"controller slices under {parent} unavailable: {exc}"
+                ) from exc
+            for group in groups:
+                unit = group.name
+                if not unit.startswith("nottcontroller") or not unit.endswith(".slice"):
+                    continue
+                try:
+                    if manager / aggregate_group(unit) != group:
+                        continue
+                except ControllerRefusal:
+                    continue  # the custody parent itself, or another name
+                try:
+                    events = (group / "cgroup.events").read_text()
+                    made = group.stat().st_mtime
+                except FileNotFoundError:
+                    continue  # stopped since the directory was read
+                except OSError as exc:
+                    raise ControllerRefusal(
+                        f"aggregate {unit} state unavailable: {exc}"
+                    ) from exc
+                if "populated 0" in events.splitlines():
+                    idle[unit] = made
+        return idle
 
     def _await_group(self, accepted_job: str) -> Path:
         expected = f"/user.slice/user-{os.geteuid()}.slice/user@{os.geteuid()}.service/{aggregate_group(self.unit)}"
@@ -345,6 +441,7 @@ class AggregateScope:
 
     def environment(self, target: dict[str, str] | None) -> dict[str, str]:
         environment = dict(os.environ if target is None else target)
+        environment.pop("XDG_RUNTIME_DIR", None)
         environment.update(
             {key: value for key, value in self._environment.items() if key != "PATH"}
         )
@@ -360,26 +457,93 @@ class AggregateScope:
         whichever command runs next. Emptying the slice is what makes each
         command's before/after delta its own.
         """
-        if self.path is None or not self.path.exists():
+        if self.path is None:
             return
         try:
-            (self.path / "cgroup.kill").write_text("1")
+            self.path.stat()
+        except FileNotFoundError:
+            return  # A queued start still needs close to cancel its job.
+        except OSError as exc:
+            raise ControllerRefusal(
+                f"aggregate {self.unit} cleanup observation unavailable: {exc}"
+            ) from exc
+        try:
+            self._call(
+                [
+                    "/usr/bin/systemctl",
+                    "--user",
+                    "kill",
+                    "--kill-whom=all",
+                    "--signal=SIGKILL",
+                    self.unit,
+                ]
+            )
+        except ControllerRefusal:
+            if self.is_stopped():
+                return
+            raise
+        try:
             deadline = time.monotonic() + 3
             while "populated 1" in (self.path / "cgroup.events").read_text():
                 if time.monotonic() >= deadline:
-                    raise ControllerRefusal("aggregate descendants survived cleanup")
+                    raise ControllerRefusal(
+                        f"aggregate descendants of {self.unit} survived cleanup"
+                    )
                 time.sleep(0.01)
+        except FileNotFoundError:
+            return  # stopped elsewhere after the kill: its group is gone
         except OSError as exc:
             raise ControllerRefusal(
-                "aggregate cleanup observation unavailable"
+                f"aggregate {self.unit} cleanup observation unavailable: {exc}"
             ) from exc
+
+    def is_stopped(self) -> bool:
+        """Prove that systemd has no active unit or queued job for this slice."""
+        state = dict(
+            line.split("=", 1)
+            for line in self._call(
+                [
+                    "/usr/bin/systemctl",
+                    "--user",
+                    "show",
+                    self.unit,
+                    "--property=LoadState,ActiveState,Job",
+                ]
+            ).splitlines()
+            if "=" in line
+        )
+        if not (
+            state.get("LoadState") in {"loaded", "not-found"}
+            and state.get("ActiveState") == "inactive"
+            and state.get("Job") == ""
+        ):
+            return False
+        path = self.path or (_manager_group() / aggregate_group(self.unit))
+        try:
+            path.stat()
+        except FileNotFoundError:
+            return True
+        except OSError as exc:
+            raise ControllerRefusal(
+                f"aggregate {self.unit} cleanup observation unavailable: {exc}"
+            ) from exc
+        return False
 
     def close(self) -> None:
         with self._lock:
             if self._closed:
                 return
             self.drain()
-            self._call(["/usr/bin/systemctl", "--user", "stop", self.unit])
+            try:
+                self._call(["/usr/bin/systemctl", "--user", "stop", self.unit])
+            except ControllerRefusal:
+                if not self.is_stopped():
+                    raise
+            else:
+                if not self.is_stopped():
+                    raise ControllerRefusal(
+                        f"aggregate {self.unit} stop has no proof of absence"
+                    )
             self._closed = True
 
     def __enter__(self) -> Self:

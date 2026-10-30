@@ -30,14 +30,14 @@ schema = 1
 # `<folder>/<noun>.<ext> <verb>`. Nouns are singular. Both sets are closed: a new word
 # enters here first, in the same change that uses it.
 nouns = [
-  "act", "alias", "anchor", "app", "batch", "brake", "campaign", "capsule", "changelog",
+  "act", "alias", "anchor", "app", "batch", "brake", "branch", "campaign", "capsule", "changelog",
   "claim", "console", "content", "context", "coverage", "curator", "database", "design", "digest",
   "document", "dod", "door", "evidence", "file", "fixture", "gate", "git", "github", "heal",
   "history", "host", "image", "index", "intent", "issue", "judgment", "json", "key",
   "kind", "link", "manifest", "mcp", "network", "node", "outcome", "page", "phase", "pr", "preference",
   "portal", "program", "project", "proposal", "provider", "quality", "queue", "quota", "rail",
   "receipt", "record", "ref", "region", "relation", "result", "review", "route", "run",
-  "scenario", "schema", "screen", "script", "sector", "session", "site", "site-preview", "state", "synonym", "tab",
+  "scenario", "schema", "screen", "script", "sector", "session", "site", "site-preview", "slice", "state", "synonym", "tab",
   "target", "telemetry", "text", "tick", "token", "tool", "transcript", "tree", "turn", "usage",
   "window", "workflow",
   "vault", "vector", "web", "work", "worktree", "body", "diff", "acp", "relay", "proxy",
@@ -45,7 +45,7 @@ nouns = [
   "progress", "security", "router", "model", "gateway", "tag", "release", "lease",
   "stream", "dispatch", "staffing", "learning", "harvest", "cron", "preflight", "personal",
   "conductor", "plan", "test", "floor", "mutation", "property", "lane", "suite", "case",
-  "hook", "plugin", "env", "unit", "secret", "arena", "organization", "supervisor",
+  "hook", "plugin", "env", "unit", "secret", "organization", "supervisor",
   "artifact", "audit", "principal", "admission", "job", "fleet", "pilot", "generation",
   "synthesis", "notice", "sidecar", "statusline", "cloud", "voice", "tui", "smoke",
   "question", "scratch", "thread", "external", "skill", "watch", "board",
@@ -80,7 +80,6 @@ nott = "the product's name: the CLI is `nott`, not `nott-cli`"
 "apps/cli/tests/test_commands.py" = "spells retired commands (dogfood, heartbeat, tui ...) only to assert the CLI refuses them as unknown; runs and writes none"
 "apps/cli/tests/test_pr_check.py" = "spells the retired check script only to assert it is gone and that the launcher refuses its name as a verb; runs and writes none"
 "mcps/nbrowser/nbrowser/renamed.py" = "the old name of the variable nBROWSER reads, spelled once so a set old name is refused by name"
-"tools/env/renamed.sh" = "the old names of the variables the tools' shell entry points read, spelled once so a set old name is refused by name"
 "apps/cli/nott_cli/panel/renamed.py" = "the old names of the variables the harness CLI reads, spelled once so a set old name is refused by name"
 "mcps/nspawn/nspawn/renamed.py" = "the old name of the door socket variable nSPAWN reads, spelled once so a set old name is refused by name"
 "mcps/nmemory/nmemory/renamed.py" = "the old names of the variables nMEMORY reads, spelled once so a set old name is refused by name"
@@ -137,17 +136,12 @@ nott = "the product's name: the CLI is `nott`, not `nott-cli`"
 "plugin/tests/fixtures/final-state/voice/recall.jsonl" = "scrubbed recorded replies used as recall vectors; their old tool names stay verbatim"
 "plugin/tests/fixtures/final-state/voice/specificity.jsonl" = "scrubbed recorded replies used as specificity vectors; their old tool names stay verbatim"
 "mcps/nmemory/tests/fixtures/language_vectors.jsonl" = "recorded language-classification vectors; their old tool names are input data"
-"mcps/nmemory/docs/setup-catalog.json" = "pins the upstream toolkit-setup component inventory (agent-browser.dogfood); its component list is SHA-256 verified"
-"mcps/nspawn/docs/setup-catalog.json" = "pins the upstream toolkit-setup component inventory (agent-browser.dogfood); its component list is SHA-256 verified"
-"mcps/nbrowser/docs/setup-catalog.json" = "pins the upstream toolkit-setup component inventory (agent-browser.dogfood); its component list is SHA-256 verified"
-"mcps/napple/docs/setup-catalog.json" = "pins the upstream toolkit-setup component inventory (agent-browser.dogfood); its component list is SHA-256 verified"
-"plugin/docs/setup-catalog.json" = "pins the upstream toolkit-setup component inventory (agent-browser.dogfood); its component list is SHA-256 verified"
 [env]
 # Owners of `NOTT_<OWNER>_<NAME>` beyond the members (whose tokens derive: NOTT_JOURNAL_,
 # NOTT_NMEMORY_, NOTT_HARNESS_... ). A harness noun owns the variables of that concept.
 owners = [
   "ACP", "ALERT", "APP", "BODY", "BRAKE", "CAMPAIGN", "DATABASE", "DOOR", "EVAL", "GITHUB",
-  "HOST", "INTENT", "LEDGER", "MCP", "MEMORY", "NODE", "ORGANIZATION", "PLUGIN", "PR", "PRINCIPAL",
+  "HOST", "INTENT", "LEDGER", "MCP", "MEMORY", "NODE", "ORGANIZATION", "PLUGIN", "PR", "PRINCIPAL", "QUEUE",
   "SCENARIO", "SITE_PREVIEW", "SPILL", "STATE", "TEST", "FIXTURE", "WEB", "WORKFLOW",
 ]
 foreign_prefixes = [
@@ -356,7 +350,7 @@ from = ["apps/harness/cli", "apps/nott", "apps/harness/tui"]
 "nbrowser-broker" = ""
 "njournal" = ""
 "qmeter" = "tools/scorecard.py"
-"deploy-manifest" = "tools/body/manifest.py authorize"
+"deploy-manifest" = ""
 "body-test-identities" = "tools/body/identity.py"
 
 # Identities of data already stored, kept under the name they were written with. Gate
@@ -472,7 +466,7 @@ from = ["apps/harness/cli", "apps/nott", "apps/harness/tui"]
 "NOTT_COVERAGE_NO_CACHE" = "NOTT_QUALITY_COVERAGE_NO_CACHE"
 "NOTT_DOOR" = "NOTT_DOOR_SOCKET"
 "NOTT_HARNESS" = "NOTT_NMEMORY_HARNESS"
-"NOTT_JEV_AUDIT" = "NOTT_SYSTEM1_AUDIT"
+"NOTT_JEV_AUDIT" = ""
 "NOTT_JEV_DRIFT" = "NOTT_SYSTEM1_DRIFT"
 "NOTT_JEV_TIMEOUT" = "NOTT_SYSTEM1_TIMEOUT"
 "NOTT_LAW_CACHE" = "NOTT_PLUGIN_LAW_CACHE"
@@ -528,7 +522,7 @@ from = ["apps/harness/cli", "apps/nott", "apps/harness/tui"]
 "nspawn_execute" = "nspawn_run_start"
 "nspawn_review" = "nspawn_review_start"
 "nspawn_batch" = "nspawn_batch_start"
-"nspawn_compact" = "nspawn_transcript_compact"
+"nspawn_compact" = ""
 "nspawn_status" = ["nspawn_run_list", "nspawn_run_show"]
 "nspawn_result" = "nspawn_result_show"
 "nspawn_transcript" = "nspawn_transcript_show"
@@ -539,25 +533,25 @@ from = ["apps/harness/cli", "apps/nott", "apps/harness/tui"]
 "nspawn_choice" = "nspawn_judgment_choose"
 "nspawn_score" = "nspawn_judgment_score"
 "nspawn_providers" = "nspawn_provider_list"
-"memory_alias" = "nmemory_synonym_add"
-"memory_bootstrap" = "nmemory_project_bootstrap"
+"memory_alias" = ""
+"memory_bootstrap" = ""
 "memory_classify" = "nmemory_kind_classify"
-"memory_consolidate" = "nmemory_capsule_consolidate"
+"memory_consolidate" = ""
 "memory_context" = "nmemory_context_show"
-"memory_coverage" = "nmemory_coverage_show"
+"memory_coverage" = ""
 "memory_digest" = "nmemory_digest_show"
 "memory_dod" = "nmemory_dod_set"
-"memory_export" = "nmemory_capsule_export"
-"memory_extract" = "nmemory_turn_extract"
+"memory_export" = ""
+"memory_extract" = ""
 "memory_get" = "nmemory_capsule_show"
-"memory_import" = "nmemory_capsule_import"
-"memory_index" = "nmemory_index_build"
+"memory_import" = ""
+"memory_index" = ""
 "memory_ingest" = "nmemory_capsule_ingest"
 "memory_list" = "nmemory_capsule_list"
 "memory_outcome" = "nmemory_outcome_record"
 "memory_pin" = "nmemory_capsule_pin"
 "memory_purge" = "nmemory_capsule_purge"
-"memory_reanchor" = "nmemory_capsule_reanchor"
+"memory_reanchor" = ""
 "memory_relate" = "nmemory_relation_add"
 "memory_retrieve" = "nmemory_capsule_retrieve"
 "memory_review" = "nmemory_proposal_review"

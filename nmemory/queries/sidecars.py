@@ -8,9 +8,10 @@ from datetime import datetime
 from ..capsule import parse_rfc3339
 from ..capsule_ref import compose_handle
 from ..classify import CandidateKind
-from ..consolidate import Tier
+from ..consolidate import ConsolidationRecord, Tier
 from ..database import Database
 from ..project import glob_subtree_pattern
+from ..repositories.capsules import StoredCapsule
 
 # The ranking recall counters (`usage` via retrieve, `digest_sidecars`) read
 # `read_traffic` through an ALLOWLIST, never a denylist. A new
@@ -86,9 +87,32 @@ class CapsuleSidecar:
     last_recalled_at: datetime | None
 
 
+def consolidation_record(
+    stored: StoredCapsule,
+    sidecar: CapsuleSidecar | None,
+    is_superseded: bool,
+    supersession_archive: bool = False,
+) -> ConsolidationRecord:
+    return ConsolidationRecord(
+        id=stored.id,
+        seq=stored.seq,
+        source_hash=stored.capsule.provenance.source_hash,
+        content=stored.capsule.content,
+        instruction_taint=stored.capsule.instruction_taint,
+        authority_class=stored.capsule.authority_class,
+        valid_to=stored.capsule.freshness.valid_to,
+        created_at=stored.created_at,
+        recall_count=sidecar.recall_count if sidecar else 0,
+        is_superseded=is_superseded,
+        tier=sidecar.tier if sidecar else Tier.ACTIVE,
+        pinned=sidecar.pinned if sidecar else False,
+        supersession_archive=supersession_archive,
+    )
+
+
 @dataclass(frozen=True)
 class ViewSidecar:
-    """Everything a VIEW — `nmemory_capsule_export` — queries per capsule.
+    """Everything a VIEW — `nmemory capsule export` — queries per capsule.
 
     Separated from `CapsuleSidecar` by design: digest pays for `pinned` and the
     recall pair, which neither view reads, and export needs review and anchor,
@@ -175,7 +199,7 @@ def digest_sidecars(
 def view_sidecars(db: Database) -> dict[str, ViewSidecar]:
     """The sidecar of EVERY capsule — live or tombstoned — in a single query.
 
-    `nmemory_capsule_export` queried classification, tier, verdict, anchor, and handle
+    `nmemory capsule export` queried classification, tier, verdict, anchor, and handle
     one capsule at a time, plus one handle per tombstone; the removed `nmemory_document_render`,
     handle and tier. Each query calls `db.connection`, so the cost was
     5N+M and 2N connections — the same N+1 that `digest_sidecars` had already

@@ -22,7 +22,7 @@ from ..project import (
     in_project_subtree,
 )
 from ..queries.journal import verify_replay
-from ..queries.sidecars import CapsuleSidecar, digest_sidecars
+from ..queries.sidecars import CapsuleSidecar, consolidation_record, digest_sidecars
 from ..relation import (
     RelationKind,
 )
@@ -203,25 +203,11 @@ def consolidation_records(
 ) -> list[ConsolidationRecord]:
     """What the archive COUNTER reads, never the full consolidation plan.
 
-    The near-duplicates section of `plan_consolidation` compares every live
-    pair and was 90% of the digest cost at 2,100 capsules;
-    `nmemory_capsule_consolidate` serves the complete plan.
+    The near-duplicate proposals compare every live pair and were 90% of the
+    digest cost at 2,100 capsules; the curator computes them.
     """
     return [
-        ConsolidationRecord(
-            id=c.id,
-            seq=c.seq,
-            source_hash=c.capsule.provenance.source_hash,
-            content=c.capsule.content,
-            instruction_taint=c.capsule.instruction_taint,
-            authority_class=c.capsule.authority_class,
-            valid_to=c.capsule.freshness.valid_to,
-            created_at=c.created_at,
-            recall_count=sidecar_of(sidecars, c.id).recall_count,
-            is_superseded=c.id in superseded_ids,
-            tier=sidecar_of(sidecars, c.id).tier,
-            pinned=sidecar_of(sidecars, c.id).pinned,
-        )
+        consolidation_record(c, sidecar_of(sidecars, c.id), c.id in superseded_ids)
         for c in caps
     ]
 

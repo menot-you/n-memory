@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -B
 """UserPromptSubmit advisory: System1 suggests a skill and an agent type for the prompt.
 
 ADVICE, NEVER AUTHORITY. The line names a candidate and its confidence; the session reads it

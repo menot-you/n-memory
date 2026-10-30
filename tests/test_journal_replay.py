@@ -69,7 +69,6 @@ def test_a_live_capsule_is_covered_by_any_audit_event() -> None:
         "the oracle's live leg does not filter by action: an id named by "
         f"ANY event is covered, but the port returned {report.out_of_band}"
     )
-    assert report.audit_covers_state is True
 
 
 def test_a_tombstone_needs_its_own_forget_event() -> None:
@@ -84,7 +83,6 @@ def test_a_tombstone_needs_its_own_forget_event() -> None:
         "the oracle's tombstoned leg only accepts FORGET_ACTIONS, and the port "
         f"merged the two universes: {report.out_of_band}"
     )
-    assert report.audit_covers_state is False
 
 
 def test_a_forgotten_capsule_is_covered_by_its_forget_event() -> None:

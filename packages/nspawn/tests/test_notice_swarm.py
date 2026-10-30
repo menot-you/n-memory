@@ -221,8 +221,153 @@ def test_a_swarm_notice_past_the_ceiling_still_arrives_as_one(
     _end(registry, B)
     assert notify.push_ready(registry, [B]) == 2
     (body,) = _bodies(session, 1)
-    assert "1 more runs are not listed" in body
+    assert "1 more runs not listed:" in body
+    assert "nspawn_run_list(include_terminal=true)" in body
     assert len(body) < 300 + 200  # the envelope's own text included
+
+
+def _row(run_id: str, phase: RunPhase, *, warning: str | None = None) -> RunRow:
+    """A terminal swarm member row for a direct `swarm_body` call."""
+    return RunRow(
+        run_id=run_id,
+        worktree=f"/fixture/{run_id}",
+        group_name=SWARM,
+        phase=phase,
+        sandbox="read-only",
+        model="m",
+        owner_instance="fixture",
+        created_at=1000,
+        updated_at=1000,
+        backend=Backend.CLAUDE,
+        executed_provider="claude",
+        executed_account="oauth",
+        warning=warning,
+        blocked_reason=None if phase is RunPhase.COMPLETED else "ClaudeRunFailed",
+    )
+
+
+def test_a_member_that_moved_names_its_successor_on_its_own_line() -> None:
+    """The failover note sits after the vendor text in the warning. The Note
+    cut must not hide the successor that note names."""
+    successor = str(uuid.uuid4())
+    warning = f"{'vendor stderr line ' * 40} continued as run {successor} on claude/key"
+    body = notify.swarm_body(
+        [
+            (A, RunPhase.FAILED.value, _row(A, RunPhase.FAILED, warning=warning)),
+            (successor, RunPhase.COMPLETED.value, _row(successor, RunPhase.COMPLETED)),
+        ]
+    )
+    assert body is not None
+    (line,) = [
+        text for text in body.splitlines() if text.startswith(f"- nSPAWN run {A} ")
+    ]
+    assert f"run {successor}" in line, line
+
+
+def test_a_swarm_notice_past_the_ceiling_still_names_the_successor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A member line the ceiling drops must not hide where its work went on:
+    the head names every continuation."""
+    monkeypatch.setattr(notify, "MAX_BODY_CHARS", 300)
+    successor = str(uuid.uuid4())
+    warning = f"{'vendor stderr line ' * 40} continued as run {successor} on claude/key"
+    body = notify.swarm_body(
+        [
+            (A, RunPhase.FAILED.value, _row(A, RunPhase.FAILED, warning=warning)),
+            (successor, RunPhase.COMPLETED.value, _row(successor, RunPhase.COMPLETED)),
+        ]
+    )
+    assert body is not None
+    assert "not listed" in body, body
+    assert successor in body, body
+
+
+def _moves(count: int) -> list[tuple[str, str]]:
+    """`count` moved members and their successors as `(run, successor)` ids."""
+    return [(str(uuid.uuid4()), str(uuid.uuid4())) for _ in range(count)]
+
+
+def _move_members(moves: list[tuple[str, str]]) -> list[tuple[str, str, RunRow | None]]:
+    """Moved members first, then their successors, each warning naming its
+    successor after vendor text the Note cut drops."""
+    members: list[tuple[str, str, RunRow | None]] = [
+        (
+            run_id,
+            RunPhase.FAILED.value,
+            _row(
+                run_id,
+                RunPhase.FAILED,
+                warning=f"{'vendor stderr line ' * 40} continued as run "
+                f"{successor} on claude/key",
+            ),
+        )
+        for run_id, successor in moves
+    ]
+    members += [
+        (successor, RunPhase.COMPLETED.value, _row(successor, RunPhase.COMPLETED))
+        for _, successor in moves
+    ]
+    return members
+
+
+def test_a_swarm_with_many_moves_names_every_successor_past_the_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Twelve members moved to successors, and one chain A to B to C, past the
+    ceiling. A joined continuation list longer than any reason cap must not be
+    cut inside an entry, and the dropped member lines must not hide the pair
+    they carried: every successor id stays in the notice."""
+    monkeypatch.setattr(notify, "MAX_BODY_CHARS", 2500)
+    moves = _moves(12)
+    members = _move_members(moves)
+    chain_a, chain_b, chain_c = (str(uuid.uuid4()) for _ in range(3))
+    members += [
+        (
+            chain_a,
+            RunPhase.FAILED.value,
+            _row(
+                chain_a,
+                RunPhase.FAILED,
+                warning=f"continued as run {chain_b} on claude/key",
+            ),
+        ),
+        (
+            chain_b,
+            RunPhase.FAILED.value,
+            _row(
+                chain_b,
+                RunPhase.FAILED,
+                warning=f"continued as run {chain_c} on claude/key",
+            ),
+        ),
+        (chain_c, RunPhase.COMPLETED.value, _row(chain_c, RunPhase.COMPLETED)),
+    ]
+    body = notify.swarm_body(members)
+    assert body is not None
+    assert "not listed" in body, body
+    for _, successor in moves:
+        assert successor in body, f"{successor} named nowhere in the notice"
+    assert chain_b in body, body
+    assert chain_c in body, body
+
+
+def test_the_continued_line_counts_continuations_the_notice_cannot_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Past the room the notice holds, the CONTINUED line ends at a whole entry
+    and counts the rest. It never leaves `as run` with no successor behind."""
+    monkeypatch.setattr(notify, "MAX_BODY_CHARS", 700)
+    moves = _moves(12)
+    body = notify.swarm_body(_move_members(moves))
+    assert body is not None
+    (line,) = [text for text in body.splitlines() if text.startswith("CONTINUED:")]
+    counted = re.search(r"and (\d+) continuations? (?:is|are) not listed", line)
+    assert counted is not None, line
+    listed = len(re.findall(r"run [0-9a-f-]{36} as run [0-9a-f-]{36}", line))
+    assert listed + int(counted[1]) == 12, line
+    for token in re.findall(r"run ([0-9a-f-]+)", line):
+        assert len(token) == 36, line
 
 
 def test_a_drain_takes_a_swarm_whole_by_its_last_members_age(
@@ -413,8 +558,23 @@ def plan(monkeypatch: pytest.MonkeyPatch) -> Plan:
     ) -> None:
         end(self, row.run_id, timeout_ms)
 
-    def run(self: Supervisor, run_id: str, *args: Any, **kwargs: Any) -> None:
-        end(self, run_id, int(kwargs.get("deadline_ms", 0)))
+    def run(
+        self: Supervisor,
+        run_id: str,
+        cwd: Any,
+        run_dir: Any,
+        prompt: Any,
+        roster: Any,
+        picked: Any,
+        thread_id: Any,
+        resume: Any,
+        read_only: Any,
+        read_paths: Any,
+        system_prompt: Any,
+        deadline_ms: int,
+        execution_class: Any = None,
+    ) -> None:
+        end(self, run_id, deadline_ms)
 
     monkeypatch.setattr(Supervisor, "_drive_claude_caged", caged)
     monkeypatch.setattr(Supervisor, "_drive_run", run)
@@ -502,6 +662,7 @@ def test_an_unpinned_member_that_fails_succeeds_on_the_next_preference(
     assert "3 runs are terminal" in body and "ALERT" not in body
     assert f"{retry.run_id} is completed" in body
     assert f"It continues the work of run {first}" in body
+    assert f"Its work continues as run {retry.run_id}" in body
     assert f"{other} is completed" in body
 
 
@@ -587,6 +748,7 @@ def _accounts_roster(home: Path, tmp_path: Path, text: str) -> None:
     homes = {name: tmp_path / name for name in names}
     for directory in homes.values():
         directory.mkdir(exist_ok=True)
+        directory.chmod(0o700)  # whatever the umask
     (home / ".nott" / "spawn.toml").write_text(
         '[bins]\nclaude = "/usr/bin/true"\ncodex = "/usr/bin/true"\n'
         + text.format(**homes),
@@ -799,8 +961,10 @@ def test_a_walk_entry_is_resolved_by_provider_and_account(
     for name in ("claude", "sonnet"):
         directory = tmp_path / "secrets" / name
         directory.mkdir(parents=True)
+        directory.chmod(0o700)  # whatever the umask
         for alias in ("a", "b"):
             (directory / f"{alias}.token").write_text("x", encoding="utf-8")
+            (directory / f"{alias}.token").chmod(0o600)  # whatever the umask
     _accounts_roster(
         roster_home,
         tmp_path,
@@ -857,8 +1021,10 @@ def test_an_account_alias_equal_to_a_provider_name_never_skips_a_step(
     claude/claude refuses that account, never the step claude/first."""
     directory = tmp_path / "secrets" / "claude"
     directory.mkdir(parents=True)
+    directory.chmod(0o700)  # whatever the umask
     for alias in ("claude", "first"):
         (directory / f"{alias}.token").write_text("x", encoding="utf-8")
+        (directory / f"{alias}.token").chmod(0o600)  # whatever the umask
     _accounts_roster(
         roster_home,
         tmp_path,
@@ -886,8 +1052,10 @@ def test_a_refusal_on_one_provider_never_keeps_off_the_same_alias_of_another(
     for name in ("claude", "sonnet"):
         directory = tmp_path / "secrets" / name
         directory.mkdir(parents=True)
+        directory.chmod(0o700)  # whatever the umask
         for alias in ("a", "b"):
             (directory / f"{alias}.token").write_text("x", encoding="utf-8")
+            (directory / f"{alias}.token").chmod(0o600)  # whatever the umask
     _accounts_roster(
         roster_home,
         tmp_path,
@@ -922,8 +1090,10 @@ def test_a_token_two_providers_share_never_serves_again_after_it_refused(
     off under both providers, so the walk ends instead of trying it again."""
     shared = tmp_path / "secrets" / "shared"
     shared.mkdir(parents=True)
+    shared.chmod(0o700)  # whatever the umask
     for alias in ("a", "b"):
         (shared / f"{alias}.token").write_text("x", encoding="utf-8")
+        (shared / f"{alias}.token").chmod(0o600)  # whatever the umask
     _accounts_roster(
         roster_home,
         tmp_path,
@@ -955,8 +1125,10 @@ def _secrets_roster(
     for name, aliases in tokens.items():
         directory = tmp_path / "secrets" / name
         directory.mkdir(parents=True)
+        directory.chmod(0o700)  # whatever the umask
         for alias in aliases:
             (directory / f"{alias}.token").write_text("x", encoding="utf-8")
+            (directory / f"{alias}.token").chmod(0o600)  # whatever the umask
         text += (
             f'[[provider]]\nname = "{name}"\nkind = "claude"\nstrength = 8\n'
             f'model = "m"\nmodels = ["m"]\nsecrets = "{directory}"\n'
@@ -1126,7 +1298,9 @@ def test_one_codex_home_keeps_its_oauth_and_api_accounts_apart(
     monkeypatch.setenv("HOME", str(tmp_path))
     secrets = tmp_path / "secrets"
     secrets.mkdir()
+    secrets.chmod(0o700)  # whatever the umask
     (secrets / "fugu.token").write_text("x", encoding="utf-8")
+    (secrets / "fugu.token").chmod(0o600)  # whatever the umask
     codex = Provider(
         name="codex",
         kind="codex",
@@ -1159,7 +1333,9 @@ def test_a_claude_account_with_a_home_is_keyed_by_its_token_file(
 
     secrets = tmp_path / "secrets"
     secrets.mkdir()
+    secrets.chmod(0o700)  # whatever the umask
     (secrets / "a.token").write_text("x", encoding="utf-8")
+    (secrets / "a.token").chmod(0o600)  # whatever the umask
     provider = Provider(
         name="claude",
         secrets=secrets,
@@ -1182,6 +1358,7 @@ def test_the_spawn_and_the_refusal_key_read_one_function(
     assert supervisor.credential_source is owner_roster.credential_source
     secret = tmp_path / "chosen.token"
     secret.write_bytes(b"from-the-source")
+    secret.chmod(0o600)  # whatever the umask
     chosen = owner_roster.CredentialSource("token", str(secret))
     monkeypatch.setattr(child, "credential_source", lambda *_: chosen)
     monkeypatch.setattr(supervisor, "credential_source", lambda *_: chosen)
@@ -1279,7 +1456,9 @@ def test_one_secret_behind_a_link_has_one_key(tmp_path: Path) -> None:
 
     shared = tmp_path / "shared"
     shared.mkdir()
+    shared.chmod(0o700)  # whatever the umask
     (shared / "a.token").write_text("x", encoding="utf-8")
+    (shared / "a.token").chmod(0o600)  # whatever the umask
     (tmp_path / "link").symlink_to(shared)
     direct = Provider(name="claude", secrets=shared)
     linked = Provider(name="sonnet", secrets=tmp_path / "link")

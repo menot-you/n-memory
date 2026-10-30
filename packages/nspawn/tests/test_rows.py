@@ -26,7 +26,6 @@ from nspawn.rows import (
     UPDATE_COLUMNS,
     Backend,
     RunEventRow,
-    RunPage,
     RunPhase,
     RunRow,
     WorktreeClaim,
@@ -85,16 +84,14 @@ def test_every_phase_the_column_admits_exists_and_no_more() -> None:
     }
 
 
-def test_backend_parse_is_the_exact_inverse_of_as_str() -> None:
-    for backend in Backend:
-        assert Backend.parse(backend.as_str()) is backend
-    assert {b.as_str() for b in Backend} == {"codex", "claude", "grok", "agy"}
-    assert Backend.parse("Codex") is None
-    assert Backend.parse("") is None
-    # Historical rows stay readable even though new runs currently choose Claude.
-    assert Backend.parse("codex") is Backend.CODEX
-    assert Backend.parse("grok") is Backend.GROK
-    assert Backend.parse("agy") is Backend.AGY
+def test_backend_spells_the_stored_column_values() -> None:
+    assert {b.as_str() for b in Backend} == {
+        "codex",
+        "claude",
+        "grok",
+        "agy",
+        "command",
+    }
 
 
 def test_run_event_columns_are_insert_only_by_construction() -> None:
@@ -340,14 +337,11 @@ def test_requested_provider_over_the_ceiling_is_always_refused(value: str) -> No
         row(requested_provider=value)
 
 
-def test_a_claim_and_a_page_carry_their_own_bounds() -> None:
+def test_a_claim_carries_its_own_bounds() -> None:
     claim = WorktreeClaim(worktree="/tmp/wt", run_id="r-1", holder="i-1", lease_until=9)
     assert claim.lease_until == 9
     with pytest.raises(ValueError, match="holder"):
         WorktreeClaim(worktree="/tmp/wt", run_id="r-1", holder="", lease_until=9)
-    page = RunPage(rows=(row(),))
-    assert page.next_after_run is None
-    assert not page.truncated
 
 
 @pytest.mark.parametrize(

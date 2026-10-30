@@ -10,7 +10,6 @@ from ..capsule import (
     format_rfc3339,
 )
 from ..capture import CaptureContext
-from ..queries.board import waiting_changes
 from ..queries.staged import standing_proposal
 from .common import (
     ADVISORY_LABEL,
@@ -52,10 +51,6 @@ def handle(
     # Eligibility and the review write share the write lock.
     state.store.db.begin_write()
     blocker = standing_proposal(state.store.db, cid, allow_automatic_correction=True)
-    if blocker == "ratified" and verdict == "rejected":
-        with state.store.db.connection() as conn, conn.cursor() as cur:
-            if waiting_changes(cur, cid):
-                blocker = None
     if blocker is not None:
         return invalid_params(
             f"{cid} is not a standing proposal (current review state: "

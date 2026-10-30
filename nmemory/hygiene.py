@@ -6,7 +6,9 @@ owner: they write verification events, not capsules. The only automatic writer
 of capsules is the curator, and so this module follows the SAME path
 (`ingest`, never `append`): `append` skips taint scanning, dedup, and auditing.
 
-One SELECT, one formatter, and one call to `ingest`. No report classes.
+One SELECT, one audit chain check, one formatter, and one call to `ingest`.
+No report classes. The chain check is the one that `nmemory_session_start`
+did at each session start: once per day costs less than once per session.
 """
 
 from __future__ import annotations
@@ -19,8 +21,10 @@ from .capsule import AuthorityClass, format_rfc3339
 from .classify import ClassificationScope
 from .extract import CandidateKind
 from .ingest import IngestDefaults, IngestRequest, ingest
+from .journal import ChainStatus
 from .queries.census import write_read_census
 from .queries.hygiene import measure_counts
+from .queries.journal import verify_replay
 from .store import Store
 
 #: The day `read_traffic` came into existence. Capsules born BEFORE
@@ -47,6 +51,8 @@ class Hygiene:
     pre_traffic_capsules: int
     #: `{kind: (born, never served)}` in the `WINDOW_DAYS`-day cohort.
     census: dict[str, tuple[int, int]]
+    #: The audit hash chain verdict of `verify_replay`.
+    chain: ChainStatus
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -59,6 +65,7 @@ class Hygiene:
             "prior_empty": self.prior_empty,
             "pre_traffic_capsules": self.pre_traffic_capsules,
             "census": {k: list(v) for k, v in self.census.items()},
+            "journal": self.chain.to_dict(),
         }
 
 
@@ -86,6 +93,7 @@ def measure(store: Store, now: datetime) -> Hygiene:
         prior_empty=int(row[5]),
         pre_traffic_capsules=int(row[6]),
         census=write_read_census(store.db, week),
+        chain=verify_replay(store.db).chain,
     )
 
 
@@ -128,7 +136,14 @@ def render(h: Hygiene) -> str:
         f"{READ_TRAFFIC_EPOCH} are left out of this count: `read_traffic` "
         "did not exist, so «never served» is not decidable for them."
     )
-    return f"{alarm}\n{traffic}\n{cohort}\n{ambiguous}"
+    if h.chain.is_ok:
+        chain = f"The audit chain verifies: {h.chain.count} events."
+    else:
+        chain = (
+            f"The audit chain breaks at seq {h.chain.broken_seq}: "
+            "the ledger does not verify."
+        )
+    return f"{alarm}\n{traffic}\n{cohort}\n{ambiguous}\n{chain}"
 
 
 def proof_hint(h: Hygiene) -> str:

@@ -64,9 +64,7 @@ def test_version_six_upgrade_preserves_the_existing_run_and_event_chain(
             registry.connection.execute("DELETE FROM run_events").close()
         assert registry.database_rollback() == 5
         assert registry.upgrade() == 7
-        backend = Backend.parse("command")
-        assert backend is not None
-        registry.insert_run(replace(row, run_id="command-run", backend=backend))
+        registry.insert_run(replace(row, run_id="command-run", backend=Backend.COMMAND))
         with pytest.raises(RegistryError, match="command"):
             registry.database_rollback()
         assert nott_database.user_version(registry.connection) == 7

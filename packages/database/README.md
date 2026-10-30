@@ -29,12 +29,21 @@ The one door to every pynott SQLite store (`nott_database`). No executable.
   through a read-only `connect`, and only then widens it to 0640 when asked. It refuses
   a connection inside an open transaction.
 - `user_version(conn)` and `load_vec(conn)` (sqlite-vec, with the SQL
-  `load_extension()` function kept off throughout).
-- `directory_bind(descriptor)` checks an open, private directory outside the live store and returns its Linux descriptor path.
-  The caller keeps the descriptor open until all store operations finish.
-  SQLite uses its native Unix file operations with the descriptor path intact.
-  This keeps store files, journals, and locks inside that directory after an ancestor changes.
-  Other systems refuse this operation. Ordinary pathname callers keep their existing interface.
+  `load_extension()` function kept off throughout). `vec_path()` finds the extension
+  file without importing the `sqlite_vec` package, because that package imports numpy.
+  It raises `DatabaseError` when the package or its file is missing.
+- `admit_directory(path)` checks a disposable store directory before a child process uses it.
+  The directory must be private, owned by the caller and not a symlink, and it must not be the live store.
+  It returns the absolute path. The check does not stop a later swap of an ancestor directory by the same account.
+- `check_ancestors(path)` refuses a store directory that another account can move.
+  It walks the path from `/` one component at a time, as the kernel resolves it.
+  At each link, it continues with the components of the link target. Thus it
+  checks each directory and each link that resolution of the path goes through,
+  and the last component too. Root or the account must own each one. Group and
+  other must not write to such a directory without the sticky bit (the OpenSSH
+  StrictModes rule). The walk refuses more than 40 links (the Linux
+  `MAXSYMLINKS`) and stops at the first missing component. `admit_directory`
+  and the nMEMORY eval driver use it.
 
 Every open refuses a symlink, a hard-linked file, a foreign owner and a mode wider than
 private. The live

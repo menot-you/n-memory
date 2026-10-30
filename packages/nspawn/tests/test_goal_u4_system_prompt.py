@@ -175,7 +175,7 @@ def test_crlf_frontmatter_is_removed(plugin_roster: Path, tmp_path: Path) -> Non
     (plugin_roster / "agents" / "windows.md").write_bytes(
         b"---\r\nname: windows\r\ntools: Read\r\n---\r\n\r\nYou review.\r\n"
     )
-    assert agent_system_prompt("windows", str(tmp_path)) == "You review.\n"
+    assert agent_system_prompt("windows", str(tmp_path)).body == "You review.\n"
 
 
 @pytest.mark.parametrize(
@@ -313,23 +313,44 @@ def test_combine_system_prompt_file_absolute_source(tmp_path: Path) -> None:
     assert b"absolute content" in dest.read_bytes()
 
 
-def test_combine_system_prompt_file_keeps_one_global_law_across_retries(
+def test_combine_system_prompt_file_keeps_one_global_prompt_across_retries(
     tmp_path: Path,
 ) -> None:
     from nspawn.supervisor import _combine_system_prompt_file
 
     destination = tmp_path / "system-prompt"
     destination.write_bytes(b"dispatch instructions")
-    source = tmp_path / "NOTT.md"
-    source.write_bytes(b"# **NOTT** System Prompt\nowner law")
+    source = tmp_path / "PERSONA.md"
+    source.write_bytes(b"owner persona")
     declared = ["--append-system-prompt-file", str(source)]
 
     assert _combine_system_prompt_file(str(tmp_path), destination, declared) == []
     first = destination.read_bytes()
-    assert first == b"dispatch instructions\n\n# **NOTT** System Prompt\nowner law"
+    assert first == b"dispatch instructions\n\nowner persona"
 
     assert _combine_system_prompt_file(str(tmp_path), destination, declared) == []
     assert destination.read_bytes() == first
+
+
+@pytest.mark.parametrize("prompt_file", [True, False], ids=["prompt-file", "none"])
+def test_combine_system_prompt_file_never_appends_the_law(
+    tmp_path: Path, prompt_file: bool
+) -> None:
+    """A child runs with its agent, never the law: the roster's law file is
+    dropped from the args, and its text never joins the run's prompt file."""
+    from nspawn.supervisor import _combine_system_prompt_file
+
+    destination = tmp_path / "system-prompt"
+    destination.write_bytes(b"dispatch instructions")
+    source = tmp_path / "NOTT.md"
+    source.write_bytes(b"# **NOTT** System Prompt\nowner law")
+    declared = ["--append-system-prompt-file", str(source), "--verbose"]
+
+    for _ in range(2):
+        assert _combine_system_prompt_file(
+            str(tmp_path), destination if prompt_file else None, declared
+        ) == ["--verbose"]
+    assert destination.read_bytes() == b"dispatch instructions"
 
 
 def test_combine_system_prompt_file_keeps_trailing_args_on_first_try_and_retry(

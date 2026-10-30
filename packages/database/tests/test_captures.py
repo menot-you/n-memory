@@ -80,6 +80,33 @@ def test_concurrent_writers_cannot_exceed_the_cache_capacity(
     assert len(list(captures.root().iterdir())) == 2
 
 
+@pytest.mark.parametrize("operation", ["keep", "clear"])
+def test_capture_operations_refresh_the_locked_directory(
+    operation: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = root()
+    folder.mkdir(mode=0o700, parents=True)
+    checked_root = captures._root
+
+    def opened(create: bool) -> int | None:
+        fd = checked_root(create)
+        assert fd is not None
+        assert os.listdir(fd) == []
+        # A shared filesystem may snapshot a descriptor's directory entries.
+        path = folder / f"{hashlib.sha256(PNG).hexdigest()}.png"
+        path.write_bytes(PNG)
+        path.chmod(0o600)
+        return fd
+
+    monkeypatch.setattr(captures, "_root", opened)
+    monkeypatch.setattr(captures, "COUNT", 1)
+    if operation == "keep":
+        with pytest.raises(captures.RefusedError, match="cache is full"):
+            captures.keep(PNG + b"new")
+    else:
+        assert captures.clear() == 1
+
+
 def test_interrupted_writes_use_cache_capacity_until_explicit_clear(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -9,7 +9,16 @@ The [CI workflow](../../../.github/workflows/ci.yml) owns the exact lint, format
 Run each member's checks from that member's root in the prepared root uv workspace.
 For local checks in an already prepared workspace, use `uv run --no-sync`.
 Use one pytest process with no worker pool for this bounded setup.
-Set `TMPDIR` to an owned disk directory under `.nott/disposable` before pytest.
+Set `TMPDIR` to an owned absolute disk directory outside any Git checkout before pytest.
+Use an nSPAWN run's own `TMPDIR` under `/var/tmp`, or create a directory there with `mktemp -d`.
+The suite checks temporary paths before tests because tests need a neutral run cwd.
+Nonempty `TMPDIR`, `TEMP`, and `TMP` values must be absolute.
+A nonempty `PYTEST_DEBUG_TEMPROOT` must name an absolute directory outside any Git checkout.
+The root selected by `tempfile` must remain outside any Git checkout, even with a debug override or explicit base.
+An explicit `--basetemp` must also name a directory outside any Git checkout.
+The option can be relative; the guard uses pytest's absolute-path normalization before it resolves symbolic links.
+The guard resolves existing symbolic links and checks ancestors for `.git`.
+It does not allocate pytest's base temporary directory.
 Preserve all test scope, refusals, and declared quality floors.
 The nMEMORY coverage floor stays at 90.
 A documentation change requires the existing public-document regression, local links, all four maps, JSON and TOML parsing, and repeat export.
@@ -33,7 +42,6 @@ The [security policy](../../../SECURITY.md) owns vulnerability reporting.
 
 ## Evidence limits
 
-The [catalog](setup-catalog.json) owns current results and remaining observations for this project.
 Record production and development dependency audits separately for each selected lock.
 An advisory service failure is an incomplete audit.
 CodeQL dispositions do not prove that no vulnerability exists.

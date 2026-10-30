@@ -87,6 +87,7 @@ class FakeSupervisor(Supervisor):
         read_paths: Sequence[str] | None = None,
         system_prompt: str | None = None,
         producer: Sequence[str] = (),
+        agent: str | None = None,
     ) -> RunAccepted:
         self.calls.append(
             (
@@ -94,6 +95,7 @@ class FakeSupervisor(Supervisor):
                 {
                     # Only when named, so every other record keeps its shape.
                     **({"producer": producer} if producer else {}),
+                    **({"agent": agent} if agent is not None else {}),
                     # Only the ping prefers a model; every other verb's record
                     # stays the shape its tests compare.
                     **(
@@ -131,12 +133,14 @@ class FakeSupervisor(Supervisor):
         read_paths: Sequence[str] | None = None,
         system_prompt: str | None = None,
         producer: Sequence[str] = (),
+        agent: str | None = None,
     ) -> RunAccepted:
         self.calls.append(
             (
                 "review",
                 {
                     **({"producer": producer} if producer else {}),
+                    **({"agent": agent} if agent is not None else {}),
                     "branch": branch,
                     "cwd": cwd,
                     "base": base,

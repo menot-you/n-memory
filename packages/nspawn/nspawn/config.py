@@ -5,6 +5,7 @@ table read strictly is a refusal, never a silent drop.
 """
 
 import os
+import stat
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -46,14 +47,65 @@ def store_config_path() -> Path:
     return Path(declared) if declared else DEFAULT_STORE_CONFIG_PATH
 
 
-def _store_table_strict(path: Path) -> dict[str, Any]:
-    """The `[store]` table read with refusals, not with tolerance."""
+class NotRegularFile(OSError):
+    """The path names a directory, a FIFO, a socket or a device, not a regular file."""
+
+
+def read_regular_file(path: Path) -> bytes:
+    """The bytes of `path`, read only when it is a regular file, with no wait.
+
+    This is the one read of each roster source file. The open is non-blocking,
+    so a FIFO with no writer does not stop it. The `fstat` checks the open
+    descriptor, and the read uses that descriptor, so a path that changes
+    after the check is never read. A roster read gives these bytes
+    to source selection, the parse and the `[store]` check, and it does not
+    read the path again by name.
+
+    Each caller gives the class of its source to an `OSError`:
+    `read_store_config` gives `ConfigError` for the single config file, and
+    `owner_roster.read_roster` gives `RosterError.unreadable` for the
+    compatibility roster (`NOTT_NSPAWN_ROSTER`).
+
+    Raises:
+        FileNotFoundError: nothing exists at the path.
+        NotRegularFile: the path is not a regular file.
+        OSError: the open, the `fstat` or the read failed.
+    """
+    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
     try:
-        raw = path.read_bytes()
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise NotRegularFile("not a regular file")
+        chunks: list[bytes] = []
+        while chunk := os.read(descriptor, 1 << 16):
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def read_store_config() -> tuple[Path, bytes] | None:
+    """The single config file and its bytes, from one read, or None when it is absent.
+
+    Only a path where nothing exists is absent. This function checks the
+    `[store]` table of the bytes with refusals, not with tolerance.
+
+    Raises:
+        ConfigError: the path is not a readable regular file, or its bytes
+            exceed the limit, do not parse or declare a wrong `[store]`.
+    """
+    path = store_config_path()
+    try:
+        raw = read_regular_file(path)
     except FileNotFoundError:
-        return {}
+        return None
     except OSError as error:
         raise ConfigError(f"the config at {path} cannot be read: {error}") from error
+    _store_table_of(path, raw)
+    return path, raw
+
+
+def _store_table_of(path: Path, raw: bytes) -> dict[str, Any]:
+    """The `[store]` table of the bytes already read from `path`, with refusals."""
     if len(raw) > MAX_STORE_CONFIG_BYTES:
         raise ConfigError(
             f"the config at {path} exceeds {MAX_STORE_CONFIG_BYTES} bytes"
@@ -105,10 +157,12 @@ def _store_table(path: Path) -> dict[str, Any]:
 
 
 def resolve_roster_path() -> Path | None:
-    """The same declared file serves store and roster; env is compatibility."""
-    path = store_config_path()
-    _store_table_strict(path)
-    return path if path.is_file() else None
+    """The same declared file serves store and roster. The environment is compatibility.
+
+    A roster read uses `read_store_config` to keep the bytes of this read.
+    """
+    source = read_store_config()
+    return None if source is None else source[0]
 
 
 def resolve_run_root() -> Path:

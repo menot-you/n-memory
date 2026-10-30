@@ -11,17 +11,14 @@ journal records: `nmemory_capsule_purge` records `FORGET`, exactly as
 
 from __future__ import annotations
 
-ALIAS = "memory_alias"
 CLASSIFY = "memory_classify"
 CONSOLIDATE = "memory_consolidate"
 DOD = "memory_dod"
 FORGET = "memory_forget"
-IMPORT = "memory_import"
 INDEX = "memory_index"
 INGEST = "memory_ingest"
 OUTCOME = "memory_outcome"
 PIN = "memory_pin"
-REANCHOR = "memory_reanchor"
 RELATE = "memory_relate"
 REVIEW = "memory_review"
 SESSION_FINISH = "memory_session_finish"

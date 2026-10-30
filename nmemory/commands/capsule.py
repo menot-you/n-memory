@@ -10,14 +10,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from ..capsule import Capsule, headline_of, is_owner_rule
+from ..consolidate import Tier
 from ..embedding import EmbeddingClient
+from ..export import ExportLive, ExportRelation, ExportTombstoned, render_markdown
 from ..ingest import effective_defaults
 from ..project import canonical_project
+from ..queries.sidecars import view_sidecars
 from ..renamed import env
 from ..repositories.capsules import StoredCapsule
 from ..retrieve import FenceClock, RetrieveParams, eligibility_exclusion, retrieve
 from ..staleness import StalenessVerdict, SystemRunner, evaluate_all, record_staleness
-from ..tools.export import export_markdown
+from ..store import Store
 from .common import open_store_from_args, parse_command
 
 
@@ -318,6 +321,61 @@ def cmd_capsule_show(argv: list[str]) -> None:
         "tier": store.tiers.get_tier(stored.id).value,
     }
     print(json.dumps(res, indent=2, ensure_ascii=False))
+
+
+def export_markdown(store: Store, no_stamp: bool = False) -> str:
+    """The Markdown projection of the store that `nmemory capsule export` prints."""
+    caps = store.capsules.list()
+    # One batch read of the sidecars: a read per capsule pays five connections per
+    # capsule against the real store (#42).
+    sidecars = view_sidecars(store.db)
+    live_records: list[ExportLive] = []
+    for sc in caps:
+        side = sidecars.get(sc.id)
+        live_records.append(
+            ExportLive(
+                id=sc.id,
+                seq=sc.seq,
+                handle=side.handle if side else sc.id,
+                capsule=sc.capsule,
+                classification_kind=side.kind if side else None,
+                tier=side.tier if side else Tier.ACTIVE,
+                review=side.review if side else None,
+                anchor_effective=side.anchor_effective if side else None,
+            )
+        )
+    tomb_records = [
+        ExportTombstoned(
+            id=t.capsule_id,
+            handle=sidecars[t.capsule_id].handle
+            if t.capsule_id in sidecars
+            else t.capsule_id,
+            mode=t.mode,
+            at=t.at,
+            reason=t.reason,
+            content_hmac=t.content_hmac,
+            provenance_source=t.provenance_source,
+            provenance_anchor=t.provenance_anchor,
+        )
+        for t in store.capsules.list_tombstones()
+    ]
+    rel_records = [
+        ExportRelation(
+            kind=r.kind.value,
+            from_id=r.from_id,
+            to_id=r.to_id,
+            reason=r.reason,
+            at=r.at,
+        )
+        for r in store.relations.list_relations()
+    ]
+    return render_markdown(
+        live_records=live_records,
+        tombstones=tomb_records,
+        relations=rel_records,
+        generated_at=datetime.now(UTC),
+        stamp=not no_stamp,
+    )
 
 
 def cmd_capsule_export(argv: list[str]) -> None:

@@ -1,8 +1,8 @@
 """The capture door speaks English: capsule content whose prose is not English is refused.
 
 The refusal lives in `nmemory.tools.ingest`, like the proof gate in
-`test_capture_gate.py`, and NOT in `ingest()`: `nmemory_capsule_import` carries external
-files that may legitimately be in another language.
+`test_capture_gate.py`, and NOT in `ingest()`: the curator and the evals call it with
+text that may legitimately be in another language.
 
 `nmemory_session_finish` never refuses a handoff: it is called when a session goes
 idle or ends, and nobody is left to rewrite it. It stores the handoff, finishes the

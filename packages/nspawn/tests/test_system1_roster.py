@@ -244,3 +244,49 @@ def test_the_bias_follows_the_model_of_the_question_route(
         "check the candidate against acceptance", Roster()
     )
     assert observed == expected
+
+
+def test_an_absent_roster_leaves_system1_on_the_environment(tmp_path, monkeypatch):
+    """System1 reads through the one reader; an absent roster is no roster."""
+    monkeypatch.setenv("NOTT_NSPAWN_CONFIG", str(tmp_path / "absent-config.toml"))
+    monkeypatch.setenv("NOTT_NSPAWN_ROSTER", str(tmp_path / "absent-roster.toml"))
+    monkeypatch.setattr(system1, "_ROSTER_LIDO", [])
+    assert system1.roster_do_host() is None
+
+
+def test_the_single_config_file_wins_for_system1(tmp_path, monkeypatch):
+    """The single config file decides System1's roster, as it decides a run's."""
+    config = _roster(tmp_path, '[system1]\nendpoint = "https://config.invalid/v1"\n')
+    roster = tmp_path / "compat.toml"
+    roster.write_text('[system1]\nendpoint = "https://compat.invalid/v1"\n')
+    monkeypatch.setenv("NOTT_NSPAWN_CONFIG", str(config))
+    monkeypatch.setenv("NOTT_NSPAWN_ROSTER", str(roster))
+    monkeypatch.setattr(system1, "_ROSTER_LIDO", [])
+    assert system1.roster_do_host().system1.endpoint == "https://config.invalid/v1"
+
+
+def test_a_directory_at_the_config_path_stops_system1(tmp_path, monkeypatch):
+    """A config file that is not a readable regular file is a `ConfigError`,
+    which System1 does not catch, as on main."""
+    from nspawn.config import ConfigError
+
+    folder = tmp_path / "config-folder"
+    folder.mkdir()
+    monkeypatch.setenv("NOTT_NSPAWN_CONFIG", str(folder))
+    monkeypatch.delenv("NOTT_NSPAWN_ROSTER", raising=False)
+    monkeypatch.setattr(system1, "_ROSTER_LIDO", [])
+    with pytest.raises(ConfigError):
+        system1.roster_do_host()
+
+
+def test_a_directory_at_the_compatibility_path_leaves_system1_without_a_roster(
+    tmp_path, monkeypatch
+):
+    """A compatibility roster that cannot be read is a `RosterError`, which
+    System1 catches and keeps as no roster, as on main."""
+    folder = tmp_path / "roster-folder"
+    folder.mkdir()
+    monkeypatch.setenv("NOTT_NSPAWN_CONFIG", str(tmp_path / "absent-config.toml"))
+    monkeypatch.setenv("NOTT_NSPAWN_ROSTER", str(folder))
+    monkeypatch.setattr(system1, "_ROSTER_LIDO", [])
+    assert system1.roster_do_host() is None

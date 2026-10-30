@@ -28,8 +28,9 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+import nott_database
 import pytest
-from class_dispatch import DECLARED_CLASS, system1_never_reaches_the_network
+from class_dispatch import system1_never_reaches_the_network
 from mcp_fakes import FakeSupervisor, handle
 from registry_reset import sql
 from supervisor_support import (
@@ -46,7 +47,13 @@ from nspawn.mcp import McpServer
 from nspawn.owner_roster import Defaults, NativeAccount, Provider, Roster
 from nspawn.process_identity import capture_process_identity
 from nspawn.redact import SecretNeedles
-from nspawn.registry import DriverCeiling, Registry
+from nspawn.registry import (
+    DriverCeiling,
+    IdempotencyBusy,
+    Registry,
+    RegistryError,
+    WriterRedRefused,
+)
 from nspawn.rows import (
     CLAUDE_CONFINEMENT_POLICY_ONLY,
     Backend,
@@ -55,6 +62,9 @@ from nspawn.rows import (
     RunRow,
 )
 from nspawn.supervisor import RunAccepted, Supervisor
+
+# Driver survival tests use verification scratch writes, not implementation work.
+DECLARED_CLASS = "verification"
 
 __all__ = [
     "_drain_worker_threads",
@@ -198,15 +208,8 @@ def reaper(registry: Registry) -> Iterator[Reaper]:
 # A native-write codex run: a checkout under the roster's declared root.
 # ---------------------------------------------------------------------------
 
-#: What codex reports for a thread started with a native write profile
-#: (tests/test_native_write.py, observed 2026-09-28).
-WRITER_SANDBOX = {
-    "type": "workspaceWrite",
-    "writableRoots": [],
-    "networkAccess": False,
-    "excludeTmpdirEnvVar": True,
-    "excludeSlashTmp": True,
-}
+#: The native sandbox echo for an uncaged writer.
+WRITER_SANDBOX = {"type": "dangerFullAccess"}
 
 #: A codex app-server double whose turn holds until `$WRITER_GATE` exists.
 WRITER_SERVER = r"""
@@ -225,9 +228,7 @@ for line in sys.stdin:
     elif method == 'plugin/installed':
         send({'id': frame['id'], 'result': {'marketplaces': [], 'marketplaceLoadErrors': []}})
     elif method == 'thread/start':
-        profiles = params.get('config', {}).get('permissions', {})
-        profile = profiles.get(params.get('permissions'), {})
-        writer = 'write' in profile.get('filesystem', {}).values()
+        writer = params.get('sandbox') == 'danger-full-access'
         send({'id': frame['id'], 'result': {'thread': {'id': 'writer-thread'},
               'model': params['model'],
               'sandbox': WRITER if writer else {'type': 'readOnly'},
@@ -778,6 +779,7 @@ def test_the_default_launcher_runs_a_scoped_driver_with_the_ack_fd_and_its_log(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     record = _stub_launcher(drv, tmp_path, monkeypatch, "ack")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/hidden/runtime")
     server = McpServer(
         supervisor=_stdio(registry, tmp_path), launcher=drv.SystemdLauncher()
     )
@@ -814,7 +816,7 @@ def test_the_default_launcher_runs_a_scoped_driver_with_the_ack_fd_and_its_log(
         "run",
     ]
     assert seen["env"] == {
-        "XDG_RUNTIME_DIR": _USER_MANAGER["XDG_RUNTIME_DIR"],
+        "XDG_RUNTIME_DIR": None,
         "DBUS_SESSION_BUS_ADDRESS": _USER_MANAGER["DBUS_SESSION_BUS_ADDRESS"],
         "NOTT_PROBE": "inherited",
     }
@@ -929,7 +931,7 @@ def _unservable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Roster:
         model="m2",
         effort=None,
     )
-    monkeypatch.setattr(supervisor, "_read_roster", lambda cwd: roster)
+    monkeypatch.setattr(supervisor, "read_roster", lambda cwd: roster)
     monkeypatch.setattr(supervisor.picker, "pick_execution", lambda *a, **k: picked)
     return roster
 
@@ -1669,6 +1671,7 @@ def test_the_run_marker_reaches_the_claude_child_env(
 ) -> None:
     token = tmp_path / "token"
     token.write_text("a-real-credential-value-that-is-long-enough")
+    token.chmod(0o600)  # whatever the umask
     provider = Provider(name="claude", token_file=token)
     env, _ = child.build_child_env(provider, None, ambient={}, run_id="run-marker")
     assert env[drv.RUN_ID_ENV] == "run-marker"
@@ -1711,3 +1714,78 @@ def test_a_walled_refusal_carries_its_reset_to_the_caller(
     else:
         assert refused["refused"]["nearest_reset"] == reset
         assert data["nearest_reset"] == reset
+
+
+def _caused(error: BaseException, cause: BaseException) -> BaseException:
+    """`error` as `raise error from cause` leaves it."""
+    error.__cause__ = cause
+    return error
+
+
+def test_a_registry_refusal_caused_by_a_busy_store_keeps_the_busy_type(
+    drv: ModuleType,
+) -> None:
+    """The registry wraps a busy store in `RegistryError`. The ack names the busy
+    store, so the node host gives the owner the busy sentence."""
+    busy = nott_database.BusyError("nspawn.sqlite3-write.lock is held past 0.5 s")
+    wrapped = _caused(
+        RegistryError(f"the run event could not be appended: {busy}"), busy
+    )
+    ack = drv.refusal_ack(wrapped)
+    assert ack["refused"]["type"] == "BusyError", ack
+    assert "run_id" not in ack and "phase" not in ack, ack
+    with pytest.raises(mcp.McpError) as caught:
+        mcp._acknowledged("nspawn_run_start", ack)
+    assert (caught.value.data or {})["type"] == "BusyError"
+    assert caught.value.code == drv.INTERNAL_ERROR
+
+
+def _refusal_with_retryable() -> BaseException:
+    refused = IdempotencyBusy("idempotency key 'k' is being admitted; retry")
+    refused.data = {"retryable": True}
+    return _caused(refused, nott_database.BusyError("held"))
+
+
+@pytest.mark.parametrize(
+    ("make", "name"),
+    [
+        (_refusal_with_retryable, "IdempotencyBusy"),
+        (
+            lambda: _caused(
+                WriterRedRefused("the clone moved"), nott_database.BusyError("held")
+            ),
+            "WriterRedRefused",
+        ),
+        (
+            lambda: _caused(
+                RegistryError("the run event could not be appended"),
+                nott_database.RefusedError("refused"),
+            ),
+            "RegistryError",
+        ),
+    ],
+    ids=["idempotency-busy", "writer-red", "registry-refused"],
+)
+def test_a_refusal_with_its_own_type_keeps_it_when_a_busy_store_caused_it(
+    drv: ModuleType, make: Callable[[], BaseException], name: str
+) -> None:
+    """Only a plain `RegistryError` from a busy store becomes `BusyError`. A
+    refusal with its own type, or one from another store error, keeps its type."""
+    ack = drv.refusal_ack(make())
+    assert ack["refused"]["type"] == name, ack
+    if name == "IdempotencyBusy":
+        assert ack["refused"]["retryable"] is True, ack
+
+
+def test_driver_accepts_a_bus_without_a_runtime_directory(
+    drv: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bus = {"DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/4242/bus"}
+    monkeypatch.setattr(drv, "_direct_launch", lambda: False)
+    monkeypatch.setattr(drv, "_linger_enabled", lambda: True)
+    monkeypatch.setattr(
+        drv, "user_manager_environment", lambda: {"PATH": "/usr/bin", **bus}
+    )
+    monkeypatch.setattr(drv, "weigh_custody_parent", lambda environment: None)
+    assert drv.SystemdLauncher._environment() == bus

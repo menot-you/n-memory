@@ -27,10 +27,12 @@ import contextlib
 import contextvars
 import errno
 import functools
+import hashlib
 import json
 import math
 import os
-import shutil
+import re
+import shlex
 import signal
 import stat
 import subprocess
@@ -42,12 +44,13 @@ import traceback
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 from pathlib import Path
 from typing import Any, Final, cast
 
+from nott_database import BusyError
 from nott_system1 import SCOPES, route_variables
 
 from . import (
@@ -59,32 +62,47 @@ from . import (
     claude_catalog,
     claude_child,
     claude_restricted,
-    config,
     native,
     notify,
+    operations,
+    owner_roster,
     picker,
     pump,
     quota_sources,
+    red_witness,
+    review_cap,
     route,
     session,
+    steer,
     terminal,
     threads,
     worktree,
+)
+from . import (
+    custody as custody_module,
 )
 from .admission import AdmissionRefusal, AttemptReceiptV1, SessionAdmissionV1
 from .command import Command
 from .command import resolve as command_resolve
 from .command_terminal import canonical_cwd as command_cwd
-from .custody import AggregateScope, ControllerRefusal, ExecutorScope
-from .errors import NERR_1104, NERR_1128, ErrorEntry, NSpawnError
+from .custody import (
+    AggregateScope,
+    ControllerRefusal,
+    ExecutorScope,
+    writer_run,
+    writer_unit,
+)
+from .errors import NERR_1128, ErrorEntry, NSpawnError
 from .inference import InferenceHome, StructuredInference
 from .limits import MAX_DURABLE_OBSERVATION_BYTES
+from .operations import OMITTED as OPERATIONS_OMITTED
 from .owner_roster import (
     ANTHROPIC_BASE_URL_KEY,
     CAPABILITIES,
     NativeAccount,
     Provider,
     Roster,
+    account_notes,
     claude_config_dir,
     claude_family,
     credential_source,
@@ -120,6 +138,8 @@ from .registry import (
     RunKey,
     StaleComputeReading,
     UniqueTaken,
+    WriterRedRefused,
+    operation_admission_read,
     token_counter,
     token_sum,
 )
@@ -137,6 +157,7 @@ from .rows import (
     SessionActivation,
     SessionProfile,
     SessionReference,
+    WriterRedReceipt,
     validate_system_prompt,
 )
 from .vendor_home import VendorHomeError, read_owner_config
@@ -167,26 +188,6 @@ class ThreadUnread(NSpawnError):
         super().__init__(NERR_1128, reason)
 
 
-def _codex_homes(roster: Roster) -> list[tuple[Provider, str | None, Path]]:
-    """Each Codex home to read: the `codex` provider's accounts, then the default
-    `~/.codex` when it exists and no account uses it (alias None)."""
-    provider = next(
-        (p for p in roster.providers if p.name == "codex" and p.kind == "codex"), None
-    )
-    if provider is None:
-        return []
-    homes: list[tuple[Provider, str | None, Path]] = [
-        (provider, alias, native.vendor_home(account).expanduser())
-        for alias, account in sorted(provider.accounts.items())
-    ]
-    default = Path.home() / ".codex"
-    if default.is_dir() and default.resolve() not in {
-        home.resolve() for _, _, home in homes
-    }:
-        homes.append((provider, None, default))
-    return homes
-
-
 #: How long a close waits for a live driver to answer, above the summed
 #: close steps; how often it re-reads the owner; and the claim lease.
 CLOSE_WAIT_S: Final = 45.0
@@ -208,10 +209,20 @@ class DriveCall:
     #: and the project key its drain is scoped by; no caller, no notices row.
     caller: dict[str, Any] | None = None
     project: str | None = None
+    journal_context: dict[str, Any] | None = None
     #: This admission's `run_keys` row; `_admit` writes it with the run.
     run_key: RunKey | None = None
     run_id: str | None = None
-    worker: threading.Thread | None = None
+    #: Each worker that an admission of this call started, in the order that
+    #: `start_worker` added it. Only `start_worker` adds an entry. No code
+    #: removes one.
+    workers: list[threading.Thread] = field(default_factory=list)
+    #: The run lease of the caller of admission: `serve` and `ping_routes` give
+    #: it (`driver.RunLeases.take`). Each admission path calls it with the tree
+    #: of its child and the store directory of its registry immediately before
+    #: `create_run_directory` (`Supervisor._hold_run_lease`). A refusal is a
+    #: `SupervisorError`. A call without it takes no lease.
+    take_lease: Callable[[str, Path], None] | None = None
 
     def notice(self) -> NoticeCaller | None:
         if self.caller is None or self.project is None:
@@ -229,18 +240,32 @@ DRIVE_CALL: contextvars.ContextVar[DriveCall | None] = contextvars.ContextVar(
 )
 
 
-def join_workers(call: DriveCall) -> None:
-    """Join the call's worker, and each worker it hands the call to.
+def start_worker(call: DriveCall | None, worker: threading.Thread) -> None:
+    """Start `worker`, then add it to the workers of `call`.
 
-    A review that fails over admits its successor from inside the failed run's
-    worker, and that admission moves `call.worker` (and `call.run_id`) to the
-    successor. A driver that joined only the first worker would exit while the
-    review still runs, and end that run FAILED at exit.
+    The add comes after `start()` returned, so each entry is a thread that
+    started, and `join_workers` never joins a thread that did not start. A
+    start that raises adds nothing, and the exception propagates unchanged.
     """
-    joined: threading.Thread | None = None
-    while (worker := call.worker) is not None and worker is not joined:
-        worker.join()
-        joined = worker
+    worker.start()
+    if call is not None:
+        call.workers.append(worker)
+
+
+def join_workers(call: DriveCall) -> None:
+    """Join each worker of the call, and each worker that it hands the call to.
+
+    A review that fails over admits its successor from inside the worker of the
+    failed run, and that admission adds the successor to `call.workers` (and
+    moves `call.run_id` to it). A live worker adds its successor before it
+    ends, so the list stops growing only when no worker of the call is alive.
+    A driver that joined fewer workers would exit while the review still runs,
+    and end that run FAILED at exit.
+    """
+    index = 0
+    while index < len(call.workers):
+        call.workers[index].join()
+        index += 1
 
 
 #: The env var naming an explicit `claude` binary override, read once per admission
@@ -260,6 +285,77 @@ CHILD_ENV_ALLOWLIST: Final = ("PATH", "HOME", "LANG", "LC_ALL")
 #: A Claude child reads its whole prompt from stdin before its first request;
 #: a minute is a stuck child, not a slow one.
 PROMPT_WRITE_SECONDS = 60.0
+
+#: How often the driver of an uncaged Claude run looks for a result of the child
+#: and for a queued steer message.
+STEER_POLL_SECONDS = 0.05
+
+
+def _user_frame(text: str) -> bytes:
+    """One stream-json user message, as one line, for the stdin of a Claude child."""
+    frame = {
+        "type": "user",
+        "message": {"role": "user", "content": [{"type": "text", "text": text}]},
+    }
+    return (json.dumps(frame) + "\n").encode("ascii")
+
+
+def _raise_finished_pump_failure(spawned: child.SpawnedChild) -> None:
+    """Stop and reap the child when an output pump finished with a failure.
+
+    A pump that refuses a line (its line ceiling or the run output budget)
+    stops at once. It persists nothing more, so the result of the child never
+    reaches the file that the steer loop counts. Only `join` raises the
+    failure, and the steer loop does not join. This call raises the real cause
+    after it kills the child and waits for its exit.
+    """
+    for output in (spawned.stdout_pump, spawned.stderr_pump):
+        if not output.finished:
+            continue
+        try:
+            output.join(0)
+        except NSpawnError, OSError:
+            _stop_and_reap(spawned)
+            raise
+
+
+def _stop_and_reap(spawned: child.SpawnedChild) -> None:
+    """Stop the child and wait for its exit, for a caller that raises next."""
+    with contextlib.suppress(child.ChildIdentityError, OSError):
+        spawned.stop_then_kill(spawned.identity)
+    with contextlib.suppress(subprocess.TimeoutExpired, NSpawnError, OSError):
+        spawned.wait(timeout=child.SIGNALER_BOUND_SECONDS)
+
+
+class _ResultCount:
+    """The results that the child has written to its stdout file so far."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._offset = 0
+        self._tail = b""
+        self.count = 0
+
+    def update(self) -> int:
+        try:
+            with self._path.open("rb") as handle:
+                handle.seek(self._offset)
+                data = handle.read()
+        except FileNotFoundError:
+            return self.count
+        self._offset += len(data)
+        *lines, self._tail = (self._tail + data).split(b"\n")
+        for line in lines:
+            if b'"result"' not in line:
+                continue
+            try:
+                record = json.loads(line)
+            except ValueError, RecursionError:
+                # A line the decoder refuses is not a result the count can use.
+                continue
+            if isinstance(record, dict) and record.get("type") == "result":
+                self.count += 1
+        return self.count
 
 
 def preparation_sibling_key(run_id: str) -> str:
@@ -289,6 +385,20 @@ def _dropped_records(first: bytes) -> int:
     return dropped if type(dropped) is int and dropped > 0 else 0
 
 
+def _log_slice_failure(run_id: str | None, unit: str, detail: object) -> None:
+    """Surface a writer slice that was left standing, without re-raising: the
+    reconcile step retries it while its run is terminal and its slice empty."""
+    if sys.is_finalizing():
+        return
+    with contextlib.suppress(Exception):
+        print(
+            f"nspawn.reaper: writer slice {unit} of run {run_id} was not "
+            f"stopped: {detail}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
 def _log_tick_failure(error: BaseException) -> None:
     """Surface a reaper failure, with traceback, without re-raising.
 
@@ -313,6 +423,16 @@ def _log_tick_failure(error: BaseException) -> None:
         )
         traceback.print_exception(
             type(error), error, error.__traceback__, file=sys.stderr
+        )
+
+
+def _log_busy_progress(run_id: str, write_name: str) -> None:
+    """Name one skipped observation, without exception text or a chain."""
+    with contextlib.suppress(OSError, ValueError):
+        print(
+            f"nspawn.worker: {run_id}: skipped {write_name}: BusyError",
+            file=sys.stderr,
+            flush=True,
         )
 
 
@@ -452,14 +572,79 @@ class ClosePending(SupervisorError):
     """The run's live driver has not answered its close request in time."""
 
 
+class NativeSessionEnded(SupervisorError):
+    """A native session ended while its run was live.
+
+    The message is an nSPAWN constant with no vendor bytes, so the failure
+    record keeps it.
+    """
+
+
 class InvalidRunRequest(SupervisorError):
     """A caller-supplied field failed a basic shape check before any state changed."""
+
+
+class ReviewCandidateInvalid(InvalidRunRequest):
+    """The review's candidate or spec revision is invalid."""
+
+
+def _count_review(
+    registry: Registry, subject: str, candidate: str, revision: str | None
+) -> None:
+    try:
+        registry.admit_review_head(subject, candidate, revision)
+    except review_cap.InvalidCandidate as error:
+        raise ReviewCandidateInvalid(str(error)) from error
+
+
+def _review_coordinates(
+    subject: str | None, candidate: str | None, prompt: str | None, cwd: str
+) -> tuple[str, str, str | None] | None:
+    if subject is None and candidate is None:
+        return None
+    try:
+        if subject is None or candidate is None:
+            raise review_cap.InvalidCandidate("Give subject and candidate together.")
+        subject, candidate = review_cap.coordinates(subject, candidate)
+        if (
+            not isinstance(prompt, str)
+            or re.search(r"\b" + re.escape(candidate) + r"\b", prompt, re.IGNORECASE)
+            is None
+        ):
+            raise review_cap.InvalidCandidate(
+                f"Subject {subject} needs a prompt with the whole candidate {candidate}."
+            )
+        revision = review_cap.spec_revision(prompt)
+        marker = Path(cwd) / ".nott-review-sha"
+        try:
+            mode = marker.lstat().st_mode
+        except FileNotFoundError:
+            pass
+        else:
+            if not stat.S_ISREG(mode):
+                raise review_cap.InvalidCandidate(
+                    "The .nott-review-sha marker must be a regular file, not a symlink."
+                )
+            with os.fdopen(
+                os.open(marker, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "r"
+            ) as stream:
+                if (
+                    not stat.S_ISREG(os.fstat(stream.fileno()).st_mode)
+                    or len(value := stream.read(67)) > 66
+                    or value.strip().lower() != candidate
+                ):
+                    raise review_cap.InvalidCandidate(
+                        f"The .nott-review-sha marker must equal candidate {candidate}."
+                    )
+        return subject, candidate, revision
+    except (review_cap.InvalidCandidate, OSError, UnicodeError) as error:
+        raise ReviewCandidateInvalid(str(error)) from error
 
 
 #: An admission refusal that names the route, not the request: an unpinned
 #: review or verification skips that preference and tries the next one.
 #: Store, key and node-hold refusals are not here: no other route cures them.
-_ROUTE_REFUSALS: Final = (
+ROUTE_REFUSALS: Final = (
     picker.PickerError,
     picker.AllProvidersWalled,
     InvalidRunRequest,
@@ -469,13 +654,13 @@ _ROUTE_REFUSALS: Final = (
 
 #: A failure inside the worker that is the route's refusal to prepare the turn,
 #: never the work's: the next preference may serve it.
-_PREPARATION_REFUSALS: Final = (
+PREPARATION_REFUSALS: Final = (
     native.NativePreparationError,
     app_server.PluginSkillsRefused,
     VendorHomeError,
 )
 _PREPARATION_REFUSAL_NAMES: Final = frozenset(
-    refusal.__name__ for refusal in _PREPARATION_REFUSALS
+    refusal.__name__ for refusal in PREPARATION_REFUSALS
 )
 
 #: The witness classes that fail over across the owner's preferences.
@@ -584,10 +769,102 @@ def _without_credentials(
     )
 
 
+def _with_credentials(
+    roster: Roster, requested: str | None, ambient: Mapping[str, str]
+) -> tuple[Roster, str | None]:
+    """A copy of `roster` in which no Claude route or account the pick could
+    take runs whose credential the launch cannot read from `ambient`, and the
+    note naming each one kept off, or None.
+
+    The launch's own reader decides (`child.credential_refusal`): an `auth_env`
+    with no value, a token file that is not there or that its fence refuses, a
+    secrets directory with no usable one. Before this, the picker took such an
+    account and its run failed at launch with nERR-1112 and 0 tokens
+    (2026-10-23: 19 of a swarm of 39). A codex or AGY route prepares its
+    credential in `native.prepare`, not here.
+
+    The pick could take only the route `requested` names, else any route that
+    is not named_only; no other route is read or named. Each note is bounded
+    (`_listed`), so the row that holds it never refuses it.
+
+    Raises:
+        picker.PickerError: `requested` names a route or account kept off, or,
+            unpinned, no route is left that could serve.
+    """
+    pinned = None if requested is None else roster.select(requested)
+    notes: list[str] = []
+    providers: list[Provider] = []
+    for provider in roster.providers:
+        takeable = (
+            provider is pinned if requested is not None else not provider.named_only
+        )
+        if provider.kind != "claude" or not takeable:
+            providers.append(provider)
+            continue
+        aliases = provider.ordered_accounts()
+        if not aliases:
+            refusal = child.credential_refusal(provider, None, ambient)
+            if refusal is None:
+                providers.append(provider)
+                continue
+            note = f'route "{provider.name}": {refusal}'
+            if provider is pinned:
+                raise picker.PickerError(note)
+            notes.append(note)
+            continue
+        absent: list[str] = []
+        own: list[str] = []
+        for alias in aliases:
+            if alias in provider.excluded_accounts:
+                continue
+            refusal = child.credential_refusal(provider, alias, ambient)
+            if refusal is None:
+                continue
+            note = f'account "{alias}" of route "{provider.name}": {refusal}'
+            if provider is pinned and requested == alias:
+                raise picker.PickerError(note)
+            absent.append(alias)
+            own.append(note)
+        if (
+            provider is pinned
+            and absent
+            and set(aliases) <= {*provider.excluded_accounts, *absent}
+        ):
+            raise picker.PickerError(_listed(own, "; "))
+        notes.extend(own)
+        providers.append(
+            replace(provider, excluded_accounts=[*provider.excluded_accounts, *absent])
+            if absent
+            else provider
+        )
+
+    def serves(routes: list[Provider]) -> bool:
+        return any(
+            not route.named_only
+            and (
+                not route.accounts
+                or not set(route.accounts) <= set(route.excluded_accounts)
+            )
+            for route in routes
+        )
+
+    if (
+        notes
+        and requested is None
+        and serves(roster.providers)
+        and not serves(providers)
+    ):
+        raise picker.PickerError(
+            "no declared route has a credential nSPAWN can read: "
+            + _listed(notes, "; ")
+        )
+    return replace(roster, providers=providers), _listed(notes, "; ") or None
+
+
 @dataclass
 class _Failover:
     """What a run needs to try its next preference: every fresh run with no
-    `session_id`, no orchestrator binding and no structured inference. A writer takes it only while its tree shows no write.
+    `session_id` and no structured inference. A writer takes it only while its tree shows no write.
 
     `remaining` is the walk. For an unpinned review or verification it is the
     rest of the owner's order. For any other unpinned run it is the other
@@ -608,8 +885,8 @@ class _Failover:
     #: The caller's own model and effort, which every preference carries.
     model: str | None
     effort: str | None
-    #: The `_admit` keywords every attempt shares: prompt, cwd, the roster, the
-    #: cage and the run's shape.
+    #: The `_admit` keywords every attempt shares: prompt, cwd, the roster and
+    #: the run's shape.
     admit: dict[str, Any]
     #: When the caller's deadline ends (monotonic), None for no deadline.
     deadline_at: float | None
@@ -617,6 +894,8 @@ class _Failover:
     #: The reset of each wall that stopped a preference, for the final refusal.
     resets: list[int] = field(default_factory=list)
     any_failure: bool = False
+    #: A fresh unpinned role writer also walks the other accounts of its route.
+    role_writer: bool = False
     #: The credential (`_credential`) of each run that refused or failed this
     #: work, with an account or without one: it never serves this work again,
     #: under any provider.
@@ -668,6 +947,14 @@ def _moved_note(
         f"moved off {picked.executed_provider.name}/{picked.executed_account} "
         f"({cause.replace('(', '').replace(')', '').replace(';', ',')})"
     )
+
+
+def _carried_notes(note: str | None, moved: tuple[str, ...]) -> str | None:
+    """The notes of the accounts a run left, kept beside whatever else its
+    terminal already names. `_fail_run` is a terminal seam the failover notes do
+    not reach on their own: a run that moved and then died would read as if it
+    had finished on the account it refused."""
+    return note if not moved else _composed_warning(note, "; ".join(moved))
 
 
 def _route_refusal(classification: terminal.TerminalClassification) -> str | None:
@@ -776,6 +1063,7 @@ class RunAccepted:
     run_id: str
     #: The phase the admission committed; `spawning` once `admit_run` started it.
     phase: RunPhase = RunPhase.PENDING
+    operation_admission: operations.CheckedAdmission | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -820,6 +1108,10 @@ class RunStatus:
     cost_usd: str | None = None
     #: The model the run was admitted on, as its row records it.
     model: str | None = None
+    turn_count: int = 0
+    operation_admission: (
+        operations.CheckedAdmission | operations.UncheckedAdmission | None
+    ) = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -850,6 +1142,23 @@ class ProcessTreeReadback:
 
     checked: tuple[ProcessIdentity, ...]
     survivors: tuple[ProcessIdentity, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SliceReconcile:
+    """What the reconcile step did with one empty writer slice.
+
+    `action` is `kept` (its run has not ended), `would_stop` (dry run),
+    `stopped`, or `refused` (`detail` names the failed call). `run_id` and
+    `phase` are None for a slice that no run of this store names.
+    """
+
+    unit: str
+    run_id: str | None
+    phase: str | None
+    action: str
+    detail: str | None = None
+    claim_released: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1074,6 +1383,8 @@ class ProviderListing:
     design: int | None
     model_catalog: dict[str, str] | None = None
     model_catalog_error: str | None = None
+    #: What the owner fixes about the accounts (`owner_roster.account_notes`).
+    warnings: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _refuse_half_an_answer(self.provider, self.accounts, self.absence, "accounts")
@@ -1462,7 +1773,7 @@ def _declared_providers(
     and "`nope` has no quota", which are different and false statements. One
     gate, because both roster verbs ask the same question of the same file.
     """
-    declared = (roster if roster is not None else _read_roster()).providers
+    declared = (roster if roster is not None else read_roster()).providers
     if provider is None:
         return declared
     named = [entry for entry in declared if entry.name == provider]
@@ -1514,15 +1825,7 @@ def _provider_listing(provider: Provider, roster: Roster) -> ProviderListing:
     return ProviderListing(
         provider=provider.name,
         kind=provider.kind,
-        capabilities=tuple(
-            capability
-            for capability in CAPABILITIES[provider.kind]
-            if capability not in CAGED
-            or provider.kind != "claude"
-            or not _claude_route_elsewhere(
-                roster.env_of(provider), provider.accounts.values()
-            )
-        ),
+        capabilities=CAPABILITIES[provider.kind],
         models=tuple(provider.models),
         default_model=provider.model,
         # What the route SERVES, not everything the roster line names: a report
@@ -1536,6 +1839,7 @@ def _provider_listing(provider: Provider, roster: Roster) -> ProviderListing:
         design=provider.design,
         model_catalog=catalog,
         model_catalog_error=catalog_error,
+        warnings=tuple(account_notes(provider)),
     )
 
 
@@ -1546,7 +1850,7 @@ def provider_report(provider: str | None = None) -> ProviderReport:
     control read has no prompt or credential. The answer remains available
     when the registry is down.
     """
-    roster = _read_roster()
+    roster = read_roster()
     return ProviderReport(
         providers=tuple(
             _provider_listing(entry, roster)
@@ -1732,45 +2036,206 @@ def review_branch(cwd: str) -> str:
     return branch
 
 
-def agent_system_prompt(agent: str, cwd: str) -> str:
-    """The body of `agents/<agent>.md` in the roster's plugin root, without frontmatter."""
-    roster = _read_roster(cwd)
+#: The agent a child runs as when its start names none.
+DEFAULT_AGENT: Final = "worker"
+
+
+@dataclass(frozen=True, slots=True)
+class _AgentLaunch:
+    """What an admitted run launches as: its `{agent, skills}` record, and on a
+    Claude route the composed text of its prompt file."""
+
+    record: dict[str, Any]
+    prompt: str | None
+    #: The agent file's `tools`, which narrows a read-only child's tools.
+    tools: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AgentSuggestion:
+    """The model and effort an agent file suggests: `model` is a Claude model,
+    `nott-provider` with `nott-model` one of another provider."""
+
+    provider: str | None = None
+    model: str | None = None
+    effort: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AgentSkill:
+    name: str
+    body: str
+
+
+@dataclass(frozen=True, slots=True)
+class AgentPrompt:
+    """One agent file as a child runs it: its body, then each skill it names."""
+
+    name: str
+    body: str
+    skills: tuple[AgentSkill, ...] = ()
+    suggestion: AgentSuggestion = AgentSuggestion()
+    #: The `tools` key, or None when the file declares none.
+    tools: tuple[str, ...] | None = None
+
+    def text(self) -> str:
+        return "\n\n".join(
+            part.strip("\n")
+            for part in (self.body, *(skill.body for skill in self.skills))
+            if part.strip()
+        )
+
+
+def _owner_markdown(path: Path, directory: Path, label: str) -> tuple[str, str]:
+    """The frontmatter and the body of an owner-held markdown file in `directory`."""
+    try:
+        resolved = path.resolve(strict=True)
+        if not resolved.is_relative_to(directory.resolve(strict=True)):
+            raise InvalidRunRequest(f"{label}: the file is a link out of {directory}")
+        # The owner-config read: no-follow, regular file only (a FIFO is
+        # refused, not waited on), owner-held, and bounded.
+        text = read_owner_config(resolved).decode("utf-8").replace("\r\n", "\n")
+    except (OSError, RuntimeError, UnicodeDecodeError, VendorHomeError) as error:
+        raise InvalidRunRequest(
+            f"{label}: cannot read its file in {directory}: {type(error).__name__}"
+        ) from None
+    if not text.startswith("---\n"):
+        return "", text.lstrip("\n")
+    front, separator, body = text[4:].partition("\n---\n")
+    if not separator:
+        raise InvalidRunRequest(f"{label} has frontmatter with no end")
+    return front, body.lstrip("\n")
+
+
+def _frontmatter(front: str) -> dict[str, str | list[str]]:
+    """The top-level keys of an agent's frontmatter: a scalar, or the items of a
+    flow (`[a, b]`) or block (`- a`) list. Nothing else is read from it."""
+    keys: dict[str, str | list[str]] = {}
+    key: str | None = None
+    for line in front.splitlines():
+        item = line.strip()
+        # A block list's items may be indented under their key or not.
+        if key is not None and item.startswith("- "):
+            listed = keys.setdefault(key, [])
+            if isinstance(listed, list):
+                listed.append(item[2:].strip().strip("'\""))
+            continue
+        if not line or line[:1].isspace() or ":" not in line:
+            continue
+        name, _, value = line.partition(":")
+        key, value = name.strip(), value.strip()
+        if value.startswith("[") and value.endswith("]"):
+            keys[key] = [part.strip().strip("'\"") for part in value[1:-1].split(",")]
+        elif value:
+            keys[key] = value.strip("'\"")
+    return keys
+
+
+def _names(value: str | list[str] | None) -> list[str]:
+    if value is None:
+        return []
+    listed = value if isinstance(value, list) else value.split(",")
+    return [name.strip() for name in listed if name.strip()]
+
+
+def _scalar(value: str | list[str] | None) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _deliver_fix(plugin_root: Path) -> str:
+    """The fix for a missing plugin file. deliver takes the top level of the Git
+    checkout and writes its `plugin/` (plugin/scripts/plugin/package.py:764-770)."""
+    if plugin_root.name != "plugin":
+        return (
+            f"{plugin_root} is not the plugin/ directory of a checkout, and a "
+            "delivery writes only that directory: set defaults.plugins to one"
+        )
+    return (
+        f"deliver the plugin to {plugin_root}: "
+        f"python3 plugin/scripts/plugin.py deliver <commit> {plugin_root.parent}"
+    )
+
+
+def agent_prompt_read(agent: str, roster: Roster) -> AgentPrompt:
+    """`agents/<agent>.md` in the roster's plugin root, and the `SKILL.md` of each
+    skill its `skills` key names, without frontmatter, and its suggestion."""
+    name = agent.removeprefix("nott:")
     if roster.defaults.plugin_root is None:
         raise InvalidRunRequest(
             "agent needs a plugin root: the roster sets no defaults.plugins"
         )
-    directory = expand_home(roster.defaults.plugin_root) / "agents"
-    if not directory.is_dir():
-        raise InvalidRunRequest(
-            f"agent {agent!r}: the agents directory {directory} does not exist"
-        )
+    root = expand_home(roster.defaults.plugin_root)
+    directory = root / "agents"
     # Only a name found in the directory is read, so a path in `agent` reads nothing.
-    known = sorted(path.stem for path in directory.glob("*.md"))
-    name = agent.removeprefix("nott:")
+    known = (
+        sorted(path.stem for path in directory.glob("*.md"))
+        if directory.is_dir()
+        else []
+    )
     if name not in known:
+        if name == DEFAULT_AGENT:
+            raise InvalidRunRequest(
+                f"a child runs as the worker agent, and {directory / 'worker.md'} "
+                f"does not exist: {_deliver_fix(root)}"
+            )
+        if not directory.is_dir():
+            raise InvalidRunRequest(
+                f"agent {agent!r}: the agents directory {directory} does not exist"
+            )
         raise InvalidRunRequest(
             f"unknown agent {agent!r} in {directory}. "
             f"Known agents: {', '.join(known) or 'none'}"
         )
-    try:
-        path = (directory / f"{name}.md").resolve(strict=True)
-        if not path.is_relative_to(directory.resolve(strict=True)):
+    front, body = _owner_markdown(
+        directory / f"{name}.md", directory, f"agent {agent!r}"
+    )
+    keys = _frontmatter(front)
+    skills_directory = root / "skills"
+    skills: list[AgentSkill] = []
+    for skill in _names(keys.get("skills")):
+        skill_name = skill.removeprefix("nott:")
+        if not skills_directory.is_dir() or skill_name not in {
+            path.name for path in skills_directory.iterdir() if path.is_dir()
+        }:
             raise InvalidRunRequest(
-                f"agent {agent!r}: the file is a link out of {directory}"
+                f"agent {agent!r} names the skill {skill!r}, and "
+                f"{skills_directory / skill_name / 'SKILL.md'} does not exist: "
+                f"{_deliver_fix(root)}"
             )
-        # The owner-config read: no-follow, regular file only (a FIFO is
-        # refused, not waited on), owner-held, and bounded.
-        text = read_owner_config(path).decode("utf-8").replace("\r\n", "\n")
-    except (OSError, RuntimeError, UnicodeDecodeError, VendorHomeError) as error:
-        raise InvalidRunRequest(
-            f"agent {agent!r}: cannot read its file in {directory}: "
-            f"{type(error).__name__}"
-        ) from None
-    if text.startswith("---\n"):
-        _, separator, text = text[4:].partition("\n---\n")
-        if not separator:
-            raise InvalidRunRequest(f"agent {agent!r} has frontmatter with no end")
-    return text.lstrip("\n")
+        _, skill_body = _owner_markdown(
+            skills_directory / skill_name / "SKILL.md",
+            skills_directory,
+            f"skill {skill!r} of agent {agent!r}",
+        )
+        skills.append(AgentSkill(skill_name, skill_body))
+    model = _scalar(keys.get("model"))
+    other = _scalar(keys.get("nott-model"))
+    suggestion = AgentSuggestion(
+        provider="claude" if model is not None else _scalar(keys.get("nott-provider")),
+        model=model if model is not None else other,
+        effort=_scalar(keys.get("effort")),
+    )
+    tools = tuple(_names(keys["tools"])) if "tools" in keys else None
+    return AgentPrompt(name, body, tuple(skills), suggestion, tools)
+
+
+def agent_system_prompt(agent: str, cwd: str) -> AgentPrompt:
+    """The agent a start names, read from the plugin root of the roster at `cwd`."""
+    return agent_prompt_read(agent, read_roster(cwd))
+
+
+def _composed_prompt(
+    agent: AgentPrompt, system_prompt: str | None, worktree: str | None
+) -> str:
+    """What a Claude child runs with: its agent body, the agent's skills,
+    the caller's own text, and a writer's worktree line, in that order. A named
+    agent's body is the request's `system_prompt` already, so it is not repeated."""
+    parts = [agent.text()]
+    if system_prompt is not None and system_prompt.strip() != agent.body.strip():
+        parts.append(system_prompt.strip("\n"))
+    if worktree is not None:
+        parts.append(f"Worktree: {worktree}.")
+    return "\n\n".join(part for part in parts if part) + "\n"
 
 
 def _validate_review_worktree_branch(cwd: str, branch: str) -> None:
@@ -1787,12 +2252,208 @@ def _validate_review_worktree_branch(cwd: str, branch: str) -> None:
             )
 
 
+def _review_candidate(prompt: str) -> str | None:
+    """The first word of the first prompt line that starts with `Candidate:`
+    at column 0, else None. Lines end only at `\\n` (a final `\\r` is dropped),
+    and words end only at a space or a tab, so no other break or Unicode space
+    makes a Candidate line or cuts a branch name."""
+    for line in prompt.split("\n"):
+        if line.startswith("Candidate:"):
+            text = line.removesuffix("\r")[len("Candidate:") :]
+            return next(
+                (word for word in text.replace("\t", " ").split(" ") if word), None
+            )
+    return None
+
+
+#: The ASCII marks that a revision can carry: a code span, quotes, parentheses,
+#: bold, and a final period, comma, semicolon or colon.
+_CANDIDATE_MARKS_BEFORE: Final = "`'\"(*"
+_CANDIDATE_MARKS_AFTER: Final = "`'\")*.,;:"
+#: A commit: 7 to 40 hex digits and nothing else. A 64-hex plan digest, a
+#: 41-hex typo or `r3` is not one.
+_CANDIDATE_COMMIT: Final = re.compile(r"[0-9a-fA-F]{7,40}")
+_HEX_RUN: Final = re.compile(r"[0-9a-fA-F]+")
+#: The `review.sh` marker: one commit line (SHA-1 or SHA-256) in a small file.
+_REVIEW_MARKER: Final = ".nott-review-sha"
+_REVIEW_MARKER_LINE: Final = re.compile(rb"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\n?")
+_REVIEW_MARKER_MAX: Final = 128
+
+
+def _candidate_revision_off_grammar(revision: str) -> bool:
+    """True when a revision that is not 7 to 40 hex digits still looks like a
+    commit to a reader: it holds a run of 7 to 40 hex digits (a suffix such as
+    `~1`, an unknown mark), or a character outside ASCII and a hex digit (an
+    invisible or look-alike character)."""
+    runs = _HEX_RUN.findall(revision)
+    return any(7 <= len(run) <= 40 for run in runs) or (
+        bool(runs) and not revision.isascii()
+    )
+
+
+def _snapshot_above(cwd: str) -> Path | None:
+    """The outermost folder above cwd, below the nearest `.git`, that holds a
+    marker, else None. review.sh refuses a marker only at the snapshot root, so
+    a marker below it is a file of the commit, not the commit of the snapshot.
+    The parent of that folder is outside every marked folder that counts."""
+    # The real path: a link to a folder of a snapshot is still inside it.
+    above: Path | None = None
+    for parent in Path(os.path.realpath(cwd)).parents:
+        if os.path.lexists(parent / ".git"):
+            break
+        if os.path.lexists(parent / _REVIEW_MARKER):
+            above = parent
+    return above
+
+
+def _validate_review_candidate_head(cwd: str, prompt: str | None) -> None:
+    """Refuse a review whose cwd is not at the commit its Candidate line names.
+
+    The revision is the text after the last `@` of the Candidate word, without
+    the ASCII marks around it. It binds when it is 7 to 40 hex digits. When it
+    is not, but it still looks like a commit (`_candidate_revision_off_grammar`),
+    the review is refused by name. Any other revision keeps the review unlocked.
+
+    The commit of cwd is git's HEAD when HEAD tracks cwd (cwd is the work tree
+    top or a folder of HEAD). Otherwise it is the `review.sh` marker of a
+    snapshot root: a folder with no `.git` and no marker above it. Otherwise
+    cwd holds no commit. The lock compares commits, not files: uncommitted
+    edits in a live worktree pass."""
+    word = None if prompt is None else _review_candidate(prompt)
+    if word is None:
+        return
+    revision = word.rpartition("@")[2]
+    bare = revision.lstrip(_CANDIDATE_MARKS_BEFORE).rstrip(_CANDIDATE_MARKS_AFTER)
+    if _CANDIDATE_COMMIT.fullmatch(bare) is None:
+        if not _candidate_revision_off_grammar(revision):
+            return
+        message = (
+            f"cannot review Candidate revision {revision[:100]!a}: it holds hex "
+            "digits but it is not 7 to 40 hex digits. Write the line as "
+            "Candidate: <branch>@<7 to 40 hex digits>, in ASCII, with no suffix."
+        )
+        # A full 40-hex run is a commit; a shorter one is possibly a date.
+        if not any(len(run) == 40 for run in _HEX_RUN.findall(revision)):
+            message += (
+                " If the revision is not a commit, write it with no run of 7 to "
+                "40 hex digits and no character outside ASCII, for example its "
+                "64-hex digest."
+            )
+        raise InvalidRunRequest(message)
+    rev = bare.lower()
+    snapshot = (
+        f"plugin/scripts/review.sh snapshot {rev} <repo> [<base>] (the path is "
+        "relative to the root of the NOTT repository, and <repo> is the "
+        f"repository that holds {rev})"
+    )
+    # Only an abbreviated revision is possibly not a commit, for example a date.
+    hint = (
+        f" If {rev} is not a commit, write the Candidate revision in a form that "
+        "is not 7 to 40 hex digits, for example its 64-hex digest."
+        if len(rev) < 40
+        else ""
+    )
+    fix = f"Run {snapshot}, then give the directory that it prints as cwd.{hint}"
+    # An inherited GIT_DIR or GIT_WORK_TREE would read another tree's HEAD.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    try:
+        # `HEAD:./` resolves only when HEAD tracks cwd: a copy or a snapshot
+        # in an untracked folder of a work tree is not at the HEAD of that tree.
+        found = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "HEAD^{commit}", "HEAD:./"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise InvalidRunRequest(
+            f"cannot review Candidate {rev}: git did not read the commit of "
+            f"{cwd} in 10 s. Retry the same call."
+        ) from error
+    except OSError as error:
+        raise InvalidRunRequest(
+            f"cannot review Candidate {rev}: git cannot run ({error}). "
+            "Make git available to nSPAWN, then retry."
+        ) from error
+    answer = found.stdout.split()
+    tracked = found.returncode == 0 and len(answer) == 2
+    above = None if tracked else _snapshot_above(cwd)
+    head: str | None = None
+    marker = Path(cwd) / _REVIEW_MARKER
+    if tracked:
+        head = answer[0].lower()
+    elif (
+        os.path.lexists(marker)
+        and not os.path.lexists(Path(cwd) / ".git")
+        and above is None
+    ):
+        data = b""
+        # Fail closed: a marker that cannot be read is refused below.
+        with contextlib.suppress(OSError):
+            fd = os.open(marker, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                if stat.S_ISREG(os.fstat(fd).st_mode):
+                    data = os.read(fd, _REVIEW_MARKER_MAX + 1)
+            finally:
+                os.close(fd)
+        if _REVIEW_MARKER_LINE.fullmatch(data) is None:
+            raise InvalidRunRequest(
+                f"cannot review Candidate {rev}: {marker} is not one commit "
+                f"line. Run {snapshot} again, then give the directory that it "
+                "prints as cwd."
+            )
+        head = data.decode("ascii").strip().lower()
+    if not head and above is not None:
+        # A snapshot made from inside `above` lands inside it again: the fix
+        # sets TMPDIR so that its output lands outside it.
+        outside = shlex.quote(str(above.parent))
+        raise InvalidRunRequest(
+            f"cannot review Candidate {rev}: cwd {cwd} holds no commit, because "
+            f"it is inside the review.sh snapshot {above}, and a {_REVIEW_MARKER} "
+            "below a snapshot root is a file of its commit. Run TMPDIR="
+            f"{outside} "
+            f"{snapshot}, so that its output lands outside {above}, then give the "
+            f"directory that it prints as cwd.{hint}"
+        )
+    if not head:
+        raise InvalidRunRequest(
+            f"cannot review Candidate {rev}: cwd {cwd} holds no commit (no Git "
+            f"work tree whose HEAD tracks cwd, and no {_REVIEW_MARKER} file at "
+            f"the root of a review.sh snapshot). {fix}"
+        )
+    if not head.startswith(rev):
+        if not tracked:
+            output = Path(os.path.realpath(os.environ.get("TMPDIR") or "/var/tmp"))
+            usable = (
+                os.access(output, os.W_OK | os.X_OK)
+                and not os.path.lexists(output / _REVIEW_MARKER)
+                and _snapshot_above(str(output)) is None
+            )
+            parent = Path(os.path.realpath(cwd)).parent
+            # Keep a usable TMPDIR; otherwise name a writable parent outside cwd.
+            if not usable and os.access(parent, os.W_OK | os.X_OK):
+                outside = shlex.quote(str(parent))
+                fix = (
+                    f"Run TMPDIR={outside} {snapshot}, then give the directory that "
+                    f"it prints as cwd.{hint}"
+                )
+        raise InvalidRunRequest(
+            f"cannot review Candidate {rev}: cwd {cwd} is at commit {head[:12]}. {fix}"
+        )
+
+
 def _combine_system_prompt_file(
-    cwd: str, destination: Path, declared_args: Sequence[str]
+    cwd: str, destination: Path | None, declared_args: Sequence[str]
 ) -> list[str]:
-    """Keep the roster's global prompt when one dispatch adds its own text."""
+    """Keep the roster's global prompt when one dispatch adds its own text, unless
+    it is the NOTT law: a child runs with its agent, never the law, so that file
+    is dropped whether or not the run has a prompt file of its own."""
     flag = "--append-system-prompt-file"
-    args = list(declared_args)
+    args = child.without_law(declared_args, cwd)
+    if destination is None:
+        return args
     if any(argument.startswith(f"{flag}=") for argument in args):
         raise SupervisorError(f"roster must declare {flag} and its path separately")
     count = args.count(flag)
@@ -1837,6 +2498,8 @@ def _bounded_text(text: str, max_bytes: int) -> str:
 FINAL_TEXT_FILE = "final_text"
 #: A run's late-write diagnostics: appended, never on stderr, so no pipe stalls them.
 LATE_WRITES_FILE = "late_writes"
+WORKER_ERRORS_FILE = "worker_errors"
+WORKER_ERRORS_MAX_BYTES: Final = 64 * 1024
 #: One bound for keeping and reading an answer whole: no run outputs more.
 KEPT_ANSWER_MAX_BYTES: Final = pump.MAX_RUN_OUTPUT_BYTES
 #: A terminal the store refused, kept beside the run for the operator.
@@ -2008,9 +2671,14 @@ def run_result(
             )
         )
         structured_output = None if result is None else result.structured_output
-    final_text = streams.final_text if streams.has_valid_result else row.final_text
-    if not streams.has_valid_result:
-        # An answer over the row's cap lives whole in the run directory.
+    final_text = streams.final_text
+    if final_text is None or (
+        row.final_text is not None
+        and row.phase in (RunPhase.COMPLETED, RunPhase.CLOSED)
+    ):
+        # The classifier joins resumed answer blocks. Its recorded answer wins
+        # over the vendor's last-block result. A large answer lives beside the row.
+        final_text = row.final_text
         kept = kept_answer(row, run_dir)
         if kept is not None:
             final_text = kept
@@ -2116,40 +2784,9 @@ def _default_review_prompt(branch: str, base: str | None) -> str:
     )
 
 
-def _read_roster(cwd: str | None = None) -> Roster:
-    # `cwd` is accepted only so the three call sites (`:641`, `:982`, `:1071`)
-    # keep their signature; under L3 (owner ruling 2026-08-29) the roster is
-    # `NOTT_NSPAWN_ROSTER` or the config file's `spawn.toml` and nothing
-    # else, so the argument is otherwise ignored. A missing or unparseable
-    # roster is a typed refusal naming both homes the operator may declare.
-    path = Roster.default_path(Path(cwd) if cwd is not None else None)
-    if path is None:
-        raise NSpawnError(
-            NERR_1104,
-            f"cannot resolve the provider roster: single config file {config.store_config_path()} "
-            "is absent and NOTT_NSPAWN_ROSTER is unset",
-        )
-    # A named roster that is absent is a REFUSAL, wherever the name came from: the
-    # operator pointed to a file and it is not there, and silence would serve
-    # a roster they never chose. Under file-wins there is no longer a
-    # "derived absence": declaring `spawn.toml` IS naming. What remains
-    # as an empty page is the roster that EXISTS and declares no provider,
-    # and that is the rule of `Roster.read` itself.
-    # The guard asks about the SOURCE THAT WON, not the one that lost. Previously
-    # it always asked for `NOTT_NSPAWN_ROSTER`: an absence declared by
-    # file passed in silence, and a merely present env invented an
-    # NERR_1104 that named the wrong variable and a path it does not carry.
-    if not path.is_file():
-        fonte = (
-            "NOTT_NSPAWN_CONFIG (single config file)"
-            if config.resolve_roster_path() is not None
-            else "NOTT_NSPAWN_ROSTER"
-        )
-        raise NSpawnError(
-            NERR_1104,
-            f"cannot resolve the provider roster: {fonte} points at {path} which does not exist",
-        )
-    return Roster.read(path)
+#: The one roster reader. Callers and tests name it `supervisor.read_roster`, and a
+#: test that replaces this name replaces it for every call in this module.
+read_roster = owner_roster.read_roster
 
 
 def _lane_of(cwd: str) -> str | None:
@@ -2161,21 +2798,38 @@ def _lane_of(cwd: str) -> str | None:
     return root.name if (root / ".git").is_file() else None
 
 
+def _user_manager_present() -> bool:
+    try:
+        custody_module.user_manager_environment()
+    except ControllerRefusal:
+        return False
+    return True
+
+
 def _claude_bin_override() -> Path | None:
     value = os.environ.get(CLAUDE_BIN_ENV)
     return Path(value) if value else None
 
 
-def _probe_claude_version(path: str) -> claude_child.Version:
+def _probe_claude_version(
+    path: str, scope: ExecutorScope | None = None
+) -> claude_child.Version:
     """The `Probe` L8's `inspect_claude_installation` requires.
 
     No lane has shipped a real one yet ("the runner is on lane/spawn-d2"); L7
     composes L8 and something must supply this callable, so this is the minimal
-    subprocess probe until spawn-d2 lands its own.
+    subprocess probe until spawn-d2 lands its own. A run's `scope` holds the
+    probe too: the client's own `--version` command can start a detached job.
     """
+    command = [path, "--version"]
+    environment: dict[str, str] | None = None
+    if scope is not None:
+        command = scope.command(command)
+        environment = scope.environment(dict(os.environ))
     try:
         completed = subprocess.run(
-            [path, "--version"],
+            command,
+            env=environment,
             capture_output=True,
             text=True,
             timeout=claude_child.VERSION_TIMEOUT_SECONDS,
@@ -2194,18 +2848,16 @@ def _probe_claude_version(path: str) -> claude_child.Version:
     return version
 
 
-def _live(row: RunRow, run_root: Path) -> terminal.LiveProgress:
+def observe_run_progress(row: RunRow, run_root: Path) -> RunRow:
+    """Project live spend once for each reader. Terminal rows keep stored values."""
     if row.phase.is_terminal():
-        return terminal.LiveProgress()
-    return terminal.observe_live_progress(run_root / row.run_id / "stdout")
-
-
-def _live_tokens(row: RunRow, run_root: Path) -> int:
-    return max(row.tokens, _live(row, run_root).tokens)
-
-
-def _live_turns(row: RunRow, run_root: Path) -> int:
-    return max(row.turn_count, _live(row, run_root).turns)
+        return row
+    live = terminal.observe_live_progress(run_root / row.run_id / "stdout")
+    return replace(
+        row,
+        tokens=max(row.tokens, live.tokens),
+        turn_count=max(row.turn_count, live.turns),
+    )
 
 
 def _child_addr(row: RunRow) -> str | None:
@@ -2253,11 +2905,8 @@ def _to_status(
     """
     run_dir = run_root / row.run_id
     streams = _observe_streams(run_dir)
-    tokens = row.tokens
+    row = observe_run_progress(row, run_root)
     total_seq = row.records_seen
-    if not row.phase.is_terminal():
-        live = terminal.observe_live_progress(run_dir / "stdout")
-        tokens = max(tokens, live.tokens)
     if total_seq == 0:
         # NOT A RESET — AN OBSERVATION THAT STOPPED. `records_seen` has exactly
         # one writer, `_spawn_and_wait`, and it writes AFTER a clean `wait()`:
@@ -2282,7 +2931,8 @@ def _to_status(
         executed_provider=row.executed_provider,
         executed_account=row.executed_account,
         warning=row.warning,
-        tokens=tokens,
+        tokens=row.tokens,
+        turn_count=row.turn_count,
         marker=row.marker,
         has_result=row.final_text is not None or streams.has_result,
         stdout_mtime_ns=streams.stdout_mtime_ns,
@@ -2392,9 +3042,9 @@ class Supervisor:
     CLOSE_POLL_TIMEOUT_S: Final = 5.0
     DEFAULT_TRANSCRIPT_MAX_BYTES: Final = 256 * 1024
     MAX_TRANSCRIPT_FRAME_TYPES: Final = 16
-    #: U4 — orphan threshold for `mark_orphans`. A run whose owning instance
-    #: has not refreshed `heartbeat_at` within this window is marked
-    #: `orphaned` on the next tick. Default 30 s.
+    #: A stale heartbeat starts an identity check for current owners.
+    #: Dead or removed owners permit orphaning. Legacy owners expire by heartbeat.
+    #: Default 30 s.
     STALE_AFTER_MS: Final = 30 * 1000
     #: U4 — how often the reaper thread wakes. Must be strictly less than
     #: STALE_AFTER_MS so the reaper gets at least one chance per window.
@@ -2403,6 +3053,15 @@ class Supervisor:
     RETAIN_CLOSED_MS: Final = 24 * 60 * 60 * 1000
     #: Maximum closed runs retained in history. Default 1000.
     MAX_CLOSED_RUNS: Final = 1000
+    #: How often the supervisor of a serving door (`reconciles`) stops the empty
+    #: writer slices of its store's ended runs (`reconcile_slices`). Its own
+    #: thread: a systemd call can wait out a daemon-reload, and neither the
+    #: reaper's heartbeat nor a request may wait with it.
+    RECONCILE_INTERVAL_S: float = 60.0
+    #: The sweep stops a slice that no run of its store names only once its group
+    #: is this old. Another store's live run (a test's) can hold an empty slice
+    #: between its start and its launch, never for an hour.
+    UNKNOWN_SLICE_GRACE_S: float = 3600.0
 
     #: A supervisor is SILENT unless the LIVE DOOR arms it. The terminal notice
     #: writes into the session that started this process, and a test suite that
@@ -2420,6 +3079,7 @@ class Supervisor:
     read_grant: bool = False
     #: Only a trusted host constructor can grant native session control.
     host_control: bool = False
+    _read_only: bool = False
 
     def __init__(
         self,
@@ -2431,7 +3091,10 @@ class Supervisor:
         owner: str | None = None,
         read_grant: bool = False,
         host_control: bool = False,
+        reconciles: bool = False,
+        read_only: bool = False,
     ) -> None:
+        self._read_only = read_only
         self.announces_terminal = announces_terminal
         self.owner = owner
         self.read_grant = read_grant
@@ -2439,7 +3102,7 @@ class Supervisor:
         #: `stdio` or `driver` for a v11 process; None for a bare supervisor
         #: (tests, tools) that never enters `sidecar_instances`.
         self._sidecar_kind = sidecar_kind
-        if sidecar_kind is not None:
+        if sidecar_kind is not None and not read_only:
             registry.register_sidecar_instance(sidecar_kind, int(time.time() * 1000))
         #: The slice of each native write run this process drives.
         self._writers: dict[str, AggregateScope] = {}
@@ -2447,6 +3110,9 @@ class Supervisor:
         #: after its disposable home exists, before its first child. A change
         #: at or after it is the writer's (`_writer_stays`).
         self._write_baselines: dict[str, int] = {}
+        #: The agent each admitted run launches as, until its worker ends
+        #: (`_agent_launched`).
+        self._agent_launches: dict[str, _AgentLaunch] = {}
         self._registry = registry
         self._run_root_fd: int | None = None
         run_root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -2478,7 +3144,17 @@ class Supervisor:
             name=self._tick_thread_name(registry),
             daemon=True,
         )
-        self._tick_thread.start()
+        if not read_only:
+            self._tick_thread.start()
+        # Only the door that serves (`_default_supervisor`): a per-call driver
+        # lives for one call, and a bare supervisor (a test's, a tool's) must not
+        # reach the user manager on its own.
+        self._reconcile_thread: threading.Thread | None = None
+        if reconciles and not read_only:
+            self._reconcile_thread = threading.Thread(
+                target=self._reconcile_loop, name="nspawn-slice-reconcile", daemon=True
+            )
+            self._reconcile_thread.start()
 
     @property
     def _run_root(self) -> int | None:
@@ -2516,7 +3192,7 @@ class Supervisor:
         the entries it did reach.
         """
         _require_text("cwd", cwd)
-        roster = _read_roster(cwd)
+        roster = read_roster(cwd)
         return frozenset(provider.name for provider in roster.providers), roster.path
 
     def fast_models(self, cwd: str) -> dict[str, str | None]:
@@ -2528,10 +3204,18 @@ class Supervisor:
         """
         return {
             provider.name: provider.model_fast
-            for provider in _read_roster(cwd).providers
+            for provider in read_roster(cwd).providers
         }
 
     # -- U4 reaper wiring ----------------------------------------------------
+
+    def reap_orphans(self) -> None:
+        """Let a reader record proven loss through the existing writer path."""
+        if self._read_only:
+            with self._lock:
+                now = int(time.time() * 1000)
+                if self._registry.has_orphans(now, self.STALE_AFTER_MS):
+                    self._registry.mark_orphans(now, self.STALE_AFTER_MS)
 
     def _tick(self, now: int | None = None) -> tuple[bool, int]:
         """Refresh this instance's heartbeat and orphan stale runs.
@@ -2612,6 +3296,122 @@ class Supervisor:
                 # Logged, never silent, never fatal.
                 _log_tick_failure(error)
 
+    def _reconcile_loop(self) -> None:
+        """Stop the empty slices of this store's ended runs after each interval.
+        The first pass waits one interval too: a pass reads every controller
+        group (0.3 s for 6982 on SERVER, 2026-10-25), and a door that lives less
+        than that interval (a test's) leaves no slice a later door misses. A
+        failure is logged and the next pass retries."""
+        while not self._stop_tick.wait(self.RECONCILE_INTERVAL_S):
+            try:
+                for outcome in self.reconcile_slices():
+                    if outcome.action == "refused":
+                        _log_slice_failure(outcome.run_id, outcome.unit, outcome.detail)
+            except Exception as error:  # noqa: BLE001 — a best-effort daemon, like the reaper: logged, and the next pass retries
+                _log_tick_failure(error)
+
+    def reconcile_slices(
+        self, *, unknown: bool = False, dry_run: bool = False
+    ) -> tuple[SliceReconcile, ...]:
+        """Stop each empty writer slice whose run ended, and give back the
+        poisoned claim the slice held.
+
+        The slices come from the kernel through `AggregateScope`, the seam tests
+        fake. A slice that holds a process, or whose run has not ended, is never
+        stopped: a terminal phase is one a run never leaves. A slice that no run
+        of this store names is judged only with `unknown`, the operator's sweep,
+        and only once it is `UNKNOWN_SLICE_GRACE_S` old: a test store shares the
+        user manager with the live store, so the automatic pass leaves every
+        slice it cannot name alone.
+        """
+        # The slices first, then the store: a writer's run is admitted before
+        # its slice starts, so a listed slice of this store has its run on record.
+        idle = AggregateScope.idle_units()
+        with self._lock:
+            # A slice made before slices were named for their run is found by
+            # its record; the sweep alone reads every record.
+            recorded = self._registry.writer_units() if unknown else {}
+            poisoned = self._registry.poisoned_writer_units()
+        named = {unit: recorded.get(unit) or writer_run(unit) for unit in idle}
+        named.update(poisoned)
+        with self._lock:
+            runs = self._registry.run_phases(
+                run_id for run_id in named.values() if run_id is not None
+            )
+        young = time.time() - self.UNKNOWN_SLICE_GRACE_S
+        outcomes: list[SliceReconcile] = []
+        for unit, run_id in named.items():
+            made = idle.get(unit, 0.0)
+            known = None if run_id is None else runs.get(run_id)
+            if known is None:
+                if not unknown:
+                    continue
+                run_id = phase = worktree = None
+                if made > young:
+                    outcomes.append(
+                        SliceReconcile(
+                            unit,
+                            None,
+                            None,
+                            "kept",
+                            "no run of this store names it, and it is younger "
+                            f"than {self.UNKNOWN_SLICE_GRACE_S:.0f} s",
+                        )
+                    )
+                    continue
+            else:
+                state, worktree = known
+                phase = state.value
+                if not state.is_terminal() or state is RunPhase.ORPHANED:
+                    outcomes.append(
+                        SliceReconcile(unit, run_id, phase, "kept", f"run is {phase}")
+                    )
+                    continue
+            try:
+                scope = AggregateScope.recorded(unit)
+                if unit not in idle and not scope.is_stopped():
+                    continue
+                if dry_run:
+                    outcomes.append(SliceReconcile(unit, run_id, phase, "would_stop"))
+                    continue
+                scope.close()
+            except ControllerRefusal as refusal:
+                outcomes.append(
+                    SliceReconcile(unit, run_id, phase, "refused", str(refusal))
+                )
+                continue
+            released = False
+            if run_id is not None and worktree is not None:
+                try:
+                    with self._lock:
+                        claim = self._registry.read_claim(worktree)
+                        released = (
+                            claim is not None
+                            and claim.run_id == run_id
+                            and claim.lease_until == POISONED_LEASE_UNTIL
+                            # The stopped, empty slice is the proof that nothing
+                            # of the run still writes: `drained`.
+                            and self._registry.release_claim(
+                                worktree, run_id, drained=True
+                            )
+                        )
+                except (*STORE_ERRORS, RegistryError) as error:
+                    outcomes.append(
+                        SliceReconcile(
+                            unit,
+                            run_id,
+                            phase,
+                            "refused",
+                            "slice stopped; its claim was not released: "
+                            f"{type(error).__name__}: {error}",
+                        )
+                    )
+                    continue
+            outcomes.append(
+                SliceReconcile(unit, run_id, phase, "stopped", None, released)
+            )
+        return tuple(outcomes)
+
     def shutdown(self) -> None:
         """Stop the reaper and drop the instance row.
 
@@ -2624,6 +3424,8 @@ class Supervisor:
             self._stop_tick.set()
         if self._tick_thread.is_alive():
             self._tick_thread.join(timeout=2 * self.TICK_INTERVAL_S)
+        if self._reconcile_thread is not None and self._reconcile_thread.is_alive():
+            self._reconcile_thread.join(timeout=2 * self.TICK_INTERVAL_S)
         # CODEX round-3 blocker 4: signal any live children to release the
         # registry's locks before we drop the instance row. The children
         # own their own run ids; we just nudge them. A SIGKILL is the
@@ -2636,23 +3438,49 @@ class Supervisor:
                     _best_effort_killpg(spawned.identity.pid)
             except (child.ChildIdentityError, OSError) as error:
                 _log_shutdown_failure(f"child {child_id} custody", error)
-        try:
-            self._registry.remove_instance()
-            if self._sidecar_kind is not None:
-                self._registry.remove_sidecar_instance()
-        except (*STORE_ERRORS, OSError) as error:
-            _log_shutdown_failure("remove_instance", error)
+        # Its sessions and commands die with this process, and nothing else would
+        # stop their slices: a session's own close runs on a daemon thread that
+        # the exit ends first, and a command's only on a run close.
+        for run_id, writer in list(self._writers.items()):
+            try:
+                writer.close()
+            except ControllerRefusal as refusal:
+                _log_slice_failure(run_id, writer.unit, refusal)
+        if self._read_only:
+            self._registry.close()
+        else:
+            try:
+                self._registry.remove_instance()
+                if self._sidecar_kind is not None:
+                    self._registry.remove_sidecar_instance()
+            except (*STORE_ERRORS, OSError) as error:
+                _log_shutdown_failure("remove_instance", error)
         fd = getattr(self, "_run_root_fd", None)
         self._run_root_fd = None
         if fd is not None:
             with contextlib.suppress(OSError):
                 os.close(fd)
 
+    def _hold_run_lease(self, call: DriveCall | None, tree: str) -> None:
+        """Call the lease callback of `call` for `tree`, before admission.
+
+        The store directory is the directory of this supervisor's registry file,
+        so the discovery lock is beside the registry that the admission writes.
+        A registry that is not a `Registry` (a test double) has no store
+        directory, writes no store file and takes no lease. A refusal
+        propagates: the path then creates no run directory and no run.
+        """
+        if not isinstance(self._registry, Registry):
+            return
+        if call is None or call.take_lease is None:
+            return
+        call.take_lease(tree, self._registry.path.parent)
+
     def _command_start(self, cwd: str, requested: dict[str, Any]) -> RunAccepted:
         if self.owner is not None or self.read_grant:
             raise InvalidRunRequest("Command sessions require the owner connection.")
         cwd = command_cwd(cwd)
-        selected = command_resolve(requested, _read_roster(cwd), cwd=cwd)
+        selected = command_resolve(requested, read_roster(cwd), cwd=cwd)
         replaces = selected.get("replacesRun")
         if replaces is not None:
             with self._lock:
@@ -2695,6 +3523,7 @@ class Supervisor:
         root_fd = self._run_root
         if root_fd is None:
             raise RunDirectoryError("The command run root is not held.")
+        self._hold_run_lease(call, cwd)
         directory = create_run_directory(self._run_root_path, run_id, dir_fd=root_fd)
         with self._lock:
             self._registry.admit_run(
@@ -2721,6 +3550,8 @@ class Supervisor:
                 self._update_phase(
                     run_id, RunPhase.COMPLETED if code == 0 else RunPhase.FAILED
                 )
+            # The run ended with its shell, and its close may never come.
+            self._stop_idle_writer(run_id)
 
         managed: Command | None = None
         try:
@@ -2746,15 +3577,16 @@ class Supervisor:
                     thread_id=managed.terminal.ident,
                     process_identity=capture_process_identity(managed.terminal.pid),
                 )
-        except (NSpawnError, OSError) as error:
-            with self._lock:
-                self._update_phase(run_id, RunPhase.FAILED, blocked_reason=str(error))
-            writer = self._writers.get(run_id)
-            if writer is not None:
-                writer.close()
-            if managed is not None:
-                ready.set()
-                managed.close()
+        except BaseException as error:
+            try:
+                self._fail_writer_start(run_id, error)
+            finally:
+                if managed is not None:
+                    ready.set()
+                    try:
+                        managed.close()
+                    except ControllerRefusal as refusal:
+                        error.add_note(str(refusal))
             raise
         finally:
             ready.set()
@@ -2766,8 +3598,8 @@ class Supervisor:
             name="nspawn-command-session",
         )
         if call is not None:
-            call.run_id, call.worker = run_id, worker
-        worker.start()
+            call.run_id = run_id
+        start_worker(call, worker)
         return RunAccepted(run_id, RunPhase.RUNNING)
 
     def _command_wait(self, run_id: str, managed: Command) -> None:
@@ -2897,7 +3729,7 @@ class Supervisor:
                 executed_provider=selected.provider,
                 executed_account=(
                     route.codex_account(
-                        route.read_roster(),
+                        route.node_roster(),
                         selected.account_route.removeprefix("codex:"),
                     )[1]
                     if selected.provider == "codex"
@@ -2918,6 +3750,7 @@ class Supervisor:
             root_fd = self._run_root
             if root_fd is None:
                 raise RunDirectoryError("native session run root is not held")
+            self._hold_run_lease(call, os.path.realpath(cwd))
             run_dir = create_run_directory(self._run_root_path, run_id, dir_fd=root_fd)
             with self._lock:
                 self._registry.admit_run(
@@ -2926,6 +3759,13 @@ class Supervisor:
                     now,
                     self.RUN_CLAIM_LEASE_MS,
                     native_context=context,
+                    # The journal reads Claude-client homes only.
+                    journal_context=None
+                    if row.backend is not Backend.CLAUDE
+                    else {
+                        **({} if call is None else call.journal_context or {}),
+                        "home": environment.get("CLAUDE_CONFIG_DIR", context.home),
+                    },
                     activation=selected.data(),
                     effort_profile={
                         "requested": selected.effort,
@@ -2974,16 +3814,20 @@ class Supervisor:
                 args=(run_id, self._session_wait, run_id, managed, stack),
                 daemon=True,
             )
-            if call is not None:
-                call.worker = worker
-            worker.start()
+            start_worker(call, worker)
             return RunAccepted(run_id, RunPhase.PENDING)
-        except BaseException:
+        except BaseException as error:
             try:
-                if managed is not None:
-                    managed.close()
-                elif run_dir is not None:
-                    _cleanup_run_dir(run_dir)
+                try:
+                    self._fail_writer_start(run_id, error)
+                finally:
+                    if managed is not None:
+                        try:
+                            managed.close()
+                        except ControllerRefusal as refusal:
+                            error.add_note(str(refusal))
+                    elif run_dir is not None:
+                        _cleanup_run_dir(run_dir)
             finally:
                 stack.close()
             raise
@@ -3003,8 +3847,16 @@ class Supervisor:
                         kind="lifecycle",
                         payload={"session_exit": code},
                     )
-            if not self._read(run_id).phase.is_terminal():
-                raise SupervisorError("native session ended before its owner turn")
+            # Under the admission lock: a turn that is not on record now meets
+            # the stop and is refused, so a closed run never hides a turn.
+            with managed.input_lock:
+                phase = self._read(run_id).phase
+            if phase.is_terminal():
+                return
+            if phase not in {RunPhase.PENDING, RunPhase.IDLE}:
+                raise NativeSessionEnded("native session ended during its owner turn")
+            if not managed.detached or code is not None:
+                raise NativeSessionEnded("native session ended before its owner turn")
         finally:
             try:
                 managed.close()
@@ -3013,6 +3865,11 @@ class Supervisor:
                 with self._lock:
                     self._sessions.pop(run_id, None)
                     self._children.pop(run_id, None)
+        # The observing host detached with no owner turn in flight. The
+        # activation holds no work, so it closes as the host's own close does,
+        # after `managed.close` reaped its process.
+        if self.close_local(run_id).phase is not RunPhase.CLOSED:
+            raise NativeSessionEnded("native session detached but did not close")
 
     def _session_observer(
         self, run_id: str, selected: SessionActivation, needles: SecretNeedles
@@ -3291,29 +4148,41 @@ class Supervisor:
         read_paths: Sequence[str] | None = None,
         system_prompt: str | None = None,
         native_write: bool = False,
-        orchestrator: Mapping[str, Any] | None = None,
+        red_record: str | None = None,
         inference_profile: dict[str, Any] | None = None,
         original_run: str | None = None,
         activation: dict[str, Any] | None = None,
         session_operation: dict[str, Any] | None = None,
         command: dict[str, Any] | None = None,
         producer: Sequence[str] = (),
+        agent: str | None = None,
+        operations: object = OPERATIONS_OMITTED,
     ) -> RunAccepted:
+        declaration = (
+            None
+            if operations is OPERATIONS_OMITTED
+            else _operation_declaration(operations)
+        )
+        deferred_origin: str | None = None
+        if operations is not OPERATIONS_OMITTED and (
+            command is not None
+            or activation is not None
+            or session_operation is not None
+        ):
+            raise InvalidRunRequest("operations applies only to worker inference turns")
         fresh_turn = (
             command is None
             and activation is None
             and session_operation is None
             and session_id is None
             and original_run is None
-            and orchestrator is None
             and inference_profile is None
             and not native_write
         )
         if producer and not fresh_turn:
             raise InvalidRunRequest(
                 "producer applies to a fresh read-only turn: it takes no session, "
-                "original run, orchestrator, inference profile, command or "
-                "native_write"
+                "original run, inference profile, command or native_write"
             )
         # Only a witness class keeps the producer's route out (`_witness_admit`).
         if producer and execution_class not in _WITNESS_CLASSES:
@@ -3333,11 +4202,11 @@ class Supervisor:
                         execution_class,
                         session_id,
                         system_prompt,
-                        orchestrator,
                         inference_profile,
                         original_run,
                         activation,
                         session_operation,
+                        agent,
                     )
                 )
                 or timeout_ms
@@ -3365,11 +4234,11 @@ class Supervisor:
             if (
                 prompt is not None
                 or inference_profile is not None
-                or orchestrator is not None
                 or native_write
                 or read_only
                 or read_paths
                 or system_prompt is not None
+                or agent is not None
                 or execution_class is not None
                 or session_id is not None
             ):
@@ -3463,42 +4332,30 @@ class Supervisor:
                 )
             if system_prompt is None:
                 system_prompt = original.system_prompt
+        refuse_writer_read_paths(native_write, read_paths)
         if inference_profile is not None:
             try:
                 StructuredInference.from_request(inference_profile)
             except ValueError as error:
                 raise InvalidRunRequest(str(error)) from error
-            if (
-                not read_only
-                or native_write
-                or orchestrator is not None
-                or read_paths
-                or system_prompt is not None
-            ):
+            if not read_only or native_write or read_paths or system_prompt is not None:
                 raise InvalidRunRequest(
                     "inference_profile requires read_only and no additional grants"
                 )
-        if self.read_grant and (
-            not read_only or native_write or orchestrator is not None
-        ):
+        if self.read_grant and (not read_only or native_write):
             raise InvalidRunRequest(
                 "this nSPAWN serves an audit parent (NOTT_NSPAWN_GRANT=read): only "
-                "a caged, read-only dispatch is admitted, with no native_write and "
-                "no orchestrator"
-            )
-        if orchestrator is not None and (native_write or not read_only):
-            raise InvalidRunRequest(
-                "an orchestrator turn is read-only: it takes no native_write and "
-                "no writable worktree"
-            )
-        if orchestrator is not None and read_paths:
-            raise InvalidRunRequest(
-                "an orchestrator turn reads its binding's snapshot and runtime: "
-                "read_paths is refused beside an orchestrator binding"
+                "a caged, read-only dispatch is admitted, with no native_write"
             )
         resume_profile: SessionProfile | None = None
         if session_id is not None:
             with self._lock:
+                if self.owner is not None and self._registry.thread_owners(
+                    session_id
+                ) != {self.owner}:
+                    raise InvalidRunRequest(
+                        "session_id names no run of this node to resume"
+                    )
                 previous = self._registry.inference_origin(session_id)
                 resume_profile = (
                     None
@@ -3512,41 +4369,114 @@ class Supervisor:
                 )
             if resume_profile is not None:
                 assert previous is not None
-                if (
-                    context is None
-                    or previous.phase is not RunPhase.CLOSED
-                    or (
-                        native_write != resume_profile.native_write
-                        or read_only != resume_profile.read_only
-                        or os.path.realpath(cwd) != previous.worktree
-                        or provider
-                        not in (
-                            None,
-                            previous.executed_provider,
-                            previous.executed_account,
-                        )
-                        or model not in (None, previous.model)
-                        or execution_class not in (None, resume_profile.execution_class)
-                        or timeout_ms not in (0, resume_profile.timeout_ms)
-                        or system_prompt != previous.system_prompt
-                        or read_paths is not None
-                        and tuple(read_paths) != resume_profile.read_paths
-                        or context[1].home != str(Path.home())
-                    )
+                if previous.phase not in (
+                    RunPhase.COMPLETED,
+                    RunPhase.FAILED,
+                    RunPhase.CLOSED,
                 ):
+                    raise DuplicateSession(
+                        f"native resume origin is {previous.phase.value}. "
+                        "Read the run with nspawn_run_show. After its process tree "
+                        "is gone, close it explicitly with nspawn_run_close before retrying"
+                    )
+                if resume_profile.config_dir is not None:
+                    # A review of an earlier nSPAWN ran in a config directory of
+                    # its own, which holds its session. This nSPAWN runs no such
+                    # cage and cannot reach that session.
                     raise InvalidRunRequest(
-                        "native resume cannot change its verified origin or profile"
+                        f"run {previous.run_id!r} was a caged review, which nSPAWN "
+                        "no longer runs, so it cannot be resumed"
+                    )
+                # The origin recorded its cwd resolved, and that tree is the one
+                # it resumes in.
+                recorded_cwd = (
+                    None
+                    if context is None or not context[1].read_roots
+                    else context[1].read_roots[0]
+                )
+                if context is None or recorded_cwd is None:
+                    raise InvalidRunRequest(
+                        "native resume has no verified origin: "
+                        + (
+                            "session context is missing"
+                            if context is None
+                            else "cwd is missing"
+                        )
+                    )
+                refuse_writer_read_paths(
+                    native_write,
+                    resume_profile.read_paths or None,
+                )
+                differences = []
+                for field, recorded, requested in (
+                    ("native_write", resume_profile.native_write, native_write),
+                    ("read_only", resume_profile.read_only, read_only),
+                    (
+                        "cwd",
+                        recorded_cwd,
+                        os.path.realpath(cwd),
+                    ),
+                    (
+                        "provider",
+                        previous.executed_account,
+                        previous.executed_account
+                        if provider
+                        in (None, previous.executed_provider, previous.executed_account)
+                        else provider,
+                    ),
+                    (
+                        "model",
+                        previous.model,
+                        previous.model if model is None else model,
+                    ),
+                    (
+                        "execution_class",
+                        resume_profile.execution_class,
+                        resume_profile.execution_class
+                        if execution_class is None
+                        else execution_class,
+                    ),
+                    (
+                        "timeout_ms",
+                        resume_profile.timeout_ms,
+                        resume_profile.timeout_ms if timeout_ms == 0 else timeout_ms,
+                    ),
+                    (
+                        "read_paths",
+                        _canonical_paths(resume_profile.read_paths),
+                        _canonical_paths(
+                            resume_profile.read_paths
+                            if read_paths is None
+                            else read_paths
+                        ),
+                    ),
+                    ("home", context[1].home, str(Path.home())),
+                ):
+                    if recorded != requested:
+                        differences.append(field)
+                if system_prompt != previous.system_prompt:
+                    differences.append("system_prompt")
+                if differences:
+                    # Profile values can contain secrets or private account paths.
+                    raise InvalidRunRequest(
+                        "native resume cannot change its verified origin or profile; "
+                        "changed fields: " + ", ".join(differences) + ". "
+                        "To continue, repeat the recorded profile or start a new run"
                     )
                 sent = self._registry.effort_profile(previous.run_id).sent
                 if effort not in (None, sent):
                     raise InvalidRunRequest(
                         "native resume cannot change its recorded effort"
                     )
+                if previous.phase in (RunPhase.COMPLETED, RunPhase.FAILED):
+                    deferred_origin = previous.run_id
                 provider, model, effort = (
                     previous.executed_account,
                     previous.model,
                     sent,
                 )
+                # The tree it resolved, never what its spelling names now.
+                cwd = recorded_cwd
                 read_paths = resume_profile.read_paths
                 execution_class = resume_profile.execution_class
                 timeout_ms = resume_profile.timeout_ms
@@ -3560,6 +4490,12 @@ class Supervisor:
                 read_only=read_only,
                 session_id=None if resume_profile is not None else session_id,
             )
+        self._writer_red(cwd, native_write, execution_class, red_record)
+        if deferred_origin is not None and not (
+            declaration is not None and declaration.nonempty
+        ):
+            self._close_resume_origin(deferred_origin)
+            deferred_origin = None
         if system_prompt is not None:
             try:
                 validate_system_prompt(system_prompt)
@@ -3577,20 +4513,28 @@ class Supervisor:
             # Read ONCE here and handed to `_admit`: the resolver needs the
             # roster for the cost order, and a dispatch must not read the file
             # twice.
-            roster = _read_roster(cwd)
+            roster = read_roster(cwd)
             if native_write:
                 _refuse_undeclared_writer_root(cwd, roster)
+            # Step 3 of the precedence: the named agent's model and effort, for a
+            # fresh turn that runs as that agent. A continuation keeps its
+            # recorded model and effort; structured inference keeps its own
+            # prompt, so no agent suggests.
+            suggestion = (
+                agent_prompt_read(agent, roster).suggestion
+                if agent is not None
+                and session_id is None
+                and inference_profile is None
+                else AgentSuggestion()
+            )
+            if preferred_model is None:
+                preferred_model = suggestion.model
             class_warning: str | None = None
             class_observation: ClassObservation | None = None
             if execution_class is None and inference_profile is not None:
                 # The door admits a class-less run only as a pinned, tool-free and
                 # read-only inference: no class cap or System1 bounds it.
                 picker.refuse_outside_fast_lane(roster, provider, model, effort)
-            # Read BEFORE System1 may lower the class: confinement is what the
-            # caller asked for, never what a classifier made of the prompt.
-            review_requested = execution_class == "review" or (
-                resume_profile is not None and resume_profile.read_only
-            )
             if (
                 execution_class is not None
                 and not native_write
@@ -3602,18 +4546,30 @@ class Supervisor:
                         execution_class,
                         prompt,
                         roster,
-                        pinned=effort is not None or provider is not None,
                     )
                 )
-            if fresh_turn and (producer or execution_class in _WITNESS_CLASSES):
+            role_writer = (
+                native_write
+                and provider is None
+                and session_id is None
+                and original_run is None
+                and "writer" in roster.roles
+            )
+            if role_writer or (
+                fresh_turn and (producer or execution_class in _WITNESS_CLASSES)
+            ):
                 return self._witness_admit(
                     provider,
                     model,
                     effort,
                     producer,
                     prompt=prompt,
+                    operations=declaration,
+                    deferred_origin=deferred_origin,
                     cwd=cwd,
                     preferred_model=preferred_model,
+                    preferred_provider=suggestion.provider,
+                    preferred_effort=suggestion.effort,
                     execution_class=execution_class,
                     session_id=None,
                     timeout_ms=timeout_ms,
@@ -3621,17 +4577,23 @@ class Supervisor:
                     read_only=read_only,
                     read_paths=granted_read_paths,
                     system_prompt=system_prompt,
+                    agent=agent,
                     roster=roster,
                     class_warning=class_warning,
                     class_observation=class_observation,
-                    review_requested=review_requested,
+                    native_write=native_write,
+                    red_record=red_record,
                 )
             return self._admit(
                 prompt,
                 cwd,
+                operations=declaration,
+                deferred_origin=deferred_origin,
                 provider=provider,
                 model=model,
                 preferred_model=preferred_model,
+                preferred_provider=suggestion.provider,
+                preferred_effort=suggestion.effort,
                 effort=effort,
                 execution_class=execution_class,
                 session_id=session_id,
@@ -3644,9 +4606,9 @@ class Supervisor:
                 class_warning=class_warning,
                 class_observation=class_observation,
                 native_write=native_write,
-                review_requested=review_requested,
-                orchestrator=orchestrator,
+                red_record=red_record,
                 inference_profile=inference_profile,
+                agent=agent,
             )
         except (picker.PickerError, picker.AllProvidersWalled) as refusal:
             if class_warning is None:
@@ -3668,6 +4630,8 @@ class Supervisor:
         branch: str,
         cwd: str,
         *,
+        subject: str | None = None,
+        candidate: str | None = None,
         base: str | None = None,
         provider: str | None = None,
         model: str | None = None,
@@ -3676,18 +4640,36 @@ class Supervisor:
         read_paths: Sequence[str] | None = None,
         system_prompt: str | None = None,
         producer: Sequence[str] = (),
+        agent: str | None = None,
+        operations: object = OPERATIONS_OMITTED,
     ) -> RunAccepted:
+        declaration = (
+            None
+            if operations is OPERATIONS_OMITTED
+            else _operation_declaration(operations)
+        )
         _require_text("branch", branch)
         _require_text("cwd", cwd)
         _validate_review_worktree_branch(cwd, branch)
+        review_prompt = (
+            prompt if prompt is not None else _default_review_prompt(branch, base)
+        )
+        coordinates = _review_coordinates(subject, candidate, review_prompt, cwd)
+        _validate_review_candidate_head(cwd, prompt)
         if system_prompt is not None:
             try:
                 validate_system_prompt(system_prompt)
             except ValueError as error:
                 raise InvalidRunRequest(str(error)) from error
         granted_read_paths = child.validate_read_paths(read_paths, read_only=True)
-        review_prompt = (
-            prompt if prompt is not None else _default_review_prompt(branch, base)
+        if coordinates is not None:
+            _count_review(self._registry, *coordinates)
+        roster = read_roster(cwd)
+        # The named agent's model and effort, as `execute` reads them.
+        suggestion = (
+            AgentSuggestion()
+            if agent is None
+            else agent_prompt_read(agent, roster).suggestion
         )
         return self._witness_admit(
             provider,
@@ -3695,7 +4677,12 @@ class Supervisor:
             effort,
             producer,
             prompt=review_prompt,
+            operations=declaration,
             cwd=cwd,
+            roster=roster,
+            preferred_model=suggestion.model,
+            preferred_provider=suggestion.provider,
+            preferred_effort=suggestion.effort,
             execution_class="review",
             session_id=None,
             timeout_ms=0,
@@ -3705,7 +4692,7 @@ class Supervisor:
             read_only=True,
             read_paths=granted_read_paths,
             system_prompt=system_prompt,
-            review_requested=True,
+            agent=agent,
         )
 
     def _witness_admit(
@@ -3716,13 +4703,14 @@ class Supervisor:
         producer_names: Sequence[str],
         **admit: Any,
     ) -> RunAccepted:
-        """Admit work that witnesses another agent's work, never as that agent.
+        """Admit a witness or a fresh unpinned writer through the owner's order.
 
         Pinned, the route is the caller's: it is refused when it is the
         producer, it runs off the producer's accounts, and it walks only the
         other accounts of that route, which `_admit` builds (none for a pinned
-        account). Unpinned, a review or a verification takes the owner's preference order: each preference that cannot serve now is skipped and the
-        reason is recorded on the run that serves.
+        account). Unpinned, a review or verification takes the owner's order. A native writer takes that order on writable routes only.
+        Each preference that cannot serve now is skipped; the serving run
+        records the reason.
         """
         # The request's own shape first: a preference must never be skipped for
         # what no route could cure.
@@ -3730,14 +4718,28 @@ class Supervisor:
         _require_text("cwd", admit["cwd"])
         roster = admit.pop("roster", None)
         if roster is None:
-            roster = _read_roster(admit["cwd"])
+            roster = read_roster(admit["cwd"])
+        native_write = bool(admit.get("native_write"))
+        if native_write:
+            roster = _writable_routes(roster)
         producer = picker.producer_of(roster, producer_names)
         kept_off = picker.without_accounts(roster, producer.accounts)
         execution_class = admit["execution_class"]
-        order = picker.preferences(roster, execution_class)
+        order = picker.preferences(
+            roster,
+            execution_class,
+            preferred_provider=admit.get("preferred_provider"),
+            # A pinned model wins: the suggestion reorders nothing.
+            preferred_model=None if model is not None else admit.get("preferred_model"),
+            native_write=native_write,
+        )
         # A roster that declares no route has no preference to try: the picker
         # answers it as it always did.
-        if provider is not None or execution_class not in _WITNESS_CLASSES or not order:
+        if (
+            provider is not None
+            or not order
+            or (not native_write and execution_class not in _WITNESS_CLASSES)
+        ):
             if provider is not None and (
                 reason := picker.producer_refusal(roster, producer, provider, model)
             ):
@@ -3761,6 +4763,7 @@ class Supervisor:
                 model=model,
                 effort=effort,
                 admit={**admit, "roster": kept_off},
+                role_writer=native_write and "writer" in roster.roles,
                 deadline_at=None
                 if timeout_ms <= 0
                 else time.monotonic() + timeout_ms / 1000,
@@ -3781,10 +4784,20 @@ class Supervisor:
                 lifts stopped at least one of them.
             picker.PickerError: no preference can serve, and no wall stopped any.
         """
+        self._writer_red(
+            failover.admit["cwd"],
+            bool(failover.admit.get("native_write")),
+            failover.admit.get("execution_class"),
+            failover.admit.get("red_record"),
+        )
         roster: Roster = failover.admit["roster"]
         while failover.remaining:
             preference = failover.remaining.pop(0)
-            model = failover.model or preference.model
+            model = (
+                failover.model
+                if preference.role
+                else failover.model or preference.model
+            )
             step = isinstance(preference, _AccountStep)
             # A step's route is a provider name: only its provider-level
             # refusals apply here, never an account alias that equals it. The
@@ -3849,7 +4862,11 @@ class Supervisor:
                     return self._admit(
                         provider=preference.route,
                         model=model,
-                        effort=failover.effort or preference.effort,
+                        effort=failover.effort
+                        if preference.role
+                        else failover.effort or preference.effort,
+                        role_model=preference.model if preference.role else None,
+                        role_effort=preference.effort if preference.role else None,
                         producer=failover.producer,
                         failover=replace(
                             failover,
@@ -3859,17 +4876,22 @@ class Supervisor:
                         ),
                         **admit,
                     )
-                except _ROUTE_REFUSALS as refusal:
-                    if (
-                        isinstance(refusal, picker.AllProvidersWalled)
-                        and refusal.nearest_reset is not None
-                    ):
-                        failover.resets.append(refusal.nearest_reset)
+                except ROUTE_REFUSALS as refusal:
                     reason = (
                         PRODUCER_MODEL
                         if str(refusal) == PRODUCER_MODEL
                         else f"{type(refusal).__name__}: {refusal}"
                     )
+                    if (
+                        isinstance(refusal, picker.AllProvidersWalled)
+                        and refusal.nearest_reset is not None
+                    ):
+                        failover.resets.append(refusal.nearest_reset)
+                        # Each walled route says when it serves again, not only
+                        # the nearest one: the caller names every route it waits on.
+                        reason += "; resets " + time.strftime(
+                            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(refusal.nearest_reset)
+                        )
             failover.skipped.append(f"{preference} ({reason})")
         message = (
             f"no {failover.execution_class} preference can serve now: "
@@ -4063,7 +5085,119 @@ class Supervisor:
             )
         return "the writer's claim is not its own to give, so nSPAWN did not move it"
 
-    def _admit(
+    def _close_resume_origin(self, run_id: str) -> None:
+        closed = self.close(run_id)
+        if (
+            closed.phase is not RunPhase.CLOSED
+            or closed.tree.survivors
+            or not closed.claim_released
+        ):
+            raise RunCloseRejected(
+                f"native resume origin {run_id!r} has not released its process tree and worktree claim"
+            )
+
+    def _writer_red(
+        self,
+        cwd: str,
+        native_write: bool,
+        execution_class: str | None,
+        locator: str | None,
+    ) -> WriterRedReceipt | None:
+        if not native_write:
+            return None
+        head: str | None = None
+        if execution_class not in ("implementation", "verification"):
+            role = execution_class if execution_class is not None else "unresolved"
+            try:
+                head = red_witness.clone_head(Path(cwd))
+            except red_witness.RedRefused:
+                head = None
+            safe_role = role if re.fullmatch(r"[A-Za-z0-9_]{1,64}", role) else "unknown"
+            raise self._red_refusal(
+                cwd, head, locator, "unsupported native writer class " + safe_role
+            )
+        if execution_class == "verification":
+            return None
+        try:
+            head = red_witness.clone_head(Path(cwd))
+            if locator is None:
+                raise red_witness.RedRefused("missing RED record")
+            bundle = red_witness.read_bundle(Path(cwd), locator, base=head)
+        except red_witness.RedRefused as error:
+            raise self._red_refusal(cwd, head, locator, str(error)) from error
+        return WriterRedReceipt(
+            bundle.record_path,
+            hashlib.sha256(bundle.record_bytes).hexdigest(),
+            bundle.tests_path,
+            hashlib.sha256(bundle.tests_bytes).hexdigest(),
+            bundle.unit,
+            bundle.base,
+            tuple(test.id for test in bundle.tests),
+        )
+
+    def _red_refusal(
+        self, cwd: str, head: str | None, locator: str | None, cause: str
+    ) -> InvalidRunRequest:
+        record = ".nott/plans/writer-red/red/unit.json"
+        tests = ".nott/plans/writer-red/tests/unit.md"
+        if locator is not None:
+            try:
+                tests, _ = red_witness.bundle_paths(locator)
+                record = locator
+            except red_witness.RedRefused:
+                pass
+        branch = None if head is None else red_witness.origin_branch(Path(cwd), head)
+        recovery = "Save the unit's judged test set at " + tests + ". "
+        if head is not None and branch is not None:
+            recovery += (
+                "Run nott plan test "
+                + tests
+                + " --base "
+                + head
+                + " --branch "
+                + branch
+                + ". "
+            )
+        else:
+            recovery += (
+                "Fetch or publish the existing branch containing clone HEAD before "
+                "running nott plan test at that HEAD. "
+            )
+        # The parser's details may contain judged source; only fixed cause categories leave admission.
+        category = "RED bundle is invalid; run the producer on the current judged set"
+        if cause.startswith("unsupported native writer class "):
+            category = cause + "; implementation work must use class=implementation"
+        elif "base" in cause or "HEAD" in cause:
+            category = (
+                "RED record base differs from clone HEAD or HEAD observation failed"
+            )
+            bases = re.findall(r"\b[0-9a-f]{40}\b", cause)
+            if bases:
+                category += ": " + bases[0]
+        elif "missing" in cause:
+            category = "missing RED record"
+        elif "path" in cause or "file" in cause or "read" in cause:
+            category = "RED path must contain readable bounded regular files inside the clone plan tree"
+        elif "digest" in cause:
+            category = "RED judged-set digest differs"
+        elif any(word in cause for word in ("refused", "witness", "exit")):
+            category = "RED witnesses are incomplete or non-RED; repair the judged set so every selected test observes its intended failure"
+        return InvalidRunRequest(
+            "nspawn_run_start refused: cannot start an implementation writer. "
+            + category
+            + ". Clone HEAD "
+            + (head or "unavailable")
+            + ". "
+            + recovery
+            + "Retry with class=implementation and red_record="
+            + record
+            + "."
+        )
+
+    def _admit(self, *args: Any, **kwargs: Any) -> RunAccepted:
+        return self._admit_attempt(*args, **kwargs)
+
+    def _admit_attempt(
         self,
         prompt: str,
         cwd: str,
@@ -4082,13 +5216,20 @@ class Supervisor:
         class_warning: str | None = None,
         class_observation: ClassObservation | None = None,
         native_write: bool = False,
-        review_requested: bool = False,
+        red_record: str | None = None,
         preferred_model: str | None = None,
-        orchestrator: Mapping[str, Any] | None = None,
+        preferred_provider: str | None = None,
+        preferred_effort: str | None = None,
+        role_model: str | None = None,
+        role_effort: str | None = None,
         inference_profile: dict[str, Any] | None = None,
         producer: picker.Producer = _NO_PRODUCER,
         failover: _Failover | None = None,
+        agent: str | None = None,
+        operations: operations.Declaration | None = None,
+        deferred_origin: str | None = None,
     ) -> RunAccepted:
+        writer_red = self._writer_red(cwd, native_write, execution_class, red_record)
         _require_text("prompt", prompt)
         _require_text("cwd", cwd)
         if not read_only and not native_write:
@@ -4097,25 +5238,18 @@ class Supervisor:
         swarm = swarm_call is not None and _is_swarm(swarm_call.group)
         if swarm and timeout_ms <= 0:
             timeout_ms = SWARM_TIMEOUT_MS
-        binding = (
-            None
-            if orchestrator is None
-            else native.OrchestratorBinding.from_request(
-                orchestrator, snapshot=os.path.realpath(cwd)
-            )
-        )
         # The declared config decides the roster; cwd
         # never selects a project file; the declared config is authoritative.
         # `review` and the internal re-picks keep the old path and read it here.
         if roster is None:
-            roster = _read_roster(cwd)
+            roster = read_roster(cwd)
         if self.owner is not None and session_id is not None:
             # Every run that recorded the session, and at least one, is this node's.
             with self._lock:
                 owners = self._registry.thread_owners(session_id)
             if owners != {self.owner}:
                 raise InvalidRunRequest(
-                    f"session_id {session_id!r} names no run of this node to resume"
+                    "session_id names no run of this node to resume"
                 )
         epoch = time.time()
         now_s = int(epoch)
@@ -4170,7 +5304,6 @@ class Supervisor:
                     and inference_profile != retained
                     or not read_only
                     or native_write
-                    or binding is not None
                     or read_paths
                     or system_prompt is not None
                     or os.path.realpath(cwd) != previous.worktree
@@ -4205,22 +5338,50 @@ class Supervisor:
                 )
         if session_id is not None and origin is not None:
             provider = origin[0].executed_account
-        picked = picker.pick_execution(
-            roster,
-            now_s,
-            requested_provider=provider,
-            requested_model=model,
-            requested_effort=effort,
-            execution_class=execution_class,
-            preferred_model=preferred_model,
-            account_load=account_load,
-            account_use=account_use,
-            producer=None,
-            provider_walls=provider_walls,
-            account_walls=account_walls,
-            read_paths=read_paths,
-            system_prompt=system_prompt,
-        )
+        if native_write and (
+            provider is None or any(p.name == provider for p in roster.providers)
+        ):
+            # Its walk below reads the same roster, so it never meets them either.
+            roster = _writable_routes(roster, pinned=provider)
+        # The walk and a later preference read the declared roster: each
+        # admission keeps off what it cannot launch, by the same words.
+        declared = roster
+        roster, absent = _with_credentials(roster, provider, os.environ)
+        try:
+            picked = picker.pick_execution(
+                roster,
+                now_s,
+                requested_provider=provider,
+                requested_model=model,
+                requested_effort=effort,
+                execution_class=execution_class,
+                preferred_model=preferred_model,
+                preferred_provider=preferred_provider,
+                preferred_effort=preferred_effort,
+                role_model=role_model,
+                role_effort=role_effort,
+                account_load=account_load,
+                account_use=account_use,
+                producer=None,
+                provider_walls=provider_walls,
+                account_walls=account_walls,
+                read_paths=read_paths,
+                system_prompt=system_prompt,
+            )
+        except picker.AllProvidersWalled as walled:
+            if absent is None:
+                raise
+            raise picker.AllProvidersWalled(
+                f"{walled.message}; {absent}", walled.nearest_reset
+            ) from walled
+        except picker.PickerError as unpicked:
+            if absent is None:
+                raise
+            raise picker.PickerError(
+                f"{unpicked.message}; {absent}", unpicked.entry
+            ) from unpicked
+        if absent is not None:
+            picked = replace(picked, warning=_composed_warning(picked.warning, absent))
         # The model is known only now: a route's default can be the producer's.
         if picker.is_producer_model(picked.executed_provider, picked.model, producer):
             raise InvalidRunRequest(PRODUCER_MODEL)
@@ -4233,9 +5394,13 @@ class Supervisor:
             )
         # By the backend the picker resolved (or the resumed session recorded),
         # never by a provider's name, and before any row, directory or child.
-        if not native.agy_cage_available() and (
-            picked.executed_provider.kind == "agy"
-            or (origin is not None and origin[0].backend is Backend.AGY)
+        if (
+            read_only
+            and not native.agy_cage_available()
+            and (
+                picked.executed_provider.kind == "agy"
+                or (origin is not None and origin[0].backend is Backend.AGY)
+            )
         ):
             raise InvalidRunRequest(AGY_LAUNCH_REFUSAL)
         # U7 — typed refusal at the supervisor boundary. Picker has already
@@ -4244,73 +5409,55 @@ class Supervisor:
         # ALSO names `spawn.toml` in the error message — the operator who
         # wrote the roster knows where to fix it.
         roster.refuse_unservable_spawn(picked.executed_provider.name, picked.model)
-        if binding is not None and picked.executed_provider.kind != "codex":
-            raise InvalidRunRequest(
-                "an orchestrator binding requires a codex route; the picker "
-                f"resolved a {picked.executed_provider.kind} one"
-            )
         if native_write and "write" not in CAPABILITIES[picked.executed_provider.kind]:
             raise InvalidRunRequest(
                 f"native_write is not implemented on a {picked.executed_provider.kind} "
                 "route"
             )
-        if native_write and picked.executed_provider.kind == "claude":
-            _refuse_proxied_claude_writer(roster, picked)
-        if (
-            review_requested
-            and read_only
-            and inference_profile is None
-            and session_id is not None
-            and picked.executed_provider.kind == "claude"
-            and not _picked_route_elsewhere(roster, picked)
-            and (
-                origin is None
-                or self._registry.session_profile(origin[0].run_id) is None
-            )
-        ):
-            raise InvalidRunRequest(
-                "a caged Claude review cannot resume a session_id: the cage starts "
-                "a fresh session"
-            )
-        # The cage composes its own env and argv; every other Claude child
-        # receives the roster's, which would replace a caller-pinned value. Only a
-        # Claude pick resolves the roster here: a native route never reads it.
-        if picked.executed_provider.kind == "claude" and not (
-            native_write
-            or (
-                read_only
-                and review_requested
-                and inference_profile is None
-                and not _picked_route_elsewhere(roster, picked)
-            )
-        ):
+        # A Claude child receives the roster's env, which would replace a
+        # caller-pinned value. Only a Claude pick resolves the roster here: a
+        # native route never reads it.
+        if picked.executed_provider.kind == "claude":
             _refuse_roster_override(roster, picked)
         if origin is not None:
-            # Read for EVERY native resume, not only a bound request: whether the
-            # origin was admitted with a binding is the store's answer, and a
-            # request that omits one cannot be allowed to decide it.
+            # Read for EVERY native resume: an origin admitted as an orchestrator
+            # turn, before #1297 deleted the private MCP it launched, is refused.
             with self._lock:
-                recorded = self._registry.orchestrator_binding(origin[0].run_id)
-            if recorded is None and binding is not None:
+                bound = self._registry.orchestrator_bound(origin[0].run_id)
+            if bound:
                 raise InvalidRunRequest(
-                    "an unbound origin cannot be resumed with an orchestrator "
-                    f"binding: run {origin[0].run_id!r} was admitted with none"
+                    f"run {origin[0].run_id!r} was admitted as an orchestrator turn, "
+                    "which nSPAWN no longer runs, so it cannot be resumed"
                 )
-            if recorded is not None and binding is None:
-                raise InvalidRunRequest(
-                    "a bound origin cannot be resumed without its orchestrator "
-                    f"binding: run {origin[0].run_id!r} was admitted with one, and "
-                    "a resume states the identical binding or is refused"
-                )
-            if (
-                recorded is not None
-                and binding is not None
-                and (field := binding.resume_refusal(recorded)) is not None
+        # After the pick: a Claude route runs as an agent, the one the start
+        # names, else the one its continuation recorded, else worker. AGY takes
+        # no per-run prompt, and a roster with no plugin root has no agent file
+        # to read: both run as before and record none. A Codex route runs as
+        # before. Structured inference keeps its own prompt.
+        launch_prompt = system_prompt
+        agent_record: dict[str, Any] | None = None
+        agent_tools: tuple[str, ...] | None = None
+        if inference_profile is None:
+            if picked.executed_provider.kind == "claude" and (
+                agent is not None or roster.defaults.plugin_root is not None
             ):
-                raise InvalidRunRequest(
-                    f"an orchestrator resume cannot change the {field} its origin "
-                    "recorded"
+                read = agent_prompt_read(
+                    agent or self._continued_agent(session_id, origin) or DEFAULT_AGENT,
+                    roster,
                 )
+                launch_prompt = _composed_prompt(
+                    read, system_prompt, cwd if native_write else None
+                )
+                agent_record = {
+                    "agent": read.name,
+                    "skills": [skill.name for skill in read.skills],
+                }
+                agent_tools = read.tools
+                if read.suggestion != AgentSuggestion():
+                    # What the agent file suggested; the row holds what ran.
+                    agent_record["suggestion"] = asdict(read.suggestion)
+            elif picked.executed_provider.kind in ("claude", "agy") and agent is None:
+                agent_record = {"agent": "none", "skills": []}
         launch: native.NativeLaunch | None = None
         previous_usage: dict[str, int] = {}
         if origin is not None and (
@@ -4338,9 +5485,8 @@ class Supervisor:
                 system_prompt=system_prompt,
                 effort=picked.effort,
                 run_id=run_id,
-                orchestrator=binding,
                 disposable_root=None
-                if binding is None and inference_profile is None
+                if inference_profile is None
                 else native.orchestrator_disposable_root(self._run_root_path / run_id),
                 inference_profile=None
                 if inference_profile is None
@@ -4394,15 +5540,49 @@ class Supervisor:
             else (None if launch is not None else claude_child.mint_session_id())
         )
         resume = session_id is not None
-        caged_review = (
-            read_only
-            and review_requested
-            and inference_profile is None
-            and not _picked_route_elsewhere(roster, picked)
+        # Notes of this run alone: a successor never inherits them.
+        route_notes: list[str] = []
+        endpoint = _picked_endpoint(roster, picked)
+        if (
+            failover is not None
+            and failover.skipped
+            and picked.executed_provider.kind == "claude"
+            and endpoint is not None
+            and claude_restricted.private_endpoint(endpoint) is not None
+        ):
+            # The order put it last for a reason: the reader of its answer knows.
+            route_notes.append(
+                f"{failover.execution_class} ran on {picked.executed_provider.name}, "
+                "a route on a local or private endpoint: no route before it in the "
+                "order can serve now"
+            )
+        row_warning = (
+            picked.warning
+            if class_warning is None
+            else _composed_warning(class_warning, picked.warning or "")
         )
+        for note in route_notes:
+            row_warning = _composed_warning(row_warning, note)
         session_profile: SessionProfile | None = None
         session_context: NativeSessionContext | None = None
-        if native_write or caged_review:
+        # A native write records its grants as the caller spelled them. A
+        # read-only Claude run on an account records its profile too, its paths
+        # resolved, so that its session resumes on the cwd, read_paths and
+        # account it recorded. A route with no account keeps no history a resume
+        # can find, and a path no context can hold leaves it without a
+        # continuation.
+        recorded_paths = read_paths if native_write else _canonical_paths(read_paths)
+        recorded_roots = (
+            tuple(dict.fromkeys((cwd, *read_paths)))
+            if native_write
+            else _canonical_paths((cwd, *read_paths))
+        )
+        if native_write or (
+            read_only
+            and inference_profile is None
+            and picked.executed_account is not None
+            and _recordable_roots(recorded_roots)
+        ):
             with self._lock:
                 retained_profile = (
                     None
@@ -4415,26 +5595,29 @@ class Supervisor:
                 else retained_profile.original_run_id,
                 native_write=native_write,
                 read_only=read_only,
-                read_paths=read_paths,
+                read_paths=recorded_paths,
                 execution_class=execution_class,
                 timeout_ms=timeout_ms,
-                config_dir=(
-                    str(self._run_root_path / run_id / claude_restricted.CONFIG_DIR)
-                    if picked.executed_provider.kind == "claude"
-                    and retained_profile is None
-                    else None
-                    if retained_profile is None
-                    else retained_profile.config_dir
-                ),
+                config_dir=None
+                if retained_profile is None
+                else retained_profile.config_dir,
             )
             if launch is None:
                 session_context = NativeSessionContext(
                     str(Path.home()),
-                    read_roots=tuple(dict.fromkeys((cwd, *read_paths))),
+                    read_roots=recorded_roots,
                 )
+        operation_admission = None
+        if (
+            deferred_origin is not None
+            and operations is not None
+            and operations.nonempty
+        ):
+            self._close_resume_origin(deferred_origin)
         root_fd = self._run_root
         if root_fd is None:
             raise RunDirectoryError("run-root descriptor is not held")
+        self._hold_run_lease(call, cwd)
         run_dir = create_run_directory(self._run_root_path, run_id, dir_fd=root_fd)
         try:
             row = RunRow(
@@ -4456,9 +5639,7 @@ class Supervisor:
                 requested_provider=requested_provider,
                 executed_provider=picked.executed_provider.name,
                 executed_account=picked.executed_account,
-                warning=picked.warning
-                if class_warning is None
-                else _composed_warning(class_warning, picked.warning or ""),
+                warning=row_warning,
                 system_prompt=system_prompt,
                 group_name=None if call is None else call.group,
                 owner=self.owner,
@@ -4466,6 +5647,35 @@ class Supervisor:
             notice = None if call is None else call.notice()
             # `picked.effort` is the one value every launcher below is handed.
             effort_profile = {"requested": effort, "sent": picked.effort}
+            # The Claude client's home: the journal reads Claude-client homes only.
+            journal_context: dict[str, Any] | None = None
+            if launch is None:
+                journal_context = dict(
+                    {} if call is None else call.journal_context or {}
+                )
+                if (
+                    session_profile is not None
+                    and session_profile.config_dir is not None
+                ):
+                    journal_home = session_profile.config_dir
+                else:
+                    account = picked.executed_provider.accounts.get(
+                        picked.executed_account or ""
+                    )
+                    journal_home = str(claude_config_dir(account))
+                    if account is None or account.home is None:
+                        declared_env = child.declared_env(
+                            picked.executed_provider,
+                            picked.executed_account,
+                            defaults_env=roster.env_of(picked.executed_provider),
+                            plugin_root=None
+                            if roster.defaults.plugin_root is None
+                            else expand_home(roster.defaults.plugin_root),
+                        )
+                        journal_home = declared_env.get(
+                            "CLAUDE_CONFIG_DIR", journal_home
+                        )
+                journal_context["home"] = str(Path(journal_home).expanduser().resolve())
             with self._lock:
                 if launch is None:
                     self._registry.admit_run(
@@ -4481,6 +5691,9 @@ class Supervisor:
                         inference_home=inference_home,
                         native_context=session_context,
                         session_profile=session_profile,
+                        writer_red=writer_red,
+                        operation_admission=operation_admission,
+                        journal_context=journal_context,
                     )
                 else:
                     self._registry.admit_run(
@@ -4490,17 +5703,17 @@ class Supervisor:
                         self.RUN_CLAIM_LEASE_MS,
                         native_context=launch.context,
                         session_profile=session_profile,
+                        writer_red=writer_red,
+                        operation_admission=operation_admission,
                         notice=notice,
                         run_key=None if call is None else call.run_key,
                         class_observation=class_observation,
                         effort_profile=effort_profile,
                         inference_profile=inference_profile,
-                        # The binding names the profile THIS run starts with, and
-                        # lands in the same transaction as its row.
-                        orchestrator_binding=None
-                        if binding is None
-                        else binding.payload(native.orchestrator_profile_id(run_id)),
                     )
+        except WriterRedRefused as error:
+            _cleanup_run_dir(run_dir)
+            raise self._red_refusal(cwd, error.head, red_record, str(error)) from error
         except AdmissionHeldRow as error:
             _cleanup_run_dir(run_dir)
             refused = AdmissionHeld(str(error))
@@ -4526,9 +5739,8 @@ class Supervisor:
             call.run_id = run_id
         if (
             session_id is None
-            and binding is None
             and inference_profile is None
-            and (failover is None or swarm)
+            and (failover is None or swarm or failover.role_writer)
         ):
             chosen = picked.executed_provider
             accounts: list[picker.Preference] = [
@@ -4572,14 +5784,17 @@ class Supervisor:
                         "claim_worktree": claim_worktree,
                         "read_only": read_only,
                         "native_write": native_write,
+                        "red_record": red_record,
                         "read_paths": read_paths,
                         "system_prompt": system_prompt,
-                        "roster": roster,
+                        "roster": declared,
                         "class_warning": class_warning,
-                        "review_requested": review_requested,
                         "preferred_model": preferred_model,
-                        "orchestrator": orchestrator,
+                        "preferred_provider": preferred_provider,
+                        "preferred_effort": preferred_effort,
                         "inference_profile": inference_profile,
+                        "agent": agent,
+                        "operations": operations,
                     },
                     deadline_at=None,
                     current=route,
@@ -4607,6 +5822,13 @@ class Supervisor:
                 # Nowhere to go (a pinned account): the run ends as before, and
                 # a store fault at its end is never queued for a retry.
                 failover = None
+        if agent_record is not None:
+            # Before the worker starts: its launch records the agent and, on a
+            # Claude route, writes the composed text to the prompt file.
+            with self._lock:
+                self._agent_launches[run_id] = _AgentLaunch(
+                    agent_record, launch_prompt, agent_tools
+                )
         if failover is not None:
             # Before the worker starts: its terminal write may come at once.
             with self._lock:
@@ -4625,17 +5847,18 @@ class Supervisor:
                     timeout_ms,
                     previous_usage,
                     native_write,
-                    binding,
                     inference_profile,
                 ),
                 daemon=True,
             )
-            worker.start()
-            if call is not None:
-                call.worker = worker
-            return RunAccepted(run_id=run_id, phase=RunPhase.SPAWNING)
+            start_worker(call, worker)
+            return RunAccepted(
+                run_id=run_id,
+                phase=RunPhase.SPAWNING,
+                operation_admission=operation_admission,
+            )
         assert thread_id is not None
-        if native_write or caged_review:
+        if native_write:
             worker = threading.Thread(
                 target=self._guarded_worker,
                 args=(
@@ -4649,13 +5872,15 @@ class Supervisor:
                     system_prompt,
                     timeout_ms,
                 ),
-                kwargs={"writable": native_write, "read_paths": read_paths},
+                kwargs={"read_paths": read_paths},
                 daemon=True,
             )
-            worker.start()
-            if call is not None:
-                call.worker = worker
-            return RunAccepted(run_id=run_id, phase=RunPhase.SPAWNING)
+            start_worker(call, worker)
+            return RunAccepted(
+                run_id=run_id,
+                phase=RunPhase.SPAWNING,
+                operation_admission=operation_admission,
+            )
         worker = threading.Thread(
             target=self._guarded_worker,
             args=(
@@ -4677,15 +5902,80 @@ class Supervisor:
             ),
             daemon=True,
         )
-        worker.start()
-        if call is not None:
-            call.worker = worker
-        return RunAccepted(run_id=run_id, phase=RunPhase.SPAWNING)
+        start_worker(call, worker)
+        return RunAccepted(
+            run_id=run_id,
+            phase=RunPhase.SPAWNING,
+            operation_admission=operation_admission,
+        )
 
     # -- the worker: one child, driven start to terminal ----------------------
 
+    def _note_worker_failure(self, run_id: str, error: BaseException) -> None:
+        """Keep bounded exception chains without messages, source text or locals."""
+        lines = [f"nspawn.worker: {run_id}: worker failed: {type(error).__name__}"]
+        pending = [(error, "exception")]
+        seen: set[int] = set()
+        while pending:
+            current, relation = pending.pop()
+            if id(current) in seen:
+                continue
+            seen.add(id(current))
+            lines.append(f"{relation}: {type(current).__name__}")
+            lines.append("Traceback (most recent call last):")
+            for frame, line in traceback.walk_tb(current.__traceback__):
+                code = frame.f_code
+                lines.append(
+                    f"  File {code.co_filename!r}, line {line}, in {code.co_name}"
+                )
+            lines.append(type(current).__name__)
+            if current.__context__ is not None:
+                pending.append((current.__context__, "context"))
+            if current.__cause__ is not None:
+                pending.append((current.__cause__, "cause"))
+        entry = ("\n".join(lines) + "\n").encode("utf-8")
+        cut = b"nspawn.worker: cut older text\n"
+        try:
+            with self._lock:
+                directory = self._open_run_directory(run_id)
+                try:
+                    fd = _open_regular(
+                        directory, WORKER_ERRORS_FILE, os.O_RDWR | os.O_CREAT
+                    )
+                finally:
+                    os.close(directory)
+                with open(fd, "r+b") as sink:
+                    if os.fstat(fd).st_size + len(entry) > WORKER_ERRORS_MAX_BYTES:
+                        budget = WORKER_ERRORS_MAX_BYTES - len(cut)
+                        if len(entry) > budget:
+                            header = (lines[0] + "\n").encode("utf-8")
+                            tail = entry[-(budget - len(header)) :]
+                            entry = header + tail.decode("utf-8", "ignore").encode(
+                                "utf-8"
+                            )
+                        entry = cut + entry
+                        sink.seek(0)
+                        sink.write(entry)
+                        sink.truncate()
+                    else:
+                        sink.seek(0, os.SEEK_END)
+                        sink.write(entry)
+        except OSError as fault:
+            # Do not format the fault: its context can contain the original secret.
+            with contextlib.suppress(OSError, ValueError):
+                print(
+                    f"nspawn.worker: {run_id}: diagnostic failed: "
+                    f"{type(fault).__name__}; original {type(error).__name__}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
     def _guarded_worker(
-        self, run_id: str, drive: Callable[..., None], *args: Any, **kwargs: Any
+        self,
+        run_id: str,
+        drive: Callable[..., None],
+        *args: Any,
+        **kwargs: Any,
     ) -> None:
         """Run one worker; an exception none of its clauses expected ends the
         run FAILED with a named reason instead of leaving it live until its
@@ -4693,7 +5983,7 @@ class Supervisor:
         try:
             drive(*args, **kwargs)
         except Exception as error:  # noqa: BLE001 - logged with traceback, and the run ends FAILED naming it
-            _log_tick_failure(error)
+            self._note_worker_failure(run_id, error)
             if run_id in self._unpublished:
                 return  # its real terminal waits for the retry; never replace it
             try:
@@ -4705,8 +5995,14 @@ class Supervisor:
                 live = True  # unread; `_update_phase` re-reads and fences an ended row
             if live:
                 # The type only, as `_fail_run` records: the text may carry
-                # vendor bytes. Through `_publish_terminal`, a store refusal
+                # vendor bytes. `NativeSessionEnded` text is an nSPAWN
+                # constant, so it stays. Through `_publish_terminal`, a store refusal
                 # waits in `_unpublished` for the driver's retry.
+                reason = (
+                    str(error)
+                    if isinstance(error, NativeSessionEnded)
+                    else f"WorkerDied: {type(error).__name__}"
+                )
                 self._publish_terminal(
                     run_id,
                     terminal.TerminalClassification(
@@ -4716,9 +6012,12 @@ class Supervisor:
                         marker=None,
                         provider_wall=None,
                         account_wall=None,
-                        failure_reason=f"WorkerDied: {type(error).__name__}",
+                        failure_reason=reason,
                     ),
                 )
+        finally:
+            with self._lock:
+                self._agent_launches.pop(run_id, None)
 
     @contextlib.contextmanager
     def _launching(self, run_id: str) -> Iterator[None]:
@@ -4728,6 +6027,58 @@ class Supervisor:
             if current is None or current.phase.is_terminal():
                 raise RunClosedBeforeSpawn("run closed before its child started")
             yield
+
+    def run_agent(self, run_id: str) -> dict[str, Any] | None:
+        """The `{agent, skills}` the run's launch recorded, or None for a run
+        launched before agents were recorded."""
+        with self._lock:
+            events = self._registry.read_run_events(run_id)
+        recorded = [
+            event.payload
+            for event in events
+            if event.kind == "lifecycle"
+            and isinstance(event.payload, dict)
+            and "agent" in event.payload
+        ]
+        return None if not recorded else dict(recorded[-1])
+
+    def _agent_launched(
+        self, run_id: str, system_prompt: str | None = None
+    ) -> str | None:
+        """Record, once, the agent this run launches as, as `inference_home` is
+        recorded; and the text its Claude child runs with: the composed one, else
+        `system_prompt`."""
+        with self._lock:
+            launched = self._agent_launches.get(run_id)
+        if launched is None:
+            return system_prompt
+        if self.run_agent(run_id) is None:
+            with self._lock:
+                self._registry.append_run_event(
+                    run_id,
+                    at=int(time.time() * 1000),
+                    kind="lifecycle",
+                    payload=launched.record,
+                )
+        return system_prompt if launched.prompt is None else launched.prompt
+
+    def _continued_agent(
+        self,
+        session_id: str | None,
+        origin: tuple[RunRow, NativeSessionContext] | None,
+    ) -> str | None:
+        """The agent a continuation's last run recorded: it composes that one again."""
+        if session_id is None:
+            return None
+        if origin is None:
+            with self._lock:
+                previous = self._registry.inference_origin(session_id)
+        else:
+            previous = origin[0]
+        recorded = None if previous is None else self.run_agent(previous.run_id)
+        if recorded is None or recorded["agent"] == "none":
+            return None
+        return str(recorded["agent"])
 
     def _drive_native_run(
         self,
@@ -4739,9 +6090,9 @@ class Supervisor:
         timeout_ms: int,
         previous_usage: dict[str, int],
         native_write: bool = False,
-        orchestrator: native.OrchestratorBinding | None = None,
         inference_profile: dict[str, Any] | None = None,
     ) -> None:
+        self._agent_launched(row.run_id)
         needles = native.NativeRedactor(launch)
         started_at = time.monotonic()
         timeout = timeout_ms / 1000 if timeout_ms > 0 else None
@@ -4768,34 +6119,18 @@ class Supervisor:
             match row.backend:
                 case Backend.CODEX:
                     with contextlib.ExitStack() as resources:
-                        scope: ExecutorScope | None = None
                         tools: dict[str, str] | None = None
-                        # A native writer and an orchestrator turn both run under
-                        # the run's own aggregate scope. For the orchestrator the
-                        # custody is not about writes: the vendor's MCP children
-                        # run in their own process group and session (codex
-                        # 0.157.1, measured 2026-10-01), so a process-group kill
-                        # of the app-server leaves them alive and the only thing
-                        # that reaches every descendant is the run's cgroup.
-                        if native_write or orchestrator is not None:
-                            # Under the launch lock: a close either sees the
-                            # slice on record or refuses this launch.
-                            with self._launching(row.run_id):
-                                if native_write:
-                                    tools = {
-                                        **_disposable_environment(row.worktree),
-                                        child.RUN_ID_ENV: row.run_id,
-                                    }
-                                    self._write_baselines[row.run_id] = time.time_ns()
-                                    if child.MEMORY_POLICY_ENV in launch.env:
-                                        tools[child.MEMORY_POLICY_ENV] = launch.env[
-                                            child.MEMORY_POLICY_ENV
-                                        ]
-                                writer = scope = self._open_writer(row.run_id)
-                            # First in, so last out: the slice is emptied after
-                            # the turn's own close and before any terminal write
-                            # may release the claim.
-                            resources.callback(self._close_writer, row, writer)
+                        # Every run has its own slice. Under the launch lock: a
+                        # close either sees the slice on record or refuses this
+                        # launch.
+                        with self._launching(row.run_id):
+                            if native_write:
+                                self._write_baselines[row.run_id] = time.time_ns()
+                            scope = self._open_run_slice(row.run_id)
+                        # First in, so last out: the slice is emptied after the
+                        # turn's own close and before any terminal write may
+                        # release the claim.
+                        resources.callback(self._close_writer, row, scope)
                         mcp_servers = launch.mcp_servers
                         plugin_policies: dict[str, dict[str, Any]] = {}
                         # Every other turn runs in the tree it was dispatched into.
@@ -4818,35 +6153,6 @@ class Supervisor:
                                 raise InvalidRunRequest(
                                     "native inference requires a neutral run cwd"
                                 )
-                        elif orchestrator is not None:
-                            # NO catalog read: what this turn inherits was
-                            # enumerated at preparation and is already carried
-                            # closed in `launch.mcp_servers`, so there is no
-                            # second child to spawn and no deadline to pay for
-                            # it. Its one open server is composed here, from the
-                            # binding, over its own disposable needs; a name that
-                            # collided with it was refused before this.
-                            disposable = _orchestrator_disposable(run_dir.root)
-                            tools = native.orchestrator_mcp_environment(disposable)
-                            mcp_servers = {
-                                **launch.mcp_servers,
-                                **orchestrator.mcp_servers(disposable),
-                            }
-                            # THE NEUTRAL CWD, now that it exists: the app-server's
-                            # own process cwd and, through it, the thread's. Not the
-                            # snapshot -- an empty `projects` or `mcp_servers`
-                            # override merges nothing (codex 0.159.2, measured
-                            # 2026-10-01), and what closes the project layer is
-                            # having no project to load. Asserted here as well as at
-                            # preparation, because this is the directory the child
-                            # is actually given.
-                            turn_cwd = Path(native.orchestrator_neutral_cwd(disposable))
-                            if (
-                                refusal := native.orchestrator_neutral_refusal(
-                                    str(turn_cwd)
-                                )
-                            ) is not None:
-                                raise InvalidRunRequest(refusal)
                         elif row.sandbox == "read-only" or native_write:
                             mcp_servers, plugin_policies = self._native_readonly_mcp(
                                 row,
@@ -4891,10 +6197,6 @@ class Supervisor:
                             on_thread=identified,
                             native_write=native_write,
                             tool_environment=tools,
-                            orchestrator=orchestrator,
-                            orchestrator_profile=None
-                            if orchestrator is None
-                            else native.orchestrator_profile_id(row.run_id),
                             inference_profile=None
                             if inference_profile is None
                             else StructuredInference.from_request(inference_profile),
@@ -4926,19 +6228,29 @@ class Supervisor:
                     quota = result.quota
                     failure_reason = result.failure_reason
                 case Backend.AGY:
-                    confined = native.agy_confined(
-                        launch,
-                        cwd=Path(row.worktree),
-                        run_dir=run_dir.root,
-                        writable=native_write,
-                    )
                     with contextlib.ExitStack() as resources:
+                        with self._launching(row.run_id):
+                            if native_write:
+                                self._write_baselines[row.run_id] = time.time_ns()
+                            slice_ = self._open_run_slice(row.run_id)
+                        # First in, so last out, as for Codex.
+                        resources.callback(self._close_writer, row, slice_)
+                        confined = (
+                            launch
+                            if native_write
+                            else native.agy_confined(
+                                launch,
+                                cwd=Path(row.worktree),
+                                run_dir=run_dir.root,
+                                writable=False,
+                            )
+                        )
                         with self._launching(row.run_id):
                             conversation = resources.enter_context(
                                 agy.AgyTurn.start(
-                                    confined.argv,
+                                    slice_.command(list(confined.argv)),
                                     cwd=Path(row.worktree),
-                                    env=confined.env,
+                                    env=slice_.environment(confined.env),
                                     run_dir=run_dir.root,
                                     needles=needles,
                                 )
@@ -4992,12 +6304,15 @@ class Supervisor:
                 )
                 output_tokens = delta.get("output_tokens")
                 cache_write = None
-            with self._lock:
-                self._registry.note_record_observed(
-                    row.run_id,
-                    int(time.time() * 1000),
-                    count=run_dir.stdout.read_bytes().count(b"\n"),
-                )
+            try:
+                with self._lock:
+                    self._registry.note_record_observed(
+                        row.run_id,
+                        int(time.time() * 1000),
+                        count=run_dir.stdout.read_bytes().count(b"\n"),
+                    )
+            except BusyError:
+                _log_busy_progress(row.run_id, "note_record_observed")
             self._update_phase(
                 row.run_id,
                 RunPhase.RUNNING,
@@ -5221,7 +6536,9 @@ class Supervisor:
     def _open_writer(self, run_id: str) -> AggregateScope:
         """The writer's own slice, on record before anything is launched into it."""
         writer = AggregateScope(
-            memory_bytes=self.WRITER_MEMORY_BYTES, tasks=self.WRITER_TASKS
+            memory_bytes=self.WRITER_MEMORY_BYTES,
+            tasks=self.WRITER_TASKS,
+            unit=writer_unit(run_id),
         )
         try:
             with self._lock:
@@ -5241,6 +6558,109 @@ class Supervisor:
             writer.close()
             raise
         return writer
+
+    def _open_run_slice(self, run_id: str) -> AggregateScope:
+        """The run's own slice. A start that fails keeps its handle: systemd may
+        have accepted the slice before the failure. The caller writes the run's
+        terminal phase."""
+        try:
+            return self._open_writer(run_id)
+        except BaseException as error:
+            # No user manager: nothing was started and there is nothing to keep.
+            if _user_manager_present():
+                self._keep_failed_slice(run_id, error)
+            raise
+
+    def _keep_failed_slice(self, run_id: str, error: BaseException) -> None:
+        """Stop the slice a failed start may have left. A slice not seen stopped
+        goes on record, so a close stops it later, and fences the worktree."""
+        writer = AggregateScope.recorded(writer_unit(run_id))
+        try:
+            writer.close()
+            return
+        except ControllerRefusal as refusal:
+            _log_slice_failure(run_id, writer.unit, refusal)
+            error.add_note(str(refusal))
+        try:
+            with self._lock:
+                row = self._registry.get_run(run_id)
+                if row is None:
+                    return
+                self._registry.poison_claim(row.worktree, run_id)
+                if self._registry.writer_scope(run_id) is None:
+                    self._registry.append_run_event(
+                        run_id,
+                        at=int(time.time() * 1000),
+                        kind="lifecycle",
+                        payload={
+                            "writer_scope": {
+                                "unit": writer.unit,
+                                "cgroup": str(writer.path),
+                            }
+                        },
+                    )
+        except (*STORE_ERRORS, RegistryError) as refusal:
+            error.add_note(str(refusal))
+
+    def _fail_writer_start(self, run_id: str, error: BaseException) -> None:
+        """Stop failed-start custody before a terminal write can release its claim."""
+        with self._lock:
+            writer = self._writers.get(run_id)
+        recorded = writer is None
+        stop_refused = False
+        try:
+            if writer is None:
+                writer = AggregateScope.recorded(writer_unit(run_id))
+            writer.close()
+        except ControllerRefusal as refusal:
+            stop_refused = True
+            _log_slice_failure(run_id, writer_unit(run_id), refusal)
+            error.add_note(str(refusal))
+        try:
+            with self._lock:
+                row = self._registry.get_run(run_id)
+                if row is None:
+                    return
+                if (
+                    recorded
+                    and writer is not None
+                    and self._registry.writer_scope(run_id) is None
+                ):
+                    self._registry.append_run_event(
+                        run_id,
+                        at=int(time.time() * 1000),
+                        kind="lifecycle",
+                        payload={
+                            "writer_scope": {
+                                "unit": writer.unit,
+                                "cgroup": str(writer.path),
+                            }
+                        },
+                    )
+                if stop_refused:
+                    self._registry.poison_claim(row.worktree, run_id)
+                self._update_phase(run_id, RunPhase.FAILED, blocked_reason=str(error))
+        except (*STORE_ERRORS, RegistryError) as refusal:
+            error.add_note(str(refusal))
+
+    def _stop_idle_writer(self, run_id: str) -> None:
+        """Stop the slice of an ended run that holds no process. A job its
+        command left behind keeps the slice until it ends; the reconcile step
+        stops the slice then."""
+        with self._lock:
+            writer = self._writers.get(run_id)
+        if writer is None or writer.path is None:
+            return
+        try:
+            if "populated 0" not in (writer.path / "cgroup.events").read_text().split(
+                "\n"
+            ):
+                return
+            writer.close()
+        except FileNotFoundError:
+            return  # stopped elsewhere: systemd removed its group
+        except (OSError, ControllerRefusal) as error:
+            _log_slice_failure(run_id, writer.unit, error)
 
     def _close_writer(self, row: RunRow, writer: AggregateScope) -> None:
         """Empty and stop the writer's slice; one that cannot be seen empty keeps
@@ -5279,63 +6699,50 @@ class Supervisor:
         system_prompt: str | None,
         deadline_ms: int,
         *,
-        writable: bool,
         read_paths: tuple[str, ...] = (),
     ) -> None:
-        """One caged Claude turn in its own slice: a writer (`writable`) or a
-        read-only review, which writes nothing but its scratch and holds no claim.
+        """Own one native writer in its run scope.
 
-        No session-id re-spawn. A read-only turn whose credential the vendor
-        refuses on an unpinned account, or a continuation whose
-        account reports a subscription limit, continues the same native history
-        on the provider's next usable account, in the same emptied slice;
-        otherwise a caged turn runs once, on the account it was admitted on. A
-        writer never moves inside the run: after its terminal, `_fail_over`
-        gives its work to the next route only while its tree shows no write.
-        The slice is emptied before the terminal write may release a writer's
-        claim.
+        No session-id re-spawn. A continuation whose account reports a
+        subscription limit continues the same native history on the provider's
+        next usable account, in the same emptied slice; otherwise a writer runs
+        once, on the account it was admitted on. A writer never moves inside the
+        run: after its terminal, `_fail_over` gives its work to the next route
+        only while its tree shows no write. The slice is emptied before the
+        terminal write may release a writer's claim.
         """
         run_id = row.run_id
         assert row.thread_id is not None
         system_prompt_file: Path | None = None
-        if writable:
-            # The cage keeps its scratch and its config outside the tree.
-            with self._lock:
-                self._write_baselines[run_id] = time.time_ns()
+        # Each account this turn left for another one (`_moved_note`). Named here
+        # because the failure that ends the turn is written outside its loop.
+        moved: list[str] = []
+        # Record the baseline before the writer can change its checkout.
+        with self._lock:
+            self._write_baselines[run_id] = time.time_ns()
         try:
-            if system_prompt is not None:
+            # The prompt file holds what the child runs with (`_composed_prompt`);
+            # `system_prompt` stays the request's, which the substitute clause reads.
+            prompt_text = self._agent_launched(run_id, system_prompt)
+            if prompt_text is not None:
                 system_prompt_file = run_dir.root / "system-prompt"
                 with system_prompt_file.open("xb") as handle:
-                    handle.write(system_prompt.encode("utf-8"))
+                    handle.write(prompt_text.encode("utf-8"))
             with contextlib.ExitStack() as resources:
-                scratch = claude_restricted.make_scratch()
-                # First in, so last out: removed only once the slice is empty,
-                # never while a descendant may still write under its name.
-                resources.callback(shutil.rmtree, scratch, ignore_errors=True)
                 with self._launching(run_id):
                     writer = self._open_writer(run_id)
                 # First in, so last out: emptied before any terminal write.
                 resources.callback(self._close_writer, row, writer)
                 profile = self._registry.session_profile(run_id)
                 if profile is None:
-                    raise InvalidRunRequest("caged run has no verified session profile")
+                    raise InvalidRunRequest("owned run has no verified session profile")
                 resume = profile.original_run_id != run_id
                 deadline_at = (
                     time.monotonic() + deadline_ms / 1000 if deadline_ms > 0 else None
                 )
                 tried: set[str] = set()
-                # Only the accounts that refused this turn: the re-pick adds to
-                # `tried` an account the cage cannot reach, which refused nothing.
+                # The accounts that refused this turn.
                 refused: set[str] = set()
-                # Of those, the accounts whose credential the vendor refused.
-                rejected: set[str] = set()
-                refusal: str | None = None
-                # The last refused attempt, and the account that refused it.
-                refused_turn: (
-                    tuple[terminal.TerminalClassification, picker.PickerResult] | None
-                ) = None
-                # Each account this turn left for another one (`_moved_note`).
-                moved: list[str] = []
                 while True:
                     if deadline_at is not None and time.monotonic() >= deadline_at:
                         raise RunDeadlineExceeded(
@@ -5351,46 +6758,35 @@ class Supervisor:
                         picked,
                         row.thread_id,
                         resume,
-                        not writable,
+                        False,
                         read_paths,
                         system_prompt_file=system_prompt_file,
                         deadline_ms=deadline_ms
                         if deadline_at is None
                         else max(1, int((deadline_at - time.monotonic()) * 1000)),
                         writer=writer,
-                        scratch=scratch,
                     )
                     wall = classification.account_wall
-                    if (
+                    if not (
                         resume
                         and wall is not None
                         and wall.limit_type in terminal.SUBSCRIPTION_WINDOWS
                     ):
-                        # The wall `_spawn_and_wait` just recorded excludes this alias.
-                        tried.add(wall.account_alias)
-                        refused.add(wall.account_alias)
-                    elif not writable and self._should_fail_over(
-                        picked, classification
-                    ):
-                        self._wall_rejected_credential(
-                            picked, limit_type=_limit_type(classification)
-                        )
-                        tried.add(picked.executed_account)  # type: ignore[arg-type]
-                        refused.add(picked.executed_account)  # type: ignore[arg-type]
-                        rejected.add(picked.executed_account)  # type: ignore[arg-type]
-                        refused_turn = (classification, picked)
-                    else:
+                        # A writer never moves inside the run for any other
+                        # refusal: its prompt would reach the checkout twice
+                        # (`_writer_stays` decides after the turn).
                         break
+                    # The wall `_spawn_and_wait` just recorded excludes this alias.
+                    tried.add(wall.account_alias)
+                    refused.add(wall.account_alias)
                     nxt = self._repick_after_credential_rejection(
                         roster,
                         picked,
                         tried,
                         execution_class=profile.execution_class,
-                        caged=True,
                     )
                     if not isinstance(nxt, picker.PickerResult):
                         if nxt is not None:
-                            refusal = str(nxt)
                             classification = replace(
                                 classification,
                                 warning=f"{classification.warning}; the next "
@@ -5401,43 +6797,21 @@ class Supervisor:
                     # holds it twice; upgrade when the CLI resumes without a prompt.
                     writer.drain()
                     self._archive_attempt_evidence(run_dir, len(tried))
-                    (run_dir.root / claude_restricted.SETTINGS_FILE).unlink()
-                    shutil.rmtree(scratch / "work")
                     moved.append(_moved_note(picked, classification))
                     picked = nxt
                     # The refused turn is already in the native history, and the
                     # CLI refuses its session id a second time.
                     resume = True
-                    self._update_phase(
-                        run_id, RunPhase.RUNNING, executed_account=nxt.executed_account
-                    )
-            # An account the loop walled keeps that wall and its label.
-            if picked.executed_account not in refused and (
-                self._is_credential_rejection(picked, classification)
+                    self._record_account(run_id, nxt, nxt.warning)
+            # An account the loop walled keeps that wall and its label, and a
+            # wall `_spawn_and_wait` recorded from the vendor keeps its reset.
+            if (
+                picked.executed_account not in refused
+                and classification.account_wall is None
+                and self._is_credential_rejection(picked, classification)
             ):
                 self._wall_rejected_credential(
                     picked, limit_type=_limit_type(classification)
-                )
-            claude_restricted.require_sandbox_started(run_dir.stdout)
-            if (
-                refused_turn is not None
-                and classification.phase is RunPhase.FAILED
-                and _route_refusal(classification) is None
-            ):
-                lost = (
-                    f"the turn could not continue on {picked.executed_account}: "
-                    f"{classification.warning or 'no vendor answer'}"
-                )
-                classification, picked = refused_turn
-                classification = replace(
-                    classification,
-                    warning=_composed_warning(classification.warning, lost),
-                )
-                # Its note would name the account that never refused.
-                rejected = set()
-                moved = []
-                self._update_phase(
-                    run_id, RunPhase.RUNNING, executed_account=picked.executed_account
                 )
             if refused:
                 note = f"refused on {', '.join(sorted(refused))}"
@@ -5451,18 +6825,6 @@ class Supervisor:
                 )
                 self._refuse_accounts(run_id, refused)
             self._publish_terminal(run_id, classification)
-            if rejected:
-                self._note_exhausted_credentials(
-                    run_id,
-                    picked,
-                    classification,
-                    rejected,
-                    roster,
-                    read_paths=read_paths,
-                    system_prompt=system_prompt,
-                    execution_class=profile.execution_class,
-                    refusal=refusal,
-                )
         except RunClosedBeforeSpawn:
             return
         except (
@@ -5472,7 +6834,7 @@ class Supervisor:
             *STORE_ERRORS,
             ControllerRefusal,
         ) as error:
-            self._fail_run(run_id, error)
+            self._fail_run(run_id, error, moved=tuple(moved))
         finally:
             with self._lock:
                 self._children.pop(run_id, None)
@@ -5502,7 +6864,10 @@ class Supervisor:
         execution_class: str | None = None,
     ) -> None:
         system_prompt_file: Path | None = None
-        if system_prompt is not None:
+        # The prompt file holds what the child runs with (`_composed_prompt`);
+        # `system_prompt` stays the request's, which the substitute clause reads.
+        prompt_text = self._agent_launched(run_id, system_prompt)
+        if prompt_text is not None:
             candidate = run_dir.root / "system-prompt"
             try:
                 prompt_file = candidate.open("xb")
@@ -5516,7 +6881,7 @@ class Supervisor:
                 return
             system_prompt_file = candidate
             with prompt_file:
-                prompt_file.write(system_prompt.encode("utf-8"))
+                prompt_file.write(prompt_text.encode("utf-8"))
         # CREDENTIAL FAILOVER (owner ruling 2026-08-30): when the vendor
         # rejects THIS account's credential (401/403), the supervisor walls
         # that alias and re-spawns the SAME run on the next unwalled account,
@@ -5556,6 +6921,14 @@ class Supervisor:
                 warning=_composed_warning(classification.warning, "; ".join(moved)),
             )
 
+        writer: AggregateScope | None = None
+
+        def acquire_writer() -> AggregateScope:
+            nonlocal writer
+            if writer is None:
+                writer = self._open_run_slice(run_id)
+            return writer
+
         try:
             while True:
                 attempt += 1
@@ -5570,6 +6943,7 @@ class Supervisor:
                                 f"run exceeded its caller-named deadline of "
                                 f"{deadline_ms} ms across credential failover"
                             ),
+                            moved=tuple(moved),
                         )
                         return
                     attempt_ms = max(1, int(remaining * 1000))
@@ -5587,11 +6961,17 @@ class Supervisor:
                         read_paths,
                         system_prompt_file=system_prompt_file,
                         deadline_ms=attempt_ms,
+                        writer_factory=acquire_writer,
                     )
                 except RunClosedBeforeSpawn:
                     return
-                except (NSpawnError, claude_child.ClaudeChildError, OSError) as error:
-                    self._fail_run(run_id, error)
+                except (
+                    NSpawnError,
+                    claude_child.ClaudeChildError,
+                    OSError,
+                    ControllerRefusal,
+                ) as error:
+                    self._fail_run(run_id, error, moved=tuple(moved))
                     return
                 if classification is None:
                     classification = terminal.TerminalClassification(
@@ -5615,6 +6995,7 @@ class Supervisor:
                                 f"in use after {collided_id!r} was too; not "
                                 "re-spawning a third time"
                             ),
+                            moved=tuple(moved),
                         )
                         return
                     collided_id = thread_id
@@ -5680,10 +7061,12 @@ class Supervisor:
                 self._archive_attempt_evidence(run_dir, attempt)
                 moved.append(_moved_note(picked, classification))
                 picked = nxt
-                self._update_phase(
-                    run_id, RunPhase.RUNNING, executed_account=nxt.executed_account
-                )
+                self._record_account(run_id, nxt, nxt.warning)
         finally:
+            # An uncaged command may leave a detached job: retain its slice for
+            # close, but stop an empty one as soon as the worker ends.
+            if writer is not None:
+                self._stop_idle_writer(run_id)
             if system_prompt_file is not None:
                 try:
                     system_prompt_file.unlink()
@@ -5694,6 +7077,7 @@ class Supervisor:
                             f"system prompt file {system_prompt_file} "
                             f"could not be removed: {error}"
                         ),
+                        moved=tuple(moved),
                     )
 
     def _keep_whole_answer(self, run_id: str, text: str) -> str:
@@ -6138,11 +7522,9 @@ class Supervisor:
         tried: set[str],
         *,
         execution_class: str | None = None,
-        caged: bool = False,
     ) -> picker.PickerResult | picker.PickerError | None:
         """The next unwalled account of the same provider, None when every one is
-        walled, or the picker's refusal of this request on the next account. A
-        `caged` turn takes only an account the cage can serve: no other endpoint.
+        walled, or the picker's refusal of this request on the next account.
 
         The wall written a moment ago is what excludes the rejected alias —
         the picker already reads `account_walls`, so the re-pick needs no
@@ -6160,48 +7542,38 @@ class Supervisor:
                 self._registry.get_account_usage(),
                 self._registry.get_account_last_run(),
             )
-        while True:
-            # A caged turn skips what it tried, so an account the cage cannot
-            # serve never hides a later one that it can.
-            walls = (
-                {**account_walls, **dict.fromkeys(tried, now_s + 1)}
-                if caged
-                else account_walls
+        try:
+            nxt = picker.pick_execution(
+                roster,
+                now_s,
+                requested_provider=picked.executed_provider.name,
+                # The CALLER's request again, class included: a value the
+                # first pick resolved is not one the caller pinned.
+                requested_model=picked.requested_model,
+                requested_effort=picked.requested_effort,
+                execution_class=execution_class,
+                preferred_model=picked.preferred_model,
+                preferred_provider=picked.preferred_provider,
+                preferred_effort=picked.preferred_effort,
+                role_model=picked.role_model,
+                role_effort=picked.role_effort,
+                account_load=account_load,
+                account_use=account_use,
+                provider_walls=provider_walls,
+                account_walls=account_walls,
             )
-            try:
-                nxt = picker.pick_execution(
-                    roster,
-                    now_s,
-                    requested_provider=picked.executed_provider.name,
-                    # The CALLER's request again, class included: a value the
-                    # first pick resolved is not one the caller pinned.
-                    requested_model=picked.requested_model,
-                    requested_effort=picked.requested_effort,
-                    execution_class=execution_class,
-                    preferred_model=picked.preferred_model,
-                    account_load=account_load,
-                    account_use=account_use,
-                    provider_walls=provider_walls,
-                    account_walls=walls,
-                )
-            except picker.AllProvidersWalled:
-                # Every remaining account is walled — that IS the exhaustion
-                # this re-pick was probing for.
-                return None
-            except picker.PickerError as error:
-                # Not exhaustion: the next account was never tried, and why is
-                # the cause.
-                return error
-            alias = nxt.executed_account
-            if alias is None or alias in tried:
-                return None
-            if not caged:
-                break
-            if not _picked_route_elsewhere(roster, nxt):
-                return nxt
-            # The cage's closed env carries only the credential (see admission).
-            tried.add(alias)
-        # An uncaged child receives the roster's env.
+        except picker.AllProvidersWalled:
+            # Every remaining account is walled — that IS the exhaustion
+            # this re-pick was probing for.
+            return None
+        except picker.PickerError as error:
+            # Not exhaustion: the next account was never tried, and why is
+            # the cause.
+            return error
+        alias = nxt.executed_account
+        if alias is None or alias in tried:
+            return None
+        # A Claude child receives the roster's env.
         try:
             _refuse_roster_override(roster, nxt)
         except picker.PickerError as error:
@@ -6291,7 +7663,7 @@ class Supervisor:
     ) -> str:
         """Where THIS work can go now, or an honest statement that it cannot.
 
-        The run's own shape travels with the question: a caged review carries
+        The run's own shape travels with the question: a review carries
         `read_paths` that some launchers refuse, and a class buys an effort
         that not every route serves. Asking without them names routes that
         will refuse the caller a second time.
@@ -6317,6 +7689,61 @@ class Supervisor:
             return "no other declared route can serve this work now"
         return f"these routes can serve it now: {', '.join(routes)}"
 
+    def _steer_turns(
+        self,
+        spawned: child.SpawnedChild,
+        results: _ResultCount,
+        counted: int,
+        channel: Path,
+        limit: float | None,
+    ) -> None:
+        """Feed queued steer messages to the child, then close its stdin.
+
+        The prompt is message one. `counted` is the count of results before the
+        child got the prompt. Each write takes the count again before it
+        delivers its message. Stdin closes after a result that the child gave
+        since that count, when no message waits. The
+        count of results need not equal the count of messages: the client
+        folds the messages that arrive during one turn into that turn and gives
+        one result. The seal under the channel lock decides the last case: a
+        sender that comes later gets a refusal, and a sender that came first
+        has its message written.
+        """
+        while spawned.poll() is None:
+            _raise_finished_pump_failure(spawned)
+            if limit is not None and time.monotonic() >= limit:
+                raise subprocess.TimeoutExpired(str(spawned.identity.pid), 0.0)
+            for text in steer.take(channel):
+                # The run deadline binds each frame, not only the batch: a
+                # write takes at most the time that the run has left.
+                bound = PROMPT_WRITE_SECONDS
+                if limit is not None:
+                    left = limit - time.monotonic()
+                    if left <= 0:
+                        raise subprocess.TimeoutExpired(str(spawned.identity.pid), 0.0)
+                    bound = min(bound, left)
+                # The baseline comes before the write: the child can give the
+                # result of this message before the write call returns.
+                counted = results.update()
+                try:
+                    spawned.write_stdin(_user_frame(text), timeout=bound)
+                except child.ChildPipeError:
+                    if spawned.poll() is not None:
+                        return
+                    if limit is not None and time.monotonic() >= limit:
+                        # The run deadline cut the write: the deadline cleanup
+                        # stops the child.
+                        raise subprocess.TimeoutExpired(
+                            str(spawned.identity.pid), 0.0
+                        ) from None
+                    with contextlib.suppress(child.ChildIdentityError, OSError):
+                        spawned.stop_then_kill(spawned.identity)
+                    raise
+            if results.update() > counted and steer.seal_if_empty(channel):
+                spawned.close_stdin()
+                return
+            time.sleep(STEER_POLL_SECONDS)
+
     def _spawn_and_wait(
         self,
         run_id: str,
@@ -6332,7 +7759,8 @@ class Supervisor:
         system_prompt_file: Path | None = None,
         deadline_ms: int = 0,
         writer: AggregateScope | None = None,
-        scratch: Path | None = None,
+        *,
+        writer_factory: Callable[[], AggregateScope] | None = None,
     ) -> terminal.TerminalClassification:
         provider = picked.executed_provider
         with self._lock:
@@ -6378,11 +7806,18 @@ class Supervisor:
                     provider_binary=provider.bin,
                     roster_default=roster.bins.get("claude"),
                 )
+                # The run's slice comes first: the version command runs in it.
+                if writer is None and writer_factory is not None:
+                    with self._launching(run_id):
+                        writer = writer_factory()
                 installation = claude_child.inspect_claude_installation(
-                    binary, _probe_claude_version
+                    binary,
+                    _probe_claude_version
+                    if writer is None
+                    else functools.partial(_probe_claude_version, scope=writer),
                 )
-                # The caged writer loads no plugin and no MCP server.
-                if writer is not None or inference is not None:
+                # Structured inference loads no plugin and no MCP server.
+                if inference is not None:
                     mcp_config = None
                 else:
                     assert resolved.plugin_root is not None
@@ -6464,18 +7899,48 @@ class Supervisor:
             declared = child._plugin_dirs_the_explicit_one_does_not_replace(
                 declared, mcp_config.plugin_dir, False
             )
+        if not read_only and inference is None:
+            env["TMPDIR"] = child.writer_tmpdir(env.get("TMPDIR"))
+            filtered: dict[str, str] = {}
+
+            def writer_plugin(source: Path | str) -> str:
+                key = os.path.realpath(source)
+                if key not in filtered:
+                    destination = run_dir.root / f"writer-plugin-{len(filtered)}"
+                    child.writer_plugin(Path(key), destination)
+                    filtered[key] = str(destination)
+                return filtered[key]
+
+            if plugin_dir is not None:
+                plugin_dir = writer_plugin(plugin_dir)
+            index = 0
+            while index < len(declared):
+                argument = declared[index]
+                if argument == "--plugin-dir" and index + 1 < len(declared):
+                    declared[index + 1] = writer_plugin(declared[index + 1])
+                    index += 2
+                elif argument.startswith("--plugin-dir="):
+                    declared[index] = "--plugin-dir=" + writer_plugin(
+                        argument.split("=", 1)[1]
+                    )
+                    index += 1
+                else:
+                    index += 1
+        with self._lock:
+            launched = self._agent_launches.get(run_id)
         argv = child.compose_child_argv(
             installation.binary,
             session_id=thread_id,
             resume=resume,
             append_system_prompt_file=system_prompt_file,
             plugin_dir=plugin_dir,
-            declared_args=_combine_system_prompt_file(cwd, system_prompt_file, declared)
-            if system_prompt_file is not None
-            else declared,
+            declared_args=_combine_system_prompt_file(
+                cwd, system_prompt_file, declared
+            ),
             read_only=read_only,
             read_paths=read_paths,
             inference_profile=inference,
+            agent_tools=None if launched is None else launched.tools,
         )
         if inference is not None:
             try:
@@ -6497,57 +7962,12 @@ class Supervisor:
                     )
             env["NOTT_NMEMORY_CURATOR"] = "0"
             env["CLAUDE_CODE_MAX_RETRIES"] = "2"
-        if child.appends_law(declared, cwd):
-            env[child.LAW_SESSION_ENV] = "off"
-        restricted: claude_restricted.RestrictedLaunch | None = None
-        if writer is not None:
-            if scratch is None:
-                raise claude_restricted.RestrictedLaunchRefused(
-                    "a caged run needs its own scratch directory"
-                )
-            profile = self._registry.session_profile(run_id)
-            if profile is None or profile.config_dir is None:
-                raise claude_restricted.RestrictedLaunchRefused(
-                    "caged run has no retained native config"
-                )
-            # The caged writer: its own argv, a closed env holding only the host's
-            # credential, and settings pinned now and verified again at exec.
-            restricted = claude_restricted.compose_restricted_launch(
-                binary=Path(installation.binary),
-                checkout=Path(cwd),
-                run_dir=run_dir.root,
-                host_auth={
-                    name: env[name]
-                    for name in child.CREDENTIAL_ENV_NAMES
-                    if name in env
-                },
-                model=picked.model,
-                effort=picked.effort,
-                system_prompt_file=system_prompt_file,
-                session_id=thread_id,
-                resume=resume,
-                config_dir=Path(profile.config_dir),
-                tmpdir=scratch,
-                writable=not read_only,
-                read_paths=tuple(Path(path) for path in read_paths),
-            )
-            argv = list(restricted.argv)
-            cwd = str(restricted.cwd)
-            if restricted.preface is not None:
-                prompt = f"{restricted.preface}\n\n{prompt}"
-            env = {
-                **restricted.env,
-                child.RUN_ID_ENV: run_id,
-                child.SESSION_ID_ENV: thread_id,
-            }
-            if memory_push:
-                env[child.MEMORY_POLICY_ENV] = "push"
+        # A child runs with its agent, never the law: the roster's law file is
+        # dropped (`_combine_system_prompt_file`), and the plugin's SessionStart
+        # hook prints no copy of it.
+        env[child.LAW_SESSION_ENV] = "off"
         with self._launching(run_id):
-            if restricted is not None:
-                claude_restricted.verify_pinned_settings(
-                    restricted.settings_path, restricted.settings_sha256
-                )
-            # Only a writer names its slice; a read-only child keeps the old call.
+            channel = steer.create(run_dir.root)
             spawned = (
                 child.spawn_child(
                     argv, cwd, env, run_dir.root, needles, stdin_pipe=True
@@ -6584,30 +8004,49 @@ class Supervisor:
         # The prompt goes in on stdin, never argv (see compose_child_argv). A
         # write that fails leaves a child holding a truncated prompt: kill it
         # rather than let it answer the wrong question.
+        #
+        # A child takes stream-json: the prompt is its first user
+        # message, and stdin stays open for steer messages until the child gave
+        # a result after the last message and none waits (`_steer_turns`).
+        results = _ResultCount(run_dir.stdout)
+        counted = results.update()
         try:
             try:
-                spawned.write_stdin(prompt.encode(), timeout=PROMPT_WRITE_SECONDS)
+                spawned.write_stdin(
+                    _user_frame(prompt),
+                    timeout=PROMPT_WRITE_SECONDS,
+                )
             except child.ChildPipeError:
                 with contextlib.suppress(child.ChildIdentityError, OSError):
                     spawned.stop_then_kill(spawned.identity)
                 raise
-            spawned.close_stdin()
-            if deadline_ms <= 0:
-                exit_code = spawned.wait()
-            else:
-                try:
-                    exit_code = spawned.wait(timeout=deadline_ms / 1000)
-                except subprocess.TimeoutExpired as expiry:
-                    # KILL BEFORE FAILING. A terminal row on a child still
-                    # alive is an orphan with the row saying it finished — the class
-                    # of lie that `close` itself exists to prevent.
-                    with contextlib.suppress(child.ChildIdentityError, OSError):
-                        spawned.stop_then_kill(spawned.identity)
-                    raise RunDeadlineExceeded(
-                        f"run exceeded its caller-named deadline of {deadline_ms} ms "
-                        "and was signalled"
-                    ) from expiry
+            limit = None if deadline_ms <= 0 else time.monotonic() + deadline_ms / 1000
+            try:
+                self._steer_turns(spawned, results, counted, channel, limit)
+                exit_code = (
+                    spawned.wait()
+                    if limit is None
+                    else spawned.wait(timeout=max(0.0, limit - time.monotonic()))
+                )
+            except subprocess.TimeoutExpired as expiry:
+                # KILL BEFORE FAILING. A terminal row on a child still
+                # alive is an orphan with the row saying it finished — the class
+                # of lie that `close` itself exists to prevent.
+                with contextlib.suppress(child.ChildIdentityError, OSError):
+                    spawned.stop_then_kill(spawned.identity)
+                raise RunDeadlineExceeded(
+                    f"run exceeded its caller-named deadline of {deadline_ms} ms "
+                    "and was signalled"
+                ) from expiry
+            except NSpawnError, OSError:
+                # Any other failure of the steer loop or of the wait (a queue,
+                # a lock, a result count) fails the run. The child, with its
+                # stdin open, must not outlive the failure in its slice.
+                _stop_and_reap(spawned)
+                raise
         finally:
+            with contextlib.suppress(steer.SteerRefused, OSError):
+                steer.seal(channel)
             # An exited (or signalled) child is out of custody. Left here, the
             # supervisor's shutdown re-verified a reaped identity and logged
             # ChildIdentityError — on EVERY driver exit, once each run got its
@@ -6622,10 +8061,13 @@ class Supervisor:
             pass
         else:
             if records_seen:
-                with self._lock:
-                    self._registry.note_record_observed(
-                        run_id, int(epoch * 1000), count=records_seen
-                    )
+                try:
+                    with self._lock:
+                        self._registry.note_record_observed(
+                            run_id, int(epoch * 1000), count=records_seen
+                        )
+                except BusyError:
+                    _log_busy_progress(run_id, "note_record_observed")
         now_s = int(epoch)
         classification = terminal.classify_terminal_run(
             run_dir.stdout,
@@ -6638,13 +8080,29 @@ class Supervisor:
         if exit_code < 0:
             classification = replace(
                 classification,
-                warning=f"child terminated by signal {-exit_code}",
+                warning=f"child terminated by signal {-exit_code}"
+                + (
+                    ""
+                    if classification.defect_note is None
+                    else f"; {classification.defect_note}"
+                ),
                 telemetry=replace(classification.telemetry, failure="child_signal")
                 if classification.telemetry is not None
                 else None,
                 failure_reason=terminal.failure_reason(
                     classification.api_error_status, "child_signal"
                 ),
+            )
+        # The child has ended and its result stands: a listing that fails adds
+        # a warning segment and does not fail the run.
+        try:
+            note = steer.rejected_summary(channel)
+        except OSError as error:
+            note = f"steer entries could not be listed: {error}"
+        if note:
+            classification = replace(
+                classification,
+                warning=_composed_warning(classification.warning, note),
             )
         spent = self._spent_provider_wall(provider, picked, classification, now_s)
         if spent is not None:
@@ -6719,13 +8177,19 @@ class Supervisor:
         error: BaseException,
         *,
         needles: SecretNeedles | None = None,
+        moved: tuple[str, ...] = (),
     ) -> None:
+        self._note_worker_failure(run_id, error)
         # Exception detail can contain credentials, paths or vendor output.
         # Record identity only; status and result share this persisted value.
         reason = type(error).__name__
         entry = getattr(error, "entry", None)
         if isinstance(entry, ErrorEntry):
             reason += f" (nERR-{entry.code_str()})"
+        if isinstance(error, operations.OperationRefused):
+            reason += ": " + ", ".join(
+                sorted({failure.cause for failure in error.failures})
+            )
         if (
             isinstance(
                 error,
@@ -6759,7 +8223,7 @@ class Supervisor:
             reason += f": {error.message}"
         # A route that could not prepare this turn is the route's refusal: an
         # unpinned witness goes on to its next preference, named here.
-        route_refused = isinstance(error, _PREPARATION_REFUSALS)
+        route_refused = isinstance(error, PREPARATION_REFUSALS)
         refusal = route_refused or (
             self._retry_reason(run_id, RunPhase.FAILED, reason) is not None
         )
@@ -6776,7 +8240,7 @@ class Supervisor:
                 RunPhase.FAILED,
                 drop_claim=True,
                 blocked_reason=reason,
-                warning=note,
+                warning=_carried_notes(note, moved),
             )
         except (*STORE_ERRORS, OSError) as fault:
             # Only a witness failover is queued: the driver that admitted it
@@ -6797,7 +8261,7 @@ class Supervisor:
             self._unpublished[run_id] = terminal.TerminalClassification(
                 phase=RunPhase.FAILED,
                 final_text=None,
-                warning=note,
+                warning=_carried_notes(note, moved),
                 marker=None,
                 provider_wall=None,
                 account_wall=None,
@@ -6839,6 +8303,20 @@ class Supervisor:
             )
         except (NSpawnError, OSError, ValueError, *STORE_ERRORS) as error:
             _log_tick_failure(error)
+
+    def _record_account(
+        self, run_id: str, picked: picker.PickerResult, warning: str | None = None
+    ) -> None:
+        """Write the account a running turn moved to or went back to, and the
+        model that runs on it: the two move together, so the row never pairs
+        an account with a model that did not run there."""
+        self._update_phase(
+            run_id,
+            RunPhase.RUNNING,
+            executed_account=picked.executed_account,
+            model=picked.model,
+            warning=warning,
+        )
 
     def _update_phase(
         self,
@@ -6963,6 +8441,7 @@ class Supervisor:
 
     def status(self, run_id: str, timeout_ms: int = 0) -> RunStatus:
         with self._lock:
+            self.reap_orphans()
             row = self._registry.get_run(run_id)
             if row is None or self._foreign(row):
                 raise UnknownRun(f"no run named {run_id!r}")
@@ -6976,6 +8455,7 @@ class Supervisor:
                     # row is re-read every second as well.
                     # ponytail: 1 s poll; LISTEN/NOTIFY if latency matters
                     self._lock.wait(min(remaining, 1.0))
+                    self.reap_orphans()
                     row = self._registry.get_run(run_id)
                     if row is None:
                         raise UnknownRun(f"run {run_id!r} vanished during long-poll")
@@ -7003,6 +8483,13 @@ class Supervisor:
                 break
             return replace(
                 _to_status(row, self._run_root_path, effort),
+                operation_admission=(
+                    None
+                    if self._registry.session_activation(run_id) is not None
+                    or row.backend is Backend.COMMAND
+                    else operation_admission_read(self._registry.connection, run_id)
+                    or _unchecked_admission()
+                ),
                 inference_profile=self._registry.inference_profile(run_id),
                 session=self._registry.session_reference(row),
                 transport=self._registry.session_transport(run_id),
@@ -7137,7 +8624,7 @@ class Supervisor:
 
         One `observed_at` for the whole page, taken once here: age is derived
         from it per row, so the listing cannot report two runs against clocks
-        that drifted apart between them. Newest first — see `list_runs_page`.
+        that drifted apart between them. Newest first — see `Registry.list_runs`.
         """
         observed_at = int(time.time())
         with self._lock:
@@ -7153,14 +8640,16 @@ class Supervisor:
                     executed_provider=row.executed_provider,
                     executed_account=row.executed_account,
                     model=row.model,
-                    tokens=_live_tokens(row, self._run_root_path),
-                    turn_count=_live_turns(row, self._run_root_path),
+                    tokens=row.tokens,
+                    turn_count=row.turn_count,
                     created_at=row.created_at,
                     updated_at=row.updated_at,
                     group=row.group_name,
                     backend=row.backend,
                 )
-                for row in rows
+                for row in (
+                    observe_run_progress(stored, self._run_root_path) for stored in rows
+                )
             ),
             notices=tuple(
                 FleetNotice(run_id, RunPhase(phase), project)
@@ -7258,21 +8747,17 @@ class Supervisor:
         `THREAD_VERB_S`, is killed and listed as unread.
         """
         deadline = time.monotonic() + THREAD_VERB_S
-        roster = _read_roster()
-        homes = [claude_config_dir()]
-        for provider in roster.providers:
-            if provider.name == "claude" and provider.kind == "claude":
-                for account in provider.accounts.values():
-                    if account.home is not None:
-                        home = claude_config_dir(account)
-                        if home.resolve() not in {item.resolve() for item in homes}:
-                            homes.append(home)
+        roster = read_roster()
+        homes = [home for _, home in threads.claude_homes(roster)]
         rows: list[dict[str, Any]] = []
         missed: list[dict[str, Any]] = []
 
         def known(ids: list[str]) -> set[str]:
             with self._lock:
                 return self._registry.known_threads(ids) | (set(ids) & exclude)
+
+        # A host with the journal writer reads Claude from the journal, never the SDK.
+        journal = threads.journal_installed()
 
         def read(
             provider: str,
@@ -7299,6 +8784,10 @@ class Supervisor:
             missed.append(threads.unlisted(provider, str(where), reason))
             return None
 
+        if ref is not None and claude_home is not None and journal:
+            return threads.journal_history(
+                ref[1], claude_home, THREAD_MESSAGES, THREAD_BYTES
+            )
         if ref is not None and claude_home is not None:
             answer = read(
                 "claude",
@@ -7314,8 +8803,14 @@ class Supervisor:
             if answer is None:
                 return {"messages": None, "reason": missed[-1]["reason"]}
             return {"messages": answer[:-1], "omitted": answer[-1]["omitted"]}
+        if journal and (ref is None or ref[0] == "claude"):
+            rows.extend(
+                threads.journal_claude(
+                    roster, None if ref is None else ref[1], known, THREAD_BUDGET_BYTES
+                )
+            )
         for home in homes:
-            if not (ref is None or ref[0] == "claude") or not home.is_dir():
+            if journal or not (ref is None or ref[0] == "claude") or not home.is_dir():
                 continue
             live = threads.claude_live(home)
             verb = ["list", str(THREAD_SCAN_LIMIT), str(THREAD_BUDGET_BYTES)]
@@ -7352,7 +8847,7 @@ class Supervisor:
                 if entry["sessionId"] not in mine
             )
         if ref is None or ref[0] == "codex":
-            for provider, alias, where in _codex_homes(roster):
+            for provider, alias, where in threads.codex_homes(roster):
                 found = read(
                     "codex",
                     where,
@@ -7577,7 +9072,7 @@ class Supervisor:
         """
         if refresh < 0:
             raise InvalidRunRequest(f"refresh must not be negative, got {refresh}")
-        roster = _read_roster()
+        roster = read_roster()
         declared = _declared_providers(provider, roster=roster)
         by_name = {entry.name: entry for entry in declared}
 
@@ -7856,9 +9351,6 @@ class Supervisor:
                     f"run {run_id!r}: recorded writer cgroup {cgroup} is not the "
                     f"slice {unit}; its claim stays held"
                 )
-            # systemd removes a stopped slice's group: nothing can run in it.
-            if writer.path is None or not writer.path.exists():
-                return True
         try:
             writer.close()
         except ControllerRefusal as refusal:
@@ -8065,24 +9557,25 @@ def _undrained(run_id: str, unit: str, refusal: ControllerRefusal) -> str:
     )
 
 
-#: The claude capabilities the caged composition serves, and a route that
-#: reaches its model elsewhere therefore lacks.
-CAGED: Final = frozenset({"custody", "write"})
+def _writable_routes(roster: Roster, pinned: str | None = None) -> Roster:
+    """Keep routes with native writer support, without sandbox endpoint filters."""
+    providers = [p for p in roster.providers if "write" in CAPABILITIES[p.kind]]
+    return replace(roster, providers=providers) if providers else roster
 
 
-def _claude_route_elsewhere(
-    env: Mapping[str, str] | None, accounts: Iterable[NativeAccount]
-) -> list[str]:
-    """The names by which a Claude route (or its accounts) reaches its model
-    somewhere other than the vendor's endpoint with a pinned token: the cage's
-    closed env carries none of them. A proxy's own credential counts too: in the
-    cage the pinned vendor token would go in its place."""
-    declared = set(env or {})
-    for account in accounts:
-        declared |= set(account.env or {})
-        if account.base_url is not None:
-            declared.add(ANTHROPIC_BASE_URL_KEY)
-    return sorted(declared & {*child.ROUTE_ENV_NAMES, *child.CREDENTIAL_ENV_NAMES})
+def _recordable_roots(roots: tuple[str, ...]) -> bool:
+    """Whether a native context can record these roots (printable, bounded)."""
+    try:
+        NativeSessionContext("/", read_roots=roots)
+    except ValueError:
+        return False
+    return True
+
+
+def _canonical_paths(paths: Iterable[str]) -> tuple[str, ...]:
+    """Each path resolved as the kernel does, once: a profile records a tree,
+    never the spelling one request gave it (a trailing slash, a symlink)."""
+    return tuple(dict.fromkeys(os.path.realpath(path) for path in paths))
 
 
 def _refuse_roster_override(roster: Roster, picked: picker.PickerResult) -> None:
@@ -8096,28 +9589,40 @@ def _refuse_roster_override(roster: Roster, picked: picker.PickerResult) -> None
     )
 
 
-def _picked_route_elsewhere(roster: Roster, picked: picker.PickerResult) -> list[str]:
+#: How much of a list one note spells out before it counts the rest.
+NOTE_LIST_MAX_BYTES: Final = 2048
+
+
+def _listed(names: Sequence[str], separator: str = ", ") -> str:
+    """`names` joined by `separator` within `NOTE_LIST_MAX_BYTES`, then a count
+    of the rest, so a row never refuses the note that holds them."""
+    shown: list[str] = []
+    for name in names:
+        if len(separator.join([*shown, name]).encode("utf-8")) > NOTE_LIST_MAX_BYTES:
+            return separator.join([*shown, f"{len(names) - len(shown)} more"])
+        shown.append(name)
+    return separator.join(shown)
+
+
+def _picked_endpoint(roster: Roster, picked: picker.PickerResult) -> str | None:
+    """The endpoint the picked route declares, in the precedence
+    `child.build_child_env` applies; None for the vendor's own."""
     provider = picked.executed_provider
-    account = (
-        provider.accounts.get(picked.executed_account)
-        if picked.executed_account is not None
-        else None
-    )
-    return _claude_route_elsewhere(
-        roster.resolve(provider.name).env, () if account is None else (account,)
+    account = provider.accounts.get(picked.executed_account or "")
+    env = {**roster.env_of(provider), **(account.env if account is not None else {})}
+    return env.get(ANTHROPIC_BASE_URL_KEY) or (
+        None if account is None else account.base_url
     )
 
 
-def _refuse_proxied_claude_writer(roster: Roster, picked: picker.PickerResult) -> None:
-    """The cage's closed env carries only the vendor credential, so a Claude route
-    that reaches its model through another endpoint cannot write caged."""
-    provider = picked.executed_provider
-    routed = _picked_route_elsewhere(roster, picked)
-    if routed:
+def refuse_writer_read_paths(
+    native_write: bool, read_paths: Sequence[str] | None
+) -> None:
+    if native_write and read_paths is not None:
         raise InvalidRunRequest(
-            f"native_write on claude route {provider.name!r} is refused: it declares "
-            f"{', '.join(routed)}, and the caged writer reaches only the vendor's "
-            "own endpoint with its pinned account"
+            "native_write refuses read_paths: drop read_paths because a native writer "
+            "reads the host without it, within its sandbox limits. "
+            "Or use read_only=true for a caged reader"
         )
 
 
@@ -8177,12 +9682,12 @@ def _refuse_undeclared_writer_root(worktree: str, roster: Roster) -> None:
 
 def _orchestrator_disposable(run_dir: Path) -> str:
     """The root of the turn's disposable needs: 0700 directories under the RUN's
-    own directory, never under the clean snapshot the turn only reads.
+    own directory, never under the tree the turn was dispatched into.
 
-    Every leaf of both trees -- the vendor child's state and the private MCP's --
-    because admission already composed an environment that names them, and the
-    NEUTRAL directory the app-server itself runs in, which is a leaf of the same
-    trusted per-run root for the same reason: nothing of it is the snapshot's.
+    Every leaf of the vendor child's state tree, because admission already
+    composed an environment that names them, and the NEUTRAL directory the
+    app-server itself runs in, which is a leaf of the same trusted per-run root
+    for the same reason: nothing of it is the dispatched tree's.
     """
     root = Path(native.orchestrator_disposable_root(run_dir))
     for directory in (
@@ -8199,21 +9704,36 @@ def _orchestrator_disposable(run_dir: Path) -> str:
     return str(root)
 
 
-def _disposable_environment(worktree: str) -> dict[str, str]:
-    """The tool environment of a native write run: its HOME, TMPDIR, caches and
-    store are 0700 directories under `<worktree>/.nott/disposable`."""
+def _operation_declaration(value: object) -> operations.Declaration:
+    return operations.Declaration.parse(value)
+
+
+def _unchecked_admission() -> operations.UncheckedAdmission:
+    return operations.UncheckedAdmission()
+
+
+def _disposable_locations(worktree: str) -> dict[str, str]:
+    """Calculate tool locations without materializing a writer's tree."""
     root = Path(worktree, ".nott", "disposable")
-    names = {
-        "HOME": root / "home",
-        "TMPDIR": root / "tmp",
-        "XDG_CACHE_HOME": root / "cache",
-        "UV_CACHE_DIR": root / "uv-cache",
-        "NOTT_DATABASE_DIR": root / "database",
+    return {
+        name: str(root / suffix)
+        for name, suffix in (
+            ("HOME", "home"),
+            ("TMPDIR", "tmp"),
+            ("XDG_CACHE_HOME", "cache"),
+            ("UV_CACHE_DIR", "uv-cache"),
+            ("NOTT_DATABASE_DIR", "database"),
+        )
     }
+
+
+def _disposable_environment(worktree: str) -> dict[str, str]:
+    """Materialize the closed writer locations after its claim."""
+    root = Path(worktree, ".nott", "disposable")
+    names = {name: Path(path) for name, path in _disposable_locations(worktree).items()}
     for directory in (root.parent, root, *names.values()):
         with contextlib.suppress(FileExistsError):
             directory.mkdir(mode=0o700)
-        # An earlier writer could leave a symlink here; nothing follows it.
         if not stat.S_ISDIR(directory.lstat().st_mode):
             raise InvalidRunRequest(
                 f"native write directory {directory} is not a directory"

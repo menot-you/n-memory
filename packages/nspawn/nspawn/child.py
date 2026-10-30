@@ -14,6 +14,7 @@ SIGSTOP-then-SIGKILL on the process group instead of a supervised subreaper.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import select
@@ -23,7 +24,6 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from itertools import pairwise
 from pathlib import Path
 from typing import BinaryIO, Final, Literal, assert_never, cast
 
@@ -35,11 +35,13 @@ from .owner_roster import (
     DERIVED_ENV_KEYS,
     NativeAccount,
     Provider,
+    TokenFileRefused,
     claude_config_dir,
     claude_family,
     credential_source,
     expand_value_with,
     model_env_build,
+    read_token_file,
 )
 from .wire import SANDBOX_TOOL_PATH
 
@@ -48,12 +50,19 @@ ANTHROPIC_BASE_URL_KEY = "ANTHROPIC_BASE_URL"
 #: The app sets this policy for its managed sessions and their descendants.
 MEMORY_POLICY_ENV = "NOTT_MEMORY_POLICY"
 #: What picks a child's endpoint or model. The route declares these, the
-#: caller never does: an inherited one sends the child somewhere else.
+#: caller never does: an inherited one sends the child somewhere else. It names
+#: every provider switch of the client (2.1.306): a route that declares one is
+#: never caged, and no child inherits one.
 ROUTE_ENV_NAMES = (
     ANTHROPIC_BASE_URL_KEY,
     "ANTHROPIC_SMALL_FAST_MODEL",
     "CLAUDE_CODE_USE_BEDROCK",
     "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+    "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
+    "CLAUDE_CODE_USE_MANTLE",
+    "CLAUDE_CODE_USE_GATEWAY",
 )
 from .process_identity import (
     ProcessIdentity,
@@ -156,6 +165,8 @@ class ChildEnvironmentError(ChildError):
     """The closed child environment or its credential could not be built."""
 
     def __init__(self, provider_name: str, detail: str) -> None:
+        #: The cause without the provider, as `credential_refusal` states it.
+        self.reason = detail
         super().__init__(NERR_1112, f"provider {provider_name!r}: {detail}")
 
 
@@ -220,7 +231,10 @@ def _credential_from_auth_env(
     value = ambient.get(provider.auth_env)
     if not value:
         raise ChildEnvironmentError(
-            provider.name, f"auth_env {provider.auth_env!r} is unset or empty"
+            provider.name,
+            f"auth_env {provider.auth_env!r} is unset or empty: set "
+            f"{provider.auth_env} in the environment nSPAWN starts with, then "
+            "restart nSPAWN",
         ) from resolve_error
     return value.encode("utf-8")
 
@@ -264,13 +278,38 @@ def _read_credential_bytes(
         raise ChildEnvironmentError(
             provider.name, f"a {source.kind} credential is not a Claude child's"
         )
-    token_path = Path(source.location)
     try:
-        return token_path.read_bytes()
-    except OSError as error:
-        raise ChildEnvironmentError(
-            provider.name, f"credential file {token_path} could not be read: {error}"
-        ) from error
+        return read_token_file(Path(source.location))
+    except TokenFileRefused as refused:
+        # The file and its fix, never a host path (`TokenFileRefused`).
+        raise ChildEnvironmentError(provider.name, refused.message) from refused
+
+
+def credential_refusal(
+    provider: Provider, account_alias: str | None, ambient: Mapping[str, str]
+) -> str | None:
+    """Why the declared credential of a Claude child of `provider` on
+    `account_alias` cannot be provided, or None when it can.
+
+    The launch's own reader answers (`_read_credential_bytes`), so the picker
+    keeps a route off for exactly the cause its launch would fail with: an
+    `auth_env` with no value in `ambient`, a token file that is not there or
+    that its fence refuses. The answer names the variable or the file and the
+    fix, never a value. A route that declares no source at all is the roster's
+    shape, not an absent credential: None, and its launch names it as before.
+    A secrets directory is a declared source, so one with no usable token file
+    is refused like a missing file (`Provider.resolve_token_file`).
+    """
+    try:
+        credential_source(provider, account_alias)
+    except ValueError:
+        if provider.secrets_dir() is None:
+            return None
+    try:
+        _read_credential_bytes(provider, account_alias, ambient)
+    except ChildEnvironmentError as refused:
+        return refused.reason
+    return None
 
 
 def _selected_account(
@@ -291,6 +330,37 @@ def _selected_account(
         # truths about which account an absent alias means.
         alias = next(iter(provider.accounts), None)
     return None if alias is None else provider.accounts.get(alias)
+
+
+def declared_env(
+    provider: Provider,
+    account_alias: str | None,
+    *,
+    defaults_env: Mapping[str, str] | None = None,
+    plugin_root: Path | None = None,
+    ambient: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """The settings the roster declares for a child of `provider` on the account
+    `account_alias`: `defaults_env` (`[defaults.env]` under `[provider.env]`, else
+    the provider's own), then the account's env, which is more specific. Each
+    `$PLUGIN` and `$NAME` is expanded; the derived spelling of a setting follows
+    its source (`DERIVED_ENV_KEYS`).
+    """
+    ambient_env = os.environ if ambient is None else ambient
+    account = _selected_account(provider, account_alias)
+    declared: dict[str, str] = {}
+    for layer in (defaults_env or provider.env, {} if account is None else account.env):
+        for name, raw in layer.items():
+            value = expand_value_with(raw, plugin_root, ambient_env)
+            # A REFERENCE THAT RESOLVED TO NOTHING IS AN ABSENT SETTING, never
+            # an empty one. A literal empty value in the roster is still
+            # honoured: only an unresolved `$NAME` drops.
+            if value or "$" not in raw:
+                declared[name] = value
+    for derived, source in DERIVED_ENV_KEYS.items():
+        if source in declared:
+            declared[derived] = declared[source]
+    return declared
 
 
 def build_child_env(
@@ -365,21 +435,15 @@ def build_child_env(
         model_env_build(model, model_fast, binary or provider.bin, env)
     if effort is not None:
         env["CLAUDE_CODE_EFFORT_LEVEL"] = effort
-    for name, raw in (defaults_env or provider.env).items():
-        value = expand_value_with(raw, plugin_root, ambient_env)
-        if not value and "$" in raw:
-            # A REFERENCE THAT RESOLVED TO NOTHING IS AN ABSENT SETTING, never
-            # an empty one. A literal empty value in the roster is still
-            # honoured: only an unresolved `$NAME` drops.
-            continue
-        env[name] = value
-    # The account is more specific than the provider, so it comes AFTER it.
-    if account is not None and account.env:
-        for name, raw in account.env.items():
-            value = expand_value_with(raw, plugin_root, ambient_env)
-            if not value and "$" in raw:
-                continue
-            env[name] = value
+    env.update(
+        declared_env(
+            provider,
+            account_alias,
+            defaults_env=defaults_env,
+            plugin_root=plugin_root,
+            ambient=ambient_env,
+        )
+    )
     # One window, two spellings: the roster writes the owner's spelling and this follows it,
     # clearing whatever the parent's environment brought. The client reads both and
     # letting them diverge is like declaring neither.
@@ -504,6 +568,29 @@ READ_ONLY_MCP_TOOLS: tuple[str, ...] = (
 #: A repository's own config can make a read-only git spelling run a program
 #: or read outside the roots, so the cage grants no git at all.
 READ_ONLY_DENIED: tuple[str, ...] = ("Bash(git:*)",)
+
+
+def read_only_grant(
+    tools: Sequence[str], agent_tools: Sequence[str] | None
+) -> list[str]:
+    """`tools` narrowed by an agent's `tools`, in the order of `tools`. Only the
+    names the agent declares bare stay: a `Bash(...)` pattern keeps no Bash, and a
+    name outside `tools` adds nothing. No `tools` key narrows nothing."""
+    if agent_tools is None:
+        return list(tools)
+    declared = {name.strip() for name in agent_tools}
+    return [name for name in tools if name in declared]
+
+
+#: What an uncaged writer is denied by name: the tools of an nSPAWN MCP server.
+#: A writer never supervises children. Removing `nspawn` from the projected
+#: plugin's `.mcp.json` is not enough: a plugin dir lifts `--strict-mcp-config`,
+#: so a server that the account home registers at user scope would still load.
+#: The first pattern is the plugin's server and the second is a user-scoped one.
+WRITER_DENIED: tuple[str, ...] = ("mcp__plugin_nott_nspawn__*", "mcp__nspawn__*")
+#: The roster may not replace that deny: its args follow it on argv.
+DENY_TOOLS_FLAGS: tuple[str, ...] = ("--disallowedTools", "--disallowed-tools")
+
 #: Roster args follow the cage on argv, so they may not replace its tool sets
 #: or its deny.
 READ_ONLY_POLICY_FLAGS: tuple[str, ...] = (
@@ -605,6 +692,77 @@ def validate_read_paths(
     return paths
 
 
+#: The temporary root a native writer works in. On SERVER, /tmp is a tmpfs with a
+#: fixed inode limit, and a test run that fills it stops every session on the box.
+WRITER_TMP_ROOT: Final = Path("/var/tmp")
+
+
+def writer_tmpdir(ambient: str | None) -> str:
+    """The TMPDIR for a native writer: `ambient` as the absolute path that was
+    checked when it is under `WRITER_TMP_ROOT`, else `WRITER_TMP_ROOT`. The
+    writer runs in its clone, so a relative value is never returned as written:
+    it would name another place there. The writer loads no project settings, so
+    nothing else sets it."""
+    if ambient:
+        real = Path(os.path.realpath(ambient))
+        if real.is_relative_to(os.path.realpath(WRITER_TMP_ROOT)):
+            return os.fspath(real)
+    return os.fspath(WRITER_TMP_ROOT)
+
+
+#: How a plugin's hook commands name their own directory.
+HOOKS_PLACEHOLDER: Final = "${CLAUDE_PLUGIN_ROOT}/hooks/"
+
+
+def _bound_hook_commands(value: object, hooks: str) -> object:
+    """`value` with each hook command pointed at the source hooks directory."""
+    if isinstance(value, str):
+        return value.replace(HOOKS_PLACEHOLDER, hooks)
+    if isinstance(value, list):
+        return [_bound_hook_commands(item, hooks) for item in value]
+    if isinstance(value, dict):
+        return {key: _bound_hook_commands(item, hooks) for key, item in value.items()}
+    return value
+
+
+def _writer_hooks(source: Path, destination: Path) -> None:
+    """Project a hooks directory and bind its commands to the source directory.
+
+    A hook finds its repository from its own path (`../..`), and a shell reads
+    that path as written. Run through the projection, `../..` is the run
+    directory, so the repository checks of the hooks see no repository. The
+    projected `hooks.json` therefore names each hook by its path in `source`,
+    where `../..` is the source repository. Every command quotes the name, so
+    the characters a double quote does not keep literal get a backslash.
+    """
+    destination.mkdir(mode=0o700, exist_ok=True)
+    hooks = re.sub(r'([\\"$`])', r"\\\1", os.fspath(source)) + "/"
+    for entry in source.iterdir():
+        target = destination / entry.name
+        if entry.name == "hooks.json":
+            document = _bound_hook_commands(json.loads(entry.read_bytes()), hooks)
+            target.write_text(json.dumps(document))
+        elif not target.exists() and not target.is_symlink():
+            target.symlink_to(entry)
+
+
+def writer_plugin(source: Path, destination: Path) -> None:
+    """Keep plugin hooks and content, but remove the child supervisor MCP server.
+
+    The hooks stay bound to `source`, the trusted plugin directory."""
+    destination.mkdir(mode=0o700, exist_ok=True)
+    for entry in source.iterdir():
+        target = destination / entry.name
+        if entry.name == ".mcp.json":
+            document = json.loads(entry.read_bytes())
+            document.get("mcpServers", {}).pop("nspawn", None)
+            target.write_text(json.dumps(document))
+        elif entry.name == "hooks" and entry.is_dir():
+            _writer_hooks(entry.resolve(), target)
+        elif not target.exists() and not target.is_symlink():
+            target.symlink_to(entry)
+
+
 def _plugin_dirs_the_explicit_one_does_not_replace(
     declared_args: Sequence[str],
     plugin_dir: Path | str | None,
@@ -655,6 +813,7 @@ def compose_child_argv(
     read_only: bool = False,
     read_paths: Sequence[str] | None = None,
     inference_profile: StructuredInference | None = None,
+    agent_tools: Sequence[str] | None = None,
 ) -> list[str]:
     """Compose one Claude stream-json turn without shell interpretation.
 
@@ -685,6 +844,12 @@ def compose_child_argv(
     a `Bash(...)` allow pattern, and `bash -c` writes as readily as it reads —
     so a review that must DRIVE a gate is not caged; it is dispatched writable
     into its own worktree.
+
+    ``agent_tools`` is the `tools` key of the child's agent file. It narrows
+    both tool sets of the cage (`read_only_grant`) and never widens them. The
+    vendor's read-only classification is not the only fence: run 16dc5d14
+    (2026-10-24, the `gpt` proxy route) admitted `python -I -` under
+    `dontAsk`, so an agent without Bash gets no Bash, on every Claude route.
     """
     granted_read_paths = validate_read_paths(read_paths, read_only=read_only)
     if inference_profile is not None and (
@@ -699,6 +864,8 @@ def compose_child_argv(
     argv: list[str] = [
         os.fspath(binary),
         "-p",
+        "--input-format",
+        "stream-json",
         "--output-format",
         "stream-json",
         "--verbose",
@@ -728,9 +895,15 @@ def compose_child_argv(
             argv.extend(("--add-dir", path))
         if plugin_dir is not None and os.fspath(plugin_dir) not in granted_read_paths:
             argv.extend(("--add-dir", os.fspath(plugin_dir)))
-        argv.extend(("--tools", ",".join(READ_ONLY_TOOLS)))
-        argv.extend(("--allowedTools", ",".join(READ_ONLY_MCP_TOOLS)))
+        argv.extend(
+            ("--tools", ",".join(read_only_grant(READ_ONLY_TOOLS, agent_tools)))
+        )
+        allowed = read_only_grant(READ_ONLY_MCP_TOOLS, agent_tools)
+        if allowed:
+            argv.extend(("--allowedTools", ",".join(allowed)))
         argv.extend(("--disallowedTools", ",".join(READ_ONLY_DENIED)))
+    else:
+        argv.extend(("--disallowedTools", ",".join(WRITER_DENIED)))
     if declared_args and inference_profile is None:
         # The roster's own `args`. They come from the owner, but the flag door
         # is a property of the CHILD, not of who asked: a forbidden flag
@@ -738,8 +911,10 @@ def compose_child_argv(
         # door, so it is refused by name rather than trusted by origin.
         for flag in declared_args:
             flag_name = flag.partition("=")[0]
-            if flag_name in claude_child.FORBIDDEN_CLAUDE_FLAGS or (
-                read_only and flag_name in READ_ONLY_POLICY_FLAGS
+            if (
+                flag_name in claude_child.FORBIDDEN_CLAUDE_FLAGS
+                or (read_only and flag_name in READ_ONLY_POLICY_FLAGS)
+                or (not read_only and flag_name in DENY_TOOLS_FLAGS)
             ):
                 raise ChildEnvironmentError(
                     "roster", f"declared args carry the forbidden flag {flag!r}"
@@ -765,26 +940,32 @@ def compose_child_argv(
 
 
 #: The variable the plugin's law-session.sh reads: `off` silences its copy of the law.
+#: Every nSPAWN child runs with it, because no child runs with the law.
 LAW_SESSION_ENV: Final = "NOTT_LAW_SESSION"
 #: The first line of the NOTT law (plugin/NOTT.md).
 LAW_TITLE: Final = b"# **NOTT** System Prompt"
 
 
-def appends_law(declared_args: Sequence[str], cwd: Path | str) -> bool:
-    """Whether the roster's `declared_args` append a file that IS the NOTT law.
+def _is_law_file(path: str, cwd: Path | str) -> bool:
+    """Whether `path`, relative to the child's `cwd`, begins with the law's first line."""
+    prompt = Path(cwd, path)
+    return prompt.is_file() and prompt.read_bytes().startswith(LAW_TITLE)
 
-    The plugin's SessionStart hook prints the whole law as well (~15 KB since
-    2026-09-26); a child whose system prompt carries it is told to skip that copy.
-    Only the roster's own file is read, and it is the law when it begins with the
-    law's first line: a dispatch's text is combined in front of it, so a dispatch
-    that quotes the title must never silence the only copy its child would get.
-    """
-    return any(
-        flag == "--append-system-prompt-file"
-        and (prompt := Path(cwd, path)).is_file()
-        and prompt.read_bytes().startswith(LAW_TITLE)
-        for flag, path in pairwise(declared_args)
-    )
+
+def without_law(declared_args: Sequence[str], cwd: Path | str) -> list[str]:
+    """The roster's `declared_args` without an `--append-system-prompt-file` that
+    is the NOTT law. A child runs with its agent, never the law; an appended file
+    that is not the law stays."""
+    args = list(declared_args)
+    index = 0
+    while index + 1 < len(args):
+        if args[index] == "--append-system-prompt-file" and _is_law_file(
+            args[index + 1], cwd
+        ):
+            del args[index : index + 2]
+            continue
+        index += 1
+    return args
 
 
 class SpawnedChild:

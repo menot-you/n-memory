@@ -9,35 +9,26 @@ from typing import Any
 SCHEMA_PATH = Path(__file__).parents[1] / "nmemory" / "tools_schema.json"
 EXPECTED_NAMES = (
     "nmemory_board_show",
-    "nmemory_capsule_consolidate",
-    "nmemory_capsule_export",
-    "nmemory_capsule_import",
     "nmemory_capsule_ingest",
     "nmemory_capsule_list",
     "nmemory_capsule_pin",
     "nmemory_capsule_purge",
-    "nmemory_capsule_reanchor",
     "nmemory_capsule_retrieve",
     "nmemory_capsule_show",
     "nmemory_context_show",
-    "nmemory_coverage_show",
     "nmemory_digest_show",
     "nmemory_dod_set",
-    "nmemory_index_build",
     "nmemory_kind_classify",
     "nmemory_outcome_list",
     "nmemory_outcome_record",
-    "nmemory_project_bootstrap",
     "nmemory_proposal_review",
     "nmemory_relation_add",
     "nmemory_session_finish",
     "nmemory_session_start",
-    "nmemory_synonym_add",
-    "nmemory_turn_extract",
     "nmemory_work_list",
 )
 EXPECTED_NON_DESCRIPTION_SHA256 = (
-    "d8f7e126df0ee080a6b3d0399de800a773e23ef4c2b25060f1640125c1972958"
+    "556899713e1f4265a666dca323be00864e6b6ab3708f6ab9dc978555ea17046f"
 )
 MAX_DESCRIPTION_BYTES = 4096
 MAX_TOTAL_DESCRIPTION_BYTES = 35_000

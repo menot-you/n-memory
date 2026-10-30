@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -B
 """Stop hook: block turn completion when an owner correction or decision was not captured.
 
 Runs on main owner sessions only. When the latest owner message states a correction

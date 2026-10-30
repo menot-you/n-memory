@@ -164,28 +164,16 @@ def test_the_default_scope_fences_by_subtree_and_explicit_stays_exact() -> None:
     )
 
 
-def test_the_bootstrap_reader_folds_the_alias_too() -> None:
-    """Bootstrap is a DELIVERY surface: losing reach there happens at startup.
+def test_the_retrieve_prefix_folds_the_alias_too() -> None:
+    """Retrieve is a DELIVERY surface: a reader that does not fold loses reach.
 
-    "EVERY reader" wasn't every reader — `nmemory_project_bootstrap` and `project_prefix` in
-    `retrieve` were left out of the initial shape. Caught by independent
-    review.
+    "EVERY reader" wasn't every reader — `project_prefix` in `retrieve` was left
+    out of the initial shape. Caught by independent review.
     """
     _pg, _store, server = _fresh()
-    # The bootstrap bundle has sections per kind (constraints, decisions,
-    # traps, tasks); a `fact` enters none of them.
     _ingest_kind(
         server, "bootstrap fold observation", "/workspace/example", "constraint"
     )
-
-    boot = json.loads(
-        server.call_tool(
-            "nmemory_project_bootstrap",
-            {"project_id": "/workspace/example"},
-            context=_ctx(),
-        )["result"]["content"][0]["text"]
-    )
-    assert boot["handles"], "a client on the old spelling still orients"
 
     retrieved = json.loads(
         server.call_tool(
@@ -195,7 +183,7 @@ def test_the_bootstrap_reader_folds_the_alias_too() -> None:
         )["result"]["content"][0]["text"]
     )
     assert retrieved["results"], (
-        "and the retrieve prefix folds like the list prefix — one tool, one fence"
+        "the retrieve prefix folds like the list prefix — one tool, one fence"
     )
 
 

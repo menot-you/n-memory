@@ -470,7 +470,7 @@ def test_a_miss_row_carries_enough_to_replay_the_call() -> None:
     The row was `(seq, term, outcome, at)`. Two of the four diagnoses that
     lock 4 wanted — "the fence was wrong" and "the capsule exists and the index did not
     reach it" — are invisible in it, and the metric "the same query now
-    succeeds" was satisfiable with an INSERT, because `nmemory_synonym_add` expands every
+    succeeds" was satisfiable with an INSERT, because the synonyms table expands every
     term on retrieval.
     """
     store, client = _store(3, dated=False)

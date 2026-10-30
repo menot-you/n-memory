@@ -23,7 +23,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
 from types import TracebackType
@@ -33,11 +33,18 @@ from zoneinfo import ZoneInfo
 import nott_database
 from nott_database import BusyError, DatabaseError, write
 
+from . import operations, red_witness, review_cap
 from .errors import NSpawnError
 from .inference import InferenceHome, StructuredInference
-from .limits import MAX_DURABLE_IDENTIFIER_BYTES, MAX_DURABLE_PATH_BYTES
+from .limits import (
+    MAX_DURABLE_IDENTIFIER_BYTES,
+    MAX_DURABLE_OBSERVATION_BYTES,
+    MAX_DURABLE_PATH_BYTES,
+)
 from .process_identity import (
     ProcessIdentity,
+    ProcessIdentityError,
+    capture_process_identity,
     of_earlier_boot,
     process_identity_matches,
 )
@@ -57,31 +64,40 @@ from .rows import (
     NativeSessionContext,
     ProviderWallRow,
     RunEventRow,
-    RunPage,
     RunPhase,
     RunRow,
     SessionActivation,
     SessionProfile,
     SessionReference,
     WorktreeClaim,
+    WriterRedReceipt,
 )
 from .schema import (
     ADMISSION_HELD,
     ADMISSION_TABLES_DDL,
     ADMISSION_TRIGGER_DDL,
     ADMISSION_UNBOUND,
+    CLAIM_GENERATION_TRIGGERS_DDL,
+    CLAIM_GENERATIONS_DDL,
     CLASS_OBSERVATIONS_DDL,
     CLASS_OUTCOME_TRIGGER_DDL,
     COMPUTE_BALANCE_DDL,
+    INSTANCE_PROCESS_COLUMNS,
+    JOURNAL_COLUMN_INDEX_DDL,
+    JOURNAL_DDL,
+    JOURNAL_SESSION_COLUMNS,
+    JOURNAL_SOURCE_COLUMNS,
     KEY_FENCE_TRIGGER_DDL,
     KEY_FENCED,
     KEY_FENCES_DDL,
     KEYED_RETENTION_MS,
     LEGACY_THREAD_INDEX_DDL,
     NOTICE_ARM_TRIGGER_DDL,
+    NOTICE_BODY_COLUMN,
     NOTICE_GENERATION_COLUMN,
     OWNER_STAMPS_DDL,
     REGISTRY_SCHEMA_VERSION,
+    REVIEW_HEADS_DDL,
     RUN_OWNER_COLUMN,
     SCHEMA_DDL,
     STORE_FILE,
@@ -122,6 +138,18 @@ class RegistryError(NSpawnError):
         Exception.__init__(self, message)
 
 
+class WriterRedRefused(RegistryError):
+    """The claimed clone no longer matches the admission receipt."""
+
+    def __init__(self, message: str, head: str | None = None) -> None:
+        super().__init__(message)
+        self.head = head
+
+
+class WriterRedCorrupt(RegistryError):
+    """Retained receipt is malformed, duplicated or inconsistent."""
+
+
 class StaleComputeReading(RegistryError):
     """A compute reading older than the stored one; the store refused it."""
 
@@ -144,6 +172,25 @@ class AdmissionHeldRow(RegistryError):
 
 class AdmissionUnboundRow(RegistryError):
     """A reserved key or bound group was used outside its immutable binding."""
+
+
+#: The text of `WorktreeOwnershipChanged`: fixed, so it names no path or run.
+WORKTREE_OWNERSHIP_CHANGED: Final = (
+    "The worktree claim changed while admission read the clone HEAD. "
+    "No run was admitted. Retry the same call."
+)
+
+
+class WorktreeOwnershipChanged(RegistryError):
+    """The worktree claim changed while a RED admission read the clone HEAD.
+
+    Retryable: the same call reads the HEAD again. The admission wrote nothing.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(WORKTREE_OWNERSHIP_CHANGED)
+        #: Rendered beside the message at the MCP boundary.
+        self.data: dict[str, Any] = {"retryable": True}
 
 
 class UniqueTaken(RegistryError):
@@ -171,8 +218,39 @@ def create_store(
     nott_database.create(path, SCHEMA_DDL, allow_live_store=allow_live_store)
 
 
-#: How many runs one page answers, and the ceiling any caller can ask for.
-#: The oracle keeps both beside the registry rather than in `limits.rs`.
+def open_store(
+    path: str | os.PathLike[str], *, readonly: bool = False
+) -> nott_database.Connection:
+    """The registry's open path for the session journal (`nspawn.journal`).
+
+    A writer gets the registry's own connect and schema step (`Registry.upgrade`,
+    which adds the journal tables and keeps the version), and registers no
+    instance. A reader opens the file read-only and changes nothing. Neither
+    creates a file: `create_store` is the only way a file comes into existence.
+    """
+    if readonly:
+        try:
+            connection = nott_database.connect(
+                path, readonly=True, allow_live_store=True
+            )
+        except STORE_ERRORS as exc:
+            raise RegistryError(
+                f"the registry at {path} could not be opened: {exc}"
+            ) from exc
+        connection.row_factory = nott_database.Row
+        return connection
+    registry = Registry(path, "session-journal", allow_live_store=True).connect()
+    try:
+        registry.upgrade()
+    except BaseException:
+        registry.close()
+        raise
+    connection, registry._connection = registry.connection, None
+    return connection
+
+
+#: How many runs one list answers.
+#: The oracle keeps it beside the registry rather than in `limits.rs`.
 MAX_RUN_PAGE = 128
 
 #: The phases `mark_orphans` REFUSES to overwrite, spelled for SQL from the one
@@ -496,6 +574,10 @@ class KeyLock:
         with self._mapped(), self._guard, self._registry._transaction():
             yield
 
+    def operation_admission(self, run_id: str) -> operations.CheckedAdmission | None:
+        """Return the recorded check while the caller holds the key transaction."""
+        return operation_admission_read(self._registry.connection, run_id)
+
     def batch_conflict(self, fingerprint: str) -> str | None:
         """A run of this key's batch admitted for another batch, else None.
 
@@ -717,98 +799,114 @@ def compute_chained_hash(previous_hash: str, canonical_line: str) -> str:
     return hashlib.sha256(f"{previous_hash}\n{canonical_line}".encode()).hexdigest()
 
 
-#: Exactly the keys one orchestrator binding records, and their order in the
-#: event payload. The store keeps no column for any of them: the binding is a
-#: `lifecycle` payload like the writer's slice, and a key beside these would be
-#: one more thing admission claims to have bound.
-#:
-#: THE WHOLE BINDING, not the session and the contract alone: a resume is checked
-#: against this record (`native.OrchestratorBinding.resume_refusal`), so a record
-#: short of the repository, the store or the interpreter cannot answer whether a
-#: resume names the same ones -- and a record that cannot answer is a resume that
-#: may change them.
-#:
-#: BOTH TREES, under their own names: the `repository` the turn's proposals are
-#: bound to (the session's real, editable root) and the `snapshot` it reads (the
-#: admission's own cwd). A record carrying one path for both could not say which
-#: tree a resume is restating, and a run recorded without the `repository` cannot
-#: be resumed at all -- `validated_orchestrator_binding` reads this key set on the
-#: way in and on the way out, so a short record is a refusal, never a default.
-ORCHESTRATOR_BINDING_IDENTIFIERS: Final = ("session", "profile")
-ORCHESTRATOR_BINDING_PATHS: Final = (
-    "repository",
-    "snapshot",
-    "runtime",
-    "database_dir",
-    "interpreter",
-)
-ORCHESTRATOR_BINDING_KEYS: Final = (
-    *ORCHESTRATOR_BINDING_IDENTIFIERS,
-    "tool_contract",
-    *ORCHESTRATOR_BINDING_PATHS,
-)
-
-
-def validated_orchestrator_binding(binding: object) -> dict[str, Any]:
-    """One complete recorded binding, or a refusal naming the field.
-
-    Read on the way IN and on the way back OUT, so a payload another writer left
-    in this run's chain can neither be admitted nor answered as a binding -- and
-    so a run recorded with an incomplete binding is refused a resume rather than
-    resumed against the half of it that was written down.
-    """
-    if not isinstance(binding, dict) or set(binding) != set(ORCHESTRATOR_BINDING_KEYS):
-        raise RegistryError(
-            "an orchestrator binding names exactly "
-            f"{', '.join(ORCHESTRATOR_BINDING_KEYS)}"
+def _run_events(connection: nott_database.Connection, run_id: str) -> list[RunEventRow]:
+    return [
+        RunEventRow(
+            run_id=str(row["run_id"]),
+            seq=int(row["seq"]),
+            at=int(row["at"]),
+            kind=str(row["kind"]),
+            payload=json.loads(row["payload"]),
+            chained_hash=str(row["chained_hash"]),
         )
-    for name in ORCHESTRATOR_BINDING_IDENTIFIERS + ORCHESTRATOR_BINDING_PATHS:
-        value = binding[name]
+        for row in nott_database.query(
+            connection,
+            f"SELECT {', '.join(RUN_EVENT_COLUMNS)} FROM run_events WHERE run_id = ? ORDER BY seq",
+            (run_id,),
+        )
+    ]
+
+
+def _session_profile(payloads: Iterable[object]) -> SessionProfile | None:
+    """Validate one original profile from decoded lifecycle payloads."""
+    records = [
+        payload["session_profile"]
+        for payload in payloads
+        if isinstance(payload, dict) and "session_profile" in payload
+    ]
+    if not records:
+        return None
+    if len(records) != 1:
+        raise RegistryError("run carries multiple session profiles")
+    try:
+        return SessionProfile.from_record(records[0])
+    except (TypeError, ValueError) as error:
+        raise RegistryError("run carries an invalid session profile") from error
+
+
+def _chain_valid(events: Sequence[RunEventRow]) -> bool:
+    previous = GENESIS_HASH
+    for expected, event in enumerate(events, 1):
         if (
-            not isinstance(value, str)
-            or not value
-            or not value.isprintable()
-            or len(value.encode("utf-8")) > MAX_DURABLE_IDENTIFIER_BYTES
+            event.seq != expected
+            or compute_chained_hash(previous, event.canonical_line())
+            != event.chained_hash
         ):
-            raise RegistryError(
-                f"an orchestrator binding's {name} must be a bounded identifier"
-            )
-    for name in ORCHESTRATOR_BINDING_PATHS:
-        value = binding[name]
-        if not PurePosixPath(value).is_absolute() or value != os.path.normpath(value):
-            raise RegistryError(
-                f"an orchestrator binding's {name} must be an absolute canonical path"
-            )
-    contract = binding["tool_contract"]
-    if (
-        not isinstance(contract, dict)
-        or set(contract) != {"mcp", "project", "tools"}
-        or not isinstance(contract["mcp"], str)
-        or not contract["mcp"]
-        or not isinstance(contract["project"], str)
-        or not contract["project"]
-        or not isinstance(contract["tools"], list)
-        or not contract["tools"]
-        or any(not isinstance(tool, str) or not tool for tool in contract["tools"])
-    ):
-        raise RegistryError(
-            "an orchestrator binding's tool_contract names one MCP, one project "
-            "and its tools"
-        )
-    return {name: binding[name] for name in ORCHESTRATOR_BINDING_KEYS}
+            return False
+        previous = event.chained_hash
+    return True
 
 
-def _orchestrator_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """The lifecycle payload an admission appends, validated before any row."""
-    if not isinstance(payload, Mapping) or set(payload) != {"orchestrator_binding"}:
+def effort_read(connection: nott_database.Connection, run_id: str) -> EffortProfile:
+    """Read and validate the admission effort on a caller's store connection."""
+    try:
+        events = _run_events(connection, run_id)
+        if not _chain_valid(events):
+            raise RegistryError(f"run {run_id!r} event chain is invalid")
+        records = [
+            (event.kind, event.payload)
+            for event in events
+            if isinstance(event.payload, dict) and "effort_profile" in event.payload
+        ]
+    except (*STORE_ERRORS, ValueError) as error:
         raise RegistryError(
-            "an orchestrator payload carries exactly `orchestrator_binding`"
-        )
-    return {
-        "orchestrator_binding": validated_orchestrator_binding(
-            payload["orchestrator_binding"]
-        )
-    }
+            f"run {run_id!r} events could not be read: {error}"
+        ) from error
+    if not records:
+        return UNKNOWN_EFFORT
+    kind, payload = records[0]
+    if len(records) != 1 or kind != "lifecycle" or set(payload) != {"effort_profile"}:
+        raise RegistryError(f"run {run_id!r} carries a malformed effort record")
+    try:
+        record = _effort_record(payload["effort_profile"])
+    except RegistryError as error:
+        raise RegistryError(
+            f"run {run_id!r} carries a malformed effort record: {error}"
+        ) from error
+    return EffortProfile(
+        requested=record["requested"],
+        requested_source=EFFORT_FROM_ADMISSION,
+        sent=record["sent"],
+        sent_source=EFFORT_FROM_ADMISSION,
+    )
+
+
+def operation_admission_read(
+    connection: nott_database.Connection, run_id: str
+) -> operations.CheckedAdmission | None:
+    """Read one validated admission witness from the verified event chain."""
+    try:
+        events = _run_events(connection, run_id)
+        if not _chain_valid(events):
+            raise ValueError("invalid event chain")
+        records = [
+            event
+            for event in events
+            if isinstance(event.payload, dict)
+            and "operation_admission" in event.payload
+        ]
+        if not records:
+            return None
+        if (
+            len(records) != 1
+            or records[0].kind != "lifecycle"
+            or not isinstance(records[0].payload, dict)
+            or set(records[0].payload) != {"operation_admission"}
+        ):
+            raise ValueError("malformed operation record")
+        return operations.admission_read(records[0].payload["operation_admission"])
+    except (*STORE_ERRORS, ValueError, TypeError, KeyError) as error:
+        raise RegistryError("operation admission witness could not be read") from error
 
 
 def _unique_constraint(error: nott_database.IntegrityError) -> str | None:
@@ -862,12 +960,14 @@ class Registry:
         instance_id: str,
         *,
         allow_live_store: bool = False,
+        readonly: bool = False,
     ) -> None:
         _validate_required(
             "instances.instance_id", instance_id, MAX_DURABLE_IDENTIFIER_BYTES
         )
         self.path = Path(path)
         self.allow_live_store = allow_live_store
+        self.readonly = readonly
         self.instance_id = instance_id
         self._connection: nott_database.Connection | None = None
         self._serial = threading.RLock()
@@ -999,21 +1099,8 @@ class Registry:
 
     def read_run_events(self, run_id: str) -> list[RunEventRow]:
         """Every run event, in `seq` order."""
-        return [
-            RunEventRow(
-                run_id=str(r["run_id"]),
-                seq=int(r["seq"]),
-                at=int(r["at"]),
-                kind=str(r["kind"]),
-                payload=json.loads(r["payload"]),
-                chained_hash=str(r["chained_hash"]),
-            )
-            for r in self._rows(
-                f"SELECT {', '.join(RUN_EVENT_COLUMNS)} FROM run_events "
-                "WHERE run_id = ? ORDER BY seq",
-                (run_id,),
-            )
-        ]
+        with self._serial:
+            return _run_events(self.connection, run_id)
 
     def _usage_node(self, row: RunRow | None) -> str | None:
         if row is None:
@@ -1241,16 +1328,7 @@ class Registry:
 
     def verify_run_event_chain(self, run_id: str) -> bool:
         """Recomputes the entire run chain and checks if it closes."""
-        previous_hash = GENESIS_HASH
-        for expected_seq, event in enumerate(self.read_run_events(run_id), 1):
-            if event.seq != expected_seq:
-                return False
-            if compute_chained_hash(previous_hash, event.canonical_line()) != (
-                event.chained_hash
-            ):
-                return False
-            previous_hash = event.chained_hash
-        return True
+        return _chain_valid(self.read_run_events(run_id))
 
     def writer_scope(self, run_id: str) -> tuple[str, str] | None:
         """The (unit, cgroup) a native write run recorded before its launch."""
@@ -1277,6 +1355,56 @@ class Registry:
             raise RegistryError(f"run {run_id!r} carries a malformed writer scope")
         return unit, cgroup
 
+    def writer_units(self) -> dict[str, str]:
+        """Every writer slice on record, by unit, with the run that recorded it."""
+        try:
+            rows = self._rows(
+                "SELECT run_id, json_extract(payload, '$.writer_scope.unit') AS unit "
+                "FROM run_events WHERE kind = 'lifecycle' "
+                "AND json_type(payload, '$.writer_scope.unit') = 'text'"
+            )
+        except STORE_ERRORS as error:
+            raise RegistryError(f"writer slices could not be read: {error}") from error
+        return {str(row["unit"]): str(row["run_id"]) for row in rows}
+
+    def poisoned_writer_units(self) -> dict[str, str]:
+        """Return recorded writer slices whose poisoned claims still need cleanup."""
+        try:
+            rows = self._rows(
+                "SELECT events.run_id, "
+                "json_extract(events.payload, '$.writer_scope.unit') AS unit "
+                "FROM run_events AS events JOIN claims ON claims.run_id = events.run_id "
+                "WHERE events.kind = 'lifecycle' AND claims.lease_until = ? "
+                "AND json_type(events.payload, '$.writer_scope.unit') = 'text'",
+                (POISONED_LEASE_UNTIL,),
+            )
+        except STORE_ERRORS as error:
+            raise RegistryError(
+                f"poisoned writer slices could not be read: {error}"
+            ) from error
+        return {str(row["unit"]): str(row["run_id"]) for row in rows}
+
+    def run_phases(self, run_ids: Iterable[str]) -> dict[str, tuple[RunPhase, str]]:
+        """The phase and the worktree of each named run on record, read in one
+        statement per 500 ids; a run the store does not hold is absent."""
+        wanted = list(dict.fromkeys(run_ids))
+        found: dict[str, tuple[RunPhase, str]] = {}
+        try:
+            for start in range(0, len(wanted), 500):
+                chunk = wanted[start : start + 500]
+                for row in self._rows(
+                    "SELECT run_id, phase, worktree FROM runs WHERE run_id IN "
+                    f"({', '.join('?' * len(chunk))})",
+                    chunk,
+                ):
+                    found[str(row["run_id"])] = (
+                        RunPhase(row["phase"]),
+                        str(row["worktree"]),
+                    )
+        except STORE_ERRORS as error:
+            raise RegistryError(f"run phases could not be read: {error}") from error
+        return found
+
     def effort_profile(self, run_id: str) -> EffortProfile:
         """The effort profile its admission recorded, read from the journal alone.
 
@@ -1284,63 +1412,29 @@ class Registry:
         unknown profile, and a malformed, misplaced or second record is refused
         rather than picked from.
         """
-        try:
-            if not self.verify_run_event_chain(run_id):
-                raise RegistryError(f"run {run_id!r} event chain is invalid")
-            records = [
-                (event.kind, event.payload)
-                for event in self.read_run_events(run_id)
-                if isinstance(event.payload, dict) and "effort_profile" in event.payload
-            ]
-        except (*STORE_ERRORS, ValueError) as error:
-            raise RegistryError(
-                f"run {run_id!r} events could not be read: {error}"
-            ) from error
-        if not records:
-            return UNKNOWN_EFFORT
-        kind, payload = records[0]
-        if (
-            len(records) != 1
-            or kind != "lifecycle"
-            or set(payload) != {"effort_profile"}
-        ):
-            raise RegistryError(f"run {run_id!r} carries a malformed effort record")
-        try:
-            record = _effort_record(payload["effort_profile"])
-        except RegistryError as error:
-            raise RegistryError(
-                f"run {run_id!r} carries a malformed effort record: {error}"
-            ) from error
-        return EffortProfile(
-            requested=record["requested"],
-            requested_source=EFFORT_FROM_ADMISSION,
-            sent=record["sent"],
-            sent_source=EFFORT_FROM_ADMISSION,
-        )
+        with self._serial:
+            return effort_read(self.connection, run_id)
 
-    def orchestrator_binding(self, run_id: str) -> dict[str, Any] | None:
-        """The complete binding this run was admitted with, or None for an unbound
-        run — which every run but an orchestrator turn is. Read on every native
-        resume: whether an origin was bound is this answer, never the request's."""
+    def orchestrator_bound(self, run_id: str) -> bool:
+        """Whether this run was admitted as an orchestrator turn.
+
+        nSPAWN no longer admits that turn: the private MCP it launched was
+        deleted in #1297. A run admitted before then keeps its
+        `orchestrator_binding` lifecycle event, and the supervisor refuses its
+        resume. Only the key answers. This reader does not validate the payload,
+        so an old record never fails to parse.
+        """
         try:
-            bindings = [
-                event.payload["orchestrator_binding"]
-                for event in self.read_run_events(run_id)
-                if event.kind == "lifecycle"
+            return any(
+                event.kind == "lifecycle"
                 and isinstance(event.payload, dict)
                 and "orchestrator_binding" in event.payload
-            ]
+                for event in self.read_run_events(run_id)
+            )
         except (*STORE_ERRORS, ValueError) as error:
             raise RegistryError(
                 f"run {run_id!r} events could not be read: {error}"
             ) from error
-        if not bindings:
-            return None
-        if len(bindings) != 1:
-            raise RegistryError(
-                f"run {run_id!r} carries more than one orchestrator binding"
-            )
-        return validated_orchestrator_binding(bindings[0])
 
     def inference_profile(self, run_id: str) -> dict[str, Any] | None:
         """The immutable zero-tool schema, recorded atomically with admission."""
@@ -1360,23 +1454,78 @@ class Registry:
         except ValueError as error:
             raise RegistryError("run carries an invalid inference profile") from error
 
+    def writer_red(self, run_id: str) -> tuple[WriterRedReceipt, int] | None:
+        """Recorded admission only. Read faults propagate; corruption is typed."""
+        events = self.read_run_events(run_id)
+        if not _chain_valid(events):
+            raise WriterRedCorrupt("invalid writer RED admission event chain")
+        found = [
+            event
+            for event in events
+            if isinstance(event.payload, dict) and "writer_red" in event.payload
+        ]
+        if not found:
+            return None
+        try:
+            if len(found) != 1:
+                raise ValueError("duplicate receipt")
+            event = found[0]
+            if not isinstance(event.payload, dict):
+                raise TypeError("invalid receipt event")
+            receipt = WriterRedReceipt.from_record(event.payload["writer_red"])
+            row = self.get_run(run_id)
+            profile = self.session_profile(run_id)
+            if (
+                row is None
+                or event.kind != "lifecycle"
+                or event.at != row.created_at
+                or profile is None
+                or not profile.native_write
+                or profile.execution_class != "implementation"
+            ):
+                raise ValueError("inconsistent receipt")
+            return receipt, event.at
+        except (TypeError, ValueError) as error:
+            raise WriterRedCorrupt("invalid writer RED admission evidence") from error
+
     def session_profile(self, run_id: str) -> SessionProfile | None:
         """One verified original conversation profile, never a legacy guess."""
-        records = [
-            event.payload["session_profile"]
+        return _session_profile(
+            event.payload
             for event in self.read_run_events(run_id)
             if event.kind == "lifecycle"
-            and isinstance(event.payload, dict)
-            and "session_profile" in event.payload
-        ]
-        if not records:
-            return None
-        if len(records) != 1:
-            raise RegistryError("run carries multiple session profiles")
-        try:
-            return SessionProfile.from_record(records[0])
-        except (TypeError, ValueError) as error:
-            raise RegistryError("run carries an invalid session profile") from error
+        )
+
+    def run_attributions(self, run_ids: tuple[str, ...]) -> dict[str, dict[str, Any]]:
+        """Thread identities and verified grants in one read, without a page cap.
+
+        Missing runs stay absent. Missing, duplicate or malformed profiles omit the
+        grant: consumers must report UNKNOWN, not infer a reader from absence.
+        Lifecycle payloads use the same JSON decoder and profile validation as
+        session_profile, including duplicate JSON members.
+        """
+        found = self._rows(
+            "SELECT r.run_id, r.thread_id, e.payload "
+            "FROM runs r LEFT JOIN run_events e ON e.run_id = r.run_id "
+            "AND e.kind = 'lifecycle' "
+            "WHERE r.run_id IN (SELECT value FROM json_each(?))",
+            (json.dumps(run_ids),),
+        )
+        result: dict[str, dict[str, Any]] = {}
+        payloads: dict[str, list[object]] = {}
+        for record in found:
+            ident = record["run_id"]
+            result[ident] = {"run_id": ident, "thread_id": record["thread_id"]}
+            if record["payload"] is not None:
+                payloads.setdefault(ident, []).append(json.loads(record["payload"]))
+        for ident, records in payloads.items():
+            try:
+                profile = _session_profile(records)
+            except RegistryError:
+                continue
+            if profile is not None:
+                result[ident]["native_write"] = profile.native_write
+        return result
 
     def session_activation(self, run_id: str) -> SessionActivation | None:
         records = [
@@ -1520,6 +1669,45 @@ class Registry:
                 "run carries an invalid native inference home"
             ) from error
 
+    def admit_review_head(
+        self, subject: str, candidate: str, spec_revision: str | None = None
+    ) -> dict[str, str | int | bool]:
+        """Count one distinct head atomically. Review rounds have no limit.
+
+        A later dispatch failure does not erase the head. `budget` stays 1 for
+        the hook readback."""
+        subject, candidate = review_cap.coordinates(subject, candidate)
+        if spec_revision is not None and (
+            not isinstance(spec_revision, str)
+            or re.fullmatch(r"[0-9a-fA-F]{64}", spec_revision) is None
+        ):
+            raise review_cap.InvalidCandidate("Spec revision needs 64 hex characters.")
+        revision = (
+            spec_revision.lower() if isinstance(spec_revision, str) else spec_revision
+        )
+        with self._transaction():
+            counted = {
+                str(row["candidate"])
+                for row in self._rows(
+                    "SELECT DISTINCT candidate FROM review_heads WHERE subject = ?",
+                    (subject,),
+                )
+            }
+            new = candidate not in counted
+            if new:
+                self._run(
+                    "INSERT INTO review_heads (subject, epoch, spec_revision, candidate, created_ns) "
+                    "VALUES (?, 1, ?, ?, ?)",
+                    (subject, revision, candidate, time.time_ns()),
+                )
+            return {
+                "subject": subject,
+                "candidate": candidate,
+                "budget": 1,
+                "heads": len(counted) + new,
+                "counted": new,
+            }
+
     # -- lifecycle ---------------------------------------------------------
 
     def connect(self) -> Self:
@@ -1531,6 +1719,7 @@ class Registry:
                 connection = nott_database.connect(
                     self.path,
                     allow_live_store=self.allow_live_store,
+                    readonly=self.readonly,
                     check_same_thread=False,
                 )
             except STORE_ERRORS as exc:
@@ -1616,7 +1805,11 @@ class Registry:
                 f"the registry at {self.path} carries schema version {version}; "
                 f"this build opens only {REGISTRY_SCHEMA_VERSION}"
             )
+        if self._extensions_current():
+            return version
         with self._transaction():
+            for name, declaration in INSTANCE_PROCESS_COLUMNS.items():
+                self._add_column("instances", f"{name} {declaration}")
             index = self._one(
                 "SELECT sql FROM sqlite_schema WHERE name = 'runs_legacy_thread_key'"
             )
@@ -1626,9 +1819,62 @@ class Registry:
             ):
                 self._run("DROP INDEX IF EXISTS runs_legacy_thread_key")
                 self._run(LEGACY_THREAD_INDEX_DDL)
+            self._add_column("notices", NOTICE_BODY_COLUMN)
             self._run(THREAD_ORIGIN_INDEX_DDL)
             self._run(COMPUTE_BALANCE_DDL)
+            for statement in REVIEW_HEADS_DDL.split(";"):
+                if statement.strip():
+                    self._run(statement)
+            for statement in JOURNAL_DDL.split(";"):
+                if statement.strip():
+                    self._run(statement)
+            for name, declaration in JOURNAL_SESSION_COLUMNS.items():
+                self._add_column("journal_session", f"{name} {declaration}")
+            for name, declaration in JOURNAL_SOURCE_COLUMNS.items():
+                self._add_column("journal_source", f"{name} {declaration}")
+            self._run(JOURNAL_COLUMN_INDEX_DDL)
+            # The claim generations and their triggers, in this same write, so
+            # no admission reads a generation that a claim writer cannot change.
+            self._run(CLAIM_GENERATIONS_DDL)
+            for trigger in CLAIM_GENERATION_TRIGGERS_DDL:
+                self._run(trigger)
         return version
+
+    def _extensions_current(self) -> bool:
+        """Read the additive schema before joining the writer queue."""
+        definitions = {
+            row["name"]: row["sql"]
+            for row in self._rows("SELECT name, sql FROM sqlite_schema")
+        }
+        if (
+            str(definitions.get("runs_legacy_thread_key")).split()
+            != LEGACY_THREAD_INDEX_DDL.split()
+        ):
+            return False
+        for ddl in (
+            THREAD_ORIGIN_INDEX_DDL,
+            COMPUTE_BALANCE_DDL,
+            REVIEW_HEADS_DDL,
+            JOURNAL_DDL,
+            JOURNAL_COLUMN_INDEX_DDL,
+            CLAIM_GENERATIONS_DDL,
+            *CLAIM_GENERATION_TRIGGERS_DDL,
+        ):
+            names = re.findall(
+                r"CREATE (?:TABLE|INDEX|TRIGGER) IF NOT EXISTS (\w+)", ddl
+            )
+            if any(name not in definitions for name in names):
+                return False
+        for table, expected in (
+            ("instances", INSTANCE_PROCESS_COLUMNS),
+            ("notices", {NOTICE_BODY_COLUMN.split()[0]: ""}),
+            ("journal_session", JOURNAL_SESSION_COLUMNS),
+            ("journal_source", JOURNAL_SOURCE_COLUMNS),
+        ):
+            columns = {row["name"] for row in self._rows(f"PRAGMA table_info({table})")}
+            if not expected.keys() <= columns:
+                return False
+        return True
 
     def _backend_upgrade(self) -> int:
         """Extend the backend CHECK in one transaction. Preserve rows and their guards."""
@@ -1928,11 +2174,22 @@ class Registry:
         missed 30 s window deregistered a supervisor permanently and every run
         it opened afterwards was orphaned within a tick.
         """
+        identity = capture_process_identity(os.getpid())
         self._write(
-            "INSERT INTO instances(instance_id, started_at, heartbeat_at) "
-            "VALUES (?, ?, ?) ON CONFLICT (instance_id) DO UPDATE SET "
-            "started_at = excluded.started_at, heartbeat_at = excluded.heartbeat_at",
-            (self.instance_id, now, now),
+            "INSERT INTO instances(instance_id, started_at, heartbeat_at, "
+            "process_pid, process_boot_id, process_start_ticks) "
+            "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (instance_id) DO UPDATE SET "
+            "started_at = excluded.started_at, heartbeat_at = excluded.heartbeat_at, "
+            "process_pid = excluded.process_pid, process_boot_id = excluded.process_boot_id, "
+            "process_start_ticks = excluded.process_start_ticks",
+            (
+                self.instance_id,
+                now,
+                now,
+                identity.pid,
+                identity.boot_id,
+                identity.start_ticks,
+            ),
         )
 
     # -- the instance row --------------------------------------------------
@@ -2132,24 +2389,48 @@ class Registry:
         with self._transaction():
             return self._claim_in_transaction(worktree, run_id, now, lease_ms)
 
+    def _claim_state(self, worktree: str, now: int) -> int:
+        """Refuse a held worktree, else return its claim generation.
+
+        One statement, so the claim and its generation come from one snapshot.
+        A held worktree has a live lease, or a run with protected custody.
+        """
+        state = self._one(
+            f"""SELECT coalesce((
+                        SELECT generation FROM worktree_claim_generations
+                        WHERE worktree = :worktree), 0) AS generation,
+                    claims.run_id, claims.holder, claims.lease_until,
+                    claims.run_id IS NOT NULL
+                    AND EXISTS({PROTECTED_CUSTODY_SQL}) AS protected_custody
+                FROM (SELECT :worktree AS target)
+                LEFT JOIN claims ON claims.worktree = target""",
+            {"worktree": worktree},
+        )
+        if state is None:
+            raise RegistryError("the worktree claim state cannot be read")
+        if state["run_id"] is not None and (
+            state["lease_until"] > now or state["protected_custody"]
+        ):
+            raise WorktreeHeld(
+                holder=state["holder"],
+                run_id=state["run_id"],
+                lease_until=state["lease_until"],
+            )
+        return int(state["generation"])
+
+    def _claim_generation(self, worktree: str) -> int:
+        """The claim generation of `worktree`: 0 when it has no row."""
+        found = self._one(
+            "SELECT generation FROM worktree_claim_generations WHERE worktree = ?",
+            (worktree,),
+        )
+        return 0 if found is None else int(found["generation"])
+
     def _claim_in_transaction(
         self, worktree: str, run_id: str, now: int, lease_ms: int
     ) -> WorktreeClaim:
         """The claim itself, inside the caller's write: `admit_run` shares it."""
-        existing = self._one(
-            f"""SELECT claims.run_id, claims.holder, claims.lease_until,
-                    EXISTS({PROTECTED_CUSTODY_SQL}) AS protected_custody
-                FROM claims WHERE worktree = ?""",
-            (worktree,),
-        )
-        if existing is not None and (
-            existing["lease_until"] > now or existing["protected_custody"]
-        ):
-            raise WorktreeHeld(
-                holder=existing["holder"],
-                run_id=existing["run_id"],
-                lease_until=existing["lease_until"],
-            )
+        self._claim_state(worktree, now)
         lease_until = min(now + lease_ms, POISONED_LEASE_UNTIL)
         self._run(
             "INSERT INTO claims(worktree, run_id, holder, lease_until) "
@@ -2275,11 +2556,13 @@ class Registry:
         run_key: RunKey | None = None,
         class_observation: ClassObservation | None = None,
         effort_profile: dict[str, str | None] | None = None,
-        orchestrator_binding: Mapping[str, Any] | None = None,
         inference_profile: dict[str, Any] | None = None,
         inference_home: InferenceHome | None = None,
         session_profile: SessionProfile | None = None,
         activation: Mapping[str, Any] | None = None,
+        journal_context: Mapping[str, Any] | None = None,
+        operation_admission: operations.CheckedAdmission | None = None,
+        writer_red: WriterRedReceipt | None = None,
     ) -> None:
         """Insert a PENDING run, optionally claim its worktree, and start it.
 
@@ -2288,10 +2571,6 @@ class Registry:
         With a `notice` caller its pending notices row is written in the same
         transaction, so no run exists whose caller the outbox does not know;
         its `run_key` row too, so a key never names a run that does not exist.
-        With an `orchestrator_binding` its one lifecycle event is appended there
-        too — no new kind, table or column — so a bound turn is never admitted
-        without the session, profile and tool contract it was admitted FOR, and a
-        binding never names a run that does not exist.
         A second run for one (project, key) is refused by `run_keys_project_key`,
         and any unique index is refused as `UniqueTaken` naming it.
 
@@ -2299,8 +2578,66 @@ class Registry:
         written and appended as the run's lifecycle event in the same
         transaction: no run exists without the record its admission was given,
         and no record without its run.
+        With a RED receipt, admission reads the clone HEAD before its write,
+        with no transaction open, so Git never holds the write lock. With a
+        claim, one read before Git refuses a held worktree and keeps the claim
+        generation. The write compares that generation before the claim: a
+        change is the retryable `WorktreeOwnershipChanged`, because another run
+        could have held the worktree and moved HEAD during Git. After the claim,
+        the write compares the HEAD with the receipt. Each refusal rolls back
+        the run, receipt, claim and key before admission returns.
         """
+        if session_profile is not None and session_profile.native_write:
+            if session_profile.execution_class not in (
+                "implementation",
+                "verification",
+            ):
+                raise RegistryError(
+                    "native writer requires implementation or verification profile"
+                )
+            if (
+                session_profile.execution_class == "implementation"
+                and writer_red is None
+            ):
+                raise RegistryError("implementation writer requires a RED receipt")
+        if writer_red is not None:
+            if (
+                session_profile is None
+                or not session_profile.native_write
+                or session_profile.execution_class != "implementation"
+                or not isinstance(writer_red, WriterRedReceipt)
+            ):
+                raise RegistryError(
+                    "writer RED receipt requires an implementation profile"
+                )
+            try:
+                WriterRedReceipt.from_record(writer_red.data())
+            except (TypeError, ValueError) as error:
+                raise RegistryError("invalid writer RED receipt") from error
+        operation_record = (
+            None
+            if operation_admission is None
+            else operations.admission_read(
+                json.loads(operations.canonical(asdict(operation_admission)))
+            )
+        )
         record = None if effort_profile is None else _effort_record(effort_profile)
+        context = None if journal_context is None else dict(journal_context)
+        if context is not None and (
+            set(context)
+            - {
+                "home",
+                "parent_run",
+                "caller_session",
+                "caller_vendor",
+                "caller_home",
+            }
+            or any(
+                not isinstance(value, str) or not value or "\x00" in value
+                for value in context.values()
+            )
+        ):
+            raise RegistryError("The journal context must contain named text fields.")
         selected = (
             None
             if activation is None
@@ -2310,11 +2647,6 @@ class Registry:
             None
             if inference_profile is None
             else StructuredInference.from_request(inference_profile).data()
-        )
-        payload = (
-            None
-            if orchestrator_binding is None
-            else _orchestrator_payload(orchestrator_binding)
         )
         if row.phase is not RunPhase.PENDING:
             raise InvalidField(
@@ -2331,6 +2663,22 @@ class Registry:
             and activation is None
         ):
             raise RegistryError("session context requires a native backend")
+        generation: int | None = None
+        observed_head: str | None = None
+        observation_failure: red_witness.RedRefused | None = None
+        if writer_red is not None:
+            with self._serial:
+                if self.connection.in_transaction:
+                    raise RegistryError(
+                        "a RED admission must not start inside an open write, "
+                        "because its Git call would hold the write lock"
+                    )
+                if claim_worktree:
+                    generation = self._claim_state(row.worktree, now)
+            try:
+                observed_head = red_witness.clone_head(Path(row.worktree))
+            except red_witness.RedRefused as error:
+                observation_failure = error
         connection = self.connection
         try:
             with self._transaction():
@@ -2360,6 +2708,24 @@ class Registry:
                         kind="lifecycle",
                         payload={"usage_pending": "exec", "usage_managed": False},
                     )
+                if operation_record is not None:
+                    self._append_run_event(
+                        row.run_id,
+                        at=now,
+                        kind="lifecycle",
+                        payload={
+                            "operation_admission": json.loads(
+                                operations.canonical(asdict(operation_record))
+                            )
+                        },
+                    )
+                if writer_red is not None:
+                    self._append_run_event(
+                        row.run_id,
+                        at=now,
+                        kind="lifecycle",
+                        payload={"writer_red": writer_red.data()},
+                    )
                 if session_profile is not None:
                     self._append_run_event(
                         row.run_id,
@@ -2388,6 +2754,13 @@ class Registry:
                         kind="lifecycle",
                         payload={"effort_profile": record},
                     )
+                if context is not None:
+                    self._append_run_event(
+                        row.run_id,
+                        at=now,
+                        kind="lifecycle",
+                        payload={"journal_context": context},
+                    )
                 if native_context is not None:
                     self._run(
                         "INSERT INTO native_contexts "
@@ -2404,12 +2777,23 @@ class Registry:
                             else None,
                         ),
                     )
-                if payload is not None:
-                    self._append_run_event(
-                        row.run_id, at=now, kind="lifecycle", payload=payload
-                    )
                 if claim_worktree:
+                    if (
+                        generation is not None
+                        and self._claim_generation(row.worktree) != generation
+                    ):
+                        raise WorktreeOwnershipChanged()
                     self._claim_in_transaction(row.worktree, row.run_id, now, lease_ms)
+                if writer_red is not None:
+                    if observation_failure is not None:
+                        raise WriterRedRefused(
+                            f"clone HEAD observation failed for RED receipt {writer_red.commit}"
+                        ) from observation_failure
+                    if observed_head != writer_red.commit:
+                        raise WriterRedRefused(
+                            f"RED receipt HEAD {writer_red.commit} differs from clone HEAD {observed_head}",
+                            observed_head,
+                        )
                 if notice is not None:
                     _insert_notice(connection, row.run_id, notice, conflict="")
                 if run_key is not None:
@@ -2720,43 +3104,23 @@ class Registry:
 
     # -- bulk reads and the reaper ------------------------------------------
 
-    def list_runs_page(
-        self,
-        run_id: str | None = None,
-        after_run: str | None = None,
-        limit: int = MAX_RUN_PAGE,
-        *,
-        owner: str | None = None,
-    ) -> RunPage:
-        """One page of runs, newest first: `created_at DESC, run_id DESC`.
+    def list_runs(
+        self, run_id: str | None = None, *, owner: str | None = None
+    ) -> tuple[RunRow, ...]:
+        """The newest `MAX_RUN_PAGE` runs: `created_at DESC, run_id DESC`.
 
-        Creation time and not `run_id`: a uuid order made page one an arbitrary
+        Creation time and not `run_id`: a uuid order made the list an arbitrary
         slice, and with 1565 runs a dispatch from a minute ago was on no page an
-        operator reads (2026-09-24). `created_at` is immutable after insert, so
-        the order cannot shift under a cursor; `run_id` breaks the ties.
+        operator reads (2026-09-24). `run_id` breaks the ties.
 
-        `after_run` names the last run of the previous page and the next page
-        starts strictly after its `(created_at, run_id)`. A cursor whose run is
-        gone (the reaper pruned it) has no position and is REFUSED rather than
-        answered with an empty page that reads as the end of the fleet.
-
-        Naming a `run_id` answers that run alone and NEVER reports truncation —
-        one row is the whole answer. Otherwise the page is bounded, and the
-        boundary is detected by fetching ONE row past the limit rather than by a
-        second count that could disagree with the page it describes.
-
-        An `owner` keeps only the runs that node admitted, in the statement itself:
-        the page cap counts its runs, never the fleet's.
+        Naming a `run_id` answers that run alone. An `owner` keeps only the runs
+        that node admitted, in the statement itself: the cap counts its runs,
+        never the fleet's.
         ponytail: no owner index; the filter walks the page index, and closed runs
         are pruned past `Supervisor.MAX_CLOSED_RUNS`. Index it if a scan shows.
         """
         if run_id is not None:
             _validate_required("runs.run_id", run_id, MAX_DURABLE_IDENTIFIER_BYTES)
-        if after_run is not None:
-            _validate_required(
-                "runs.after_run", after_run, MAX_DURABLE_IDENTIFIER_BYTES
-            )
-        page_limit = min(max(limit, 1), MAX_RUN_PAGE)
         columns = ", ".join(RUN_COLUMNS)
         mine = "" if owner is None else " AND owner = :owner"
         if run_id is not None:
@@ -2764,47 +3128,34 @@ class Registry:
                 f"SELECT {columns} FROM runs WHERE run_id = :run{mine} LIMIT 1",
                 {"run": run_id, "owner": owner},
             )
-        elif after_run is not None:
-            anchor = self._one(
-                "SELECT created_at FROM runs WHERE run_id = ?", (after_run,)
-            )
-            if anchor is None:
-                raise RegistryError(
-                    f"runs.after_run names no run: {after_run!r} "
-                    "(pruned since the previous page); start from the first page"
-                )
-            found = self._rows(
-                f"SELECT {columns} FROM runs "
-                f"WHERE (created_at, run_id) < (:at, :after){mine} "
-                "ORDER BY created_at DESC, run_id DESC LIMIT :limit",
-                {
-                    "at": anchor["created_at"],
-                    "after": after_run,
-                    "owner": owner,
-                    "limit": page_limit + 1,
-                },
-            )
         else:
             found = self._rows(
                 f"SELECT {columns} FROM runs WHERE TRUE{mine} "
                 "ORDER BY created_at DESC, run_id DESC LIMIT :limit",
-                {"owner": owner, "limit": page_limit + 1},
+                {"owner": owner, "limit": MAX_RUN_PAGE},
             )
-        rows = [_row_from_record(record) for record in found]
-        truncated = run_id is None and len(rows) > page_limit
-        if truncated:
-            rows = rows[:page_limit]
-        return RunPage(
-            rows=tuple(rows),
-            next_after_run=rows[-1].run_id if truncated and rows else None,
-            truncated=truncated,
-        )
+        return tuple(_row_from_record(record) for record in found)
 
-    def list_runs(
-        self, run_id: str | None = None, *, owner: str | None = None
-    ) -> tuple[RunRow, ...]:
-        """The first page of runs (of `owner`). Bounded, like every read here."""
-        return self.list_runs_page(run_id, owner=owner).rows
+    def runs_since(self, since: int, *, owner: str | None = None) -> tuple[RunRow, ...]:
+        """Every run created at or after `since`, newest first, without a page cap."""
+        mine = "" if owner is None else " AND owner = :owner"
+        found = self._rows(
+            f"SELECT {', '.join(RUN_COLUMNS)} FROM runs "
+            f"WHERE created_at >= :since{mine} ORDER BY created_at DESC, run_id DESC",
+            {"since": since, "owner": owner},
+        )
+        return tuple(_row_from_record(record) for record in found)
+
+    def live_runs(self, *, owner: str | None = None) -> tuple[RunRow, ...]:
+        """Every nonterminal run, newest first, without a page limit."""
+        mine = "" if owner is None else " AND owner = ?"
+        found = self._rows(
+            f"SELECT {', '.join(RUN_COLUMNS)} FROM runs "
+            f"WHERE phase NOT IN ({TERMINAL_PHASE_SQL}){mine} "
+            "ORDER BY created_at DESC, run_id DESC",
+            () if owner is None else (owner,),
+        )
+        return tuple(_row_from_record(record) for record in found)
 
     def owned_runs(
         self, owner: str
@@ -2850,6 +3201,26 @@ class Registry:
                 _row_from_record({c: record[c] for c in RUN_COLUMNS}),
                 record["idempotency_key"],
             )
+            for record in found
+        ]
+
+    def caller_runs(self, addr: str) -> list[tuple[RunRow, str | None]]:
+        """Every run whose notice row names the session at `addr`, newest first,
+        with its first terminal phase (`terminal_receipts`), None before it ends.
+
+        The notices are an outbox, not a history: `prune_notices` removes a row
+        after NOTICE_RETENTION_DAYS, and its run leaves this list with it. A closed
+        run can leave sooner, when `prune_closed_runs` removes its run row.
+        Unpaged, as `owned_runs`: that retention bounds it."""
+        found = self._rows(
+            f"SELECT {', '.join('r.' + c for c in RUN_COLUMNS)}, t.phase AS first "
+            "FROM notices n JOIN runs r ON r.run_id = n.run_id "
+            "LEFT JOIN terminal_receipts t ON t.run_id = r.run_id "
+            "WHERE n.caller_addr = ? ORDER BY r.created_at DESC, r.run_id DESC",
+            (addr,),
+        )
+        return [
+            (_row_from_record({c: record[c] for c in RUN_COLUMNS}), record["first"])
             for record in found
         ]
 
@@ -2945,43 +3316,101 @@ class Registry:
             )
         return by_age + by_count
 
-    def mark_orphans(self, now: int, stale_after_ms: int) -> int:
-        """Orphan every run whose owning instance stopped proving it is alive.
+    @staticmethod
+    def _instance_loss(instance: nott_database.Row) -> str | None:
+        """Return a proven owner loss, or preserve uncertain custody."""
+        if all(instance[name] is None for name in INSTANCE_PROCESS_COLUMNS):
+            return "owner legacy heartbeat expired"
+        if any(instance[name] is None for name in INSTANCE_PROCESS_COLUMNS):
+            return None
+        identity = ProcessIdentity(
+            instance["process_pid"],
+            instance["process_boot_id"],
+            instance["process_start_ticks"],
+        )
+        try:
+            if not process_identity_matches(identity):
+                return "owner process gone"
+        except ProcessIdentityError:
+            pass
+        return None
 
-        The instance running THIS registry is protected: a supervisor never
-        orphans its own runs by its own reaper pass.
+    def has_orphans(self, now: int, stale_after_ms: int) -> bool:
+        """Check for lost run owners without requesting the write lock."""
+        instances = self._rows(
+            "SELECT DISTINCT i.instance_id, i.process_pid, i.process_boot_id, "
+            "i.process_start_ticks FROM runs r "
+            "LEFT JOIN instances i ON i.instance_id = r.owner_instance "
+            f"WHERE r.owner_instance != ? AND r.phase NOT IN ({TERMINAL_PHASE_SQL}) "
+            "AND (i.instance_id IS NULL OR i.heartbeat_at <= ?)",
+            (self.instance_id, now - max(stale_after_ms, 0)),
+        )
+        return any(
+            instance["instance_id"] is None or self._instance_loss(instance) is not None
+            for instance in instances
+        )
+
+    def mark_orphans(self, now: int, stale_after_ms: int) -> int:
+        """Orphan runs after owner process loss or legacy heartbeat expiry.
+
+        A late heartbeat starts the identity check for current owners.
+        Failed probes preserve custody. This instance never orphans its own runs.
         """
         _validate_required(
             "instances.instance_id", self.instance_id, MAX_DURABLE_IDENTIFIER_BYTES
         )
         stale_before = now - max(stale_after_ms, 0)
         with self._transaction():
-            changed = self._run(
-                f"""UPDATE runs
-                    SET phase = 'orphaned',
-                        updated_at = :now,
-                        blocked_reason = CASE
-                            WHEN phase = 'waiting_approval' OR pending_approvals > 0
-                            THEN 'owner instance heartbeat expired; parked approvals were lost; confirmed stale close is required'
-                            ELSE COALESCE(
-                                blocked_reason,
-                                'owner instance heartbeat expired; run requires doctor/recovery'
-                            )
-                        END,
-                        pending_approvals = 0
-                    WHERE owner_instance != :protected
+            stale = self._rows(
+                "SELECT instance_id, process_pid, process_boot_id, process_start_ticks "
+                "FROM instances WHERE instance_id != ? AND heartbeat_at <= ?",
+                (self.instance_id, stale_before),
+            )
+            causes: dict[str, str] = {}
+            for instance in stale:
+                cause = self._instance_loss(instance)
+                if cause is None:
+                    continue
+                causes[instance["instance_id"]] = cause
+                self._run(
+                    "DELETE FROM instances WHERE instance_id = ?",
+                    (instance["instance_id"],),
+                )
+            owners = self._rows(
+                f"""SELECT DISTINCT owner_instance FROM runs
+                    WHERE owner_instance != ?
                       AND phase NOT IN ({TERMINAL_PHASE_SQL})
                       AND NOT EXISTS (
                           SELECT 1 FROM instances
                           WHERE instances.instance_id = runs.owner_instance
-                            AND instances.heartbeat_at > :stale_before
                       )""",
-                {
-                    "now": now,
-                    "protected": self.instance_id,
-                    "stale_before": stale_before,
-                },
+                (self.instance_id,),
             )
+            changed = 0
+            for owner in owners:
+                changed += self._run(
+                    f"""UPDATE runs
+                        SET phase = 'orphaned',
+                            updated_at = :now,
+                            blocked_reason = CASE
+                                WHEN phase = 'waiting_approval' OR pending_approvals > 0
+                                THEN :cause || '; parked approvals were lost; confirmed stale close is required'
+                                ELSE COALESCE(
+                                    blocked_reason,
+                                    :cause || '; run requires doctor/recovery'
+                                )
+                            END,
+                            pending_approvals = 0
+                        WHERE owner_instance = :owner
+                          AND phase NOT IN ({TERMINAL_PHASE_SQL})""",
+                    {
+                        "now": now,
+                        "owner": owner["owner_instance"],
+                        "cause": causes.get(
+                            owner["owner_instance"], "owner instance row removed"
+                        ),
+                    },
+                )
             # An orphan that still holds custody keeps its worktree fenced forever.
             self._run(
                 "UPDATE claims SET lease_until = ? "
@@ -2999,10 +3428,6 @@ class Registry:
                 "OR process_group IS NOT NULL OR process_pid IS NOT NULL "
                 "OR process_boot_id IS NOT NULL OR process_start_ticks IS NOT NULL))",
                 (now,),
-            )
-            self._run(
-                "DELETE FROM instances WHERE instance_id != ? AND heartbeat_at <= ?",
-                (self.instance_id, stale_before),
             )
         return changed
 
@@ -3023,6 +3448,43 @@ class Registry:
         return None if row is None else str(row["run_id"])
 
     # -- the notice outbox ----------------------------------------------------
+
+    def run_project(self, run_id: str) -> str | None:
+        """Read the project recorded at admission without opening the worktree."""
+        row = self._one("SELECT project FROM run_keys WHERE run_id = ?", (run_id,))
+        return None if row is None else str(row["project"])
+
+    def queue_project_notice(self, project: str, body: str) -> None:
+        """Keep one project notice for the existing SessionStart drain."""
+        _validate_required("notices.caller_project", project, MAX_DURABLE_PATH_BYTES)
+        _validate_required("notices.body", body, MAX_DURABLE_OBSERVATION_BYTES)
+        ident = str(uuid.uuid5(uuid.NAMESPACE_URL, project + "\n" + body))
+        now = now_ms()
+        with self._transaction():
+            self._run(
+                "INSERT INTO notices(run_id, caller_addr, caller_pid, caller_start_ticks, "
+                "caller_project, phase, created_at, ready_at, body) "
+                "VALUES (?, 'project:campaign', 1, 0, ?, 'completed', ?, ?, ?) "
+                "ON CONFLICT (run_id, caller_addr) DO NOTHING",
+                (ident, project, now, now, body),
+            )
+
+    def notice_callers(self, run_id: str) -> list[NoticeCaller]:
+        """Read the original notice recipients, including delivered notices."""
+        rows = self._rows(
+            "SELECT caller_addr, caller_pid, caller_start_ticks, caller_project "
+            "FROM notices WHERE run_id = ? ORDER BY caller_addr",
+            (run_id,),
+        )
+        return [
+            NoticeCaller(
+                str(row["caller_addr"]),
+                int(row["caller_pid"]),
+                int(row["caller_start_ticks"]),
+                str(row["caller_project"]),
+            )
+            for row in rows
+        ]
 
     def ready_notices(
         self, run_ids: Sequence[str] | None = None, *, project: str | None = None
@@ -3156,6 +3618,7 @@ class Registry:
         delivered in. `render` must stay bounded (the write holds the store's
         lock) and answers the bodies to print. A raise rolls the delivery back. A
         node's notice is never drained into a session: the host takes it.
+        Project notices return their stored body without a run renderer.
         """
         now = now_ms()
         with self._transaction():
@@ -3163,7 +3626,7 @@ class Registry:
                 "UPDATE notices SET claimed_at = :now, delivered_at = :now "
                 f"WHERE caller_project = :project AND {_NOTICE_FREE_SQL} "
                 f"AND NOT {_NODE_NOTICE_SQL} AND NOT {_SWARM_HELD_SQL} "
-                f"AND ({_SWARM_READY_SQL} < :stale OR (run_id, caller_addr) IN ("
+                f"AND (body IS NOT NULL OR {_SWARM_READY_SQL} < :stale OR (run_id, caller_addr) IN ("
                 "  SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]') "
                 "  FROM json_each(:dead)) "
                 # A swarm is dead when any member's caller is: it drains whole.
@@ -3171,7 +3634,7 @@ class Registry:
                 "  JOIN json_each(:dead) dead "
                 "  ON json_extract(dead.value, '$[0]') = member.run_id "
                 "  AND json_extract(dead.value, '$[1]') = notices.caller_addr)) "
-                f"RETURNING run_id, caller_addr, {_NOTICE_PHASE_SQL} AS phase",
+                f"RETURNING run_id, caller_addr, {_NOTICE_PHASE_SQL} AS phase, body",
                 {
                     "now": now,
                     "project": project,
@@ -3180,9 +3643,11 @@ class Registry:
                 },
             )
             drained = sorted(
-                (str(r["run_id"]), str(r["phase"]), str(r["caller_addr"])) for r in rows
+                (str(r["run_id"]), str(r["phase"]), str(r["caller_addr"]))
+                for r in rows
+                if r["body"] is None
             )
-            return render(
+            return [str(r["body"]) for r in rows if r["body"] is not None] + render(
                 [
                     (run_id, phase, self.get_run(run_id), addr)
                     for run_id, phase, addr in drained
@@ -3433,69 +3898,11 @@ class Registry:
             run_id, expected, now, drained=drained
         ).run_closed
 
-    def with_owned_claim[T](
-        self,
-        run_id: str,
-        worktree: str,
-        now: int,
-        callback: Callable[[], T],
-        *,
-        recovery: bool = False,
-        holder: str | None = None,
-    ) -> T:
-        """Run `callback` while the exact live run owns its worktree claim.
-
-        No transaction spans the callback (it would hold the file's one write
-        lock for an export's whole length): ownership is read before AND after
-        it, so a claim taken meanwhile fails the call instead of letting it
-        succeed. Every write the callback makes (`record_implementation_recovery`,
-        `resolve_implementation_recovery`) is its own short write. The caller
-        serializes this Registry connection.
-        """
-        phases = (
-            (
-                "pending",
-                "spawning",
-                "running",
-                "idle",
-                "failed",
-                "completed",
-                "orphaned",
-            )
-            if recovery
-            else ("pending", "spawning", "running", "idle")
-        )
-        owner = self.instance_id if holder is None else holder
-
-        def require_ownership() -> None:
-            found = self._one(
-                "SELECT c.run_id FROM claims c JOIN runs r ON r.run_id = c.run_id "
-                "WHERE c.worktree = ? AND c.run_id = ? AND c.holder = ? "
-                "AND c.lease_until > ? AND r.worktree = c.worktree "
-                "AND r.owner_instance = c.holder "
-                "AND r.phase IN (SELECT value FROM json_each(?))",
-                (worktree, run_id, owner, now, json.dumps(phases)),
-            )
-            if found is None:
-                raise RegistryError(
-                    "controller export no longer owns its live worktree claim"
-                )
-
-        require_ownership()
-        result = callback()
-        # A recovery's callback ends by resolving its own fence, which deletes the
-        # claim it owned (`resolve_implementation_recovery`): an absent claim with the
-        # recovery resolved is that, not a claim taken meanwhile. Anything else is
-        # read as ownership again.
-        if not (
-            recovery
-            and self.read_claim(worktree) is None
-            and self.implementation_recovery(run_id) is None
-        ):
-            require_ownership()
-        return result
-
     def implementation_recovery(self, run_id: str) -> dict[str, str] | None:
+        """The pending export artifact of a run that the retired mode left, or None.
+
+        No current code writes these events. This reader keeps old rows fenced.
+        """
         if not self.verify_run_event_chain(run_id):
             raise RegistryError("implementation recovery event chain is invalid")
         result = None
@@ -3520,57 +3927,6 @@ class Registry:
             else:
                 raise RegistryError("implementation recovery state is malformed")
         return result
-
-    def record_implementation_recovery(
-        self,
-        run_id: str,
-        worktree: str,
-        now: int,
-        lease_ms: int,
-        reference: dict[str, str] | None,
-    ) -> None:
-        """Checkpoint an implementation export in one short write: pending poisons
-        the claim, resolved gives it an ordinary lease again."""
-        reference = _recovery_reference(reference) if reference is not None else None
-
-        def record() -> None:
-            payload: dict[str, Any] = {
-                "schema": "nott.implementation.custody.v1",
-                "state": "resolved" if reference is None else "pending",
-            }
-            if reference is not None:
-                payload["artifact"] = reference
-            with self._transaction():
-                self.append_run_event(run_id, at=now, kind="lifecycle", payload=payload)
-                self._run(
-                    "UPDATE claims SET lease_until = ? WHERE run_id = ? AND worktree = ?",
-                    (
-                        now + lease_ms if reference is None else POISONED_LEASE_UNTIL,
-                        run_id,
-                        worktree,
-                    ),
-                )
-
-        self.with_owned_claim(run_id, worktree, now, record, recovery=True)
-
-    def resolve_implementation_recovery(
-        self, run_id: str, worktree: str, holder: str, now: int
-    ) -> None:
-        """After body reconciliation, resolve the checkpoint and its exact poisoned claim."""
-        with self._transaction():
-            self.append_run_event(
-                run_id,
-                at=now,
-                kind="lifecycle",
-                payload={
-                    "schema": "nott.implementation.custody.v1",
-                    "state": "resolved",
-                },
-            )
-            self._run(
-                "DELETE FROM claims WHERE run_id = ? AND worktree = ? AND holder = ?",
-                (run_id, worktree, holder),
-            )
 
     def read_claim(self, worktree: str) -> WorktreeClaim | None:
         """The claim on `worktree`, or None."""

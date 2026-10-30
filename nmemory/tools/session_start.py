@@ -1,4 +1,9 @@
-"""nmemory_session_start: open a session and report the store's health."""
+"""nmemory_session_start: open a session bracket.
+
+The handler reads no capsule and does not replay the audit chain, so its cost
+does not grow with the store. The daily `nmemory quality measure` run checks
+the audit chain.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +15,6 @@ from ..capsule import (
     format_rfc3339,
 )
 from ..capture import CaptureContext
-from ..queries.journal import verify_replay
 from .common import (
     HandlerState,
     verb_result,
@@ -28,22 +32,4 @@ def handle(
     state.store.audit.append_audit(
         actor, audit_actions.SESSION_START, sess_id, None, now
     )
-    if state.capture_only:
-        return verb_result({"session_id": sess_id, "started_at": format_rfc3339(now)})
-
-    # Honest health probe
-    replay = verify_replay(state.store.db)
-    if not replay.chain.is_ok:
-        health = "broken_chain"
-    elif not state.store.capsules.list():
-        health = "empty_store"
-    else:
-        health = "healthy"
-
-    return verb_result(
-        {
-            "session_id": sess_id,
-            "started_at": format_rfc3339(now),
-            "store_health": health,
-        }
-    )
+    return verb_result({"session_id": sess_id, "started_at": format_rfc3339(now)})

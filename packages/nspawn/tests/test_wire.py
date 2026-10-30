@@ -99,54 +99,8 @@ def test_frame_constructors_shape_what_they_promise() -> None:
         "params": {"cwd": "/tmp"},
     }
     assert wire.notification("warning", {"message": "m"}).id is None
-    assert wire.response(3, None).to_wire() == {"id": 3, "result": None}
     err = wire.error_response(4, RpcErrorObject(code=-1, message="no"))
     assert err.to_wire()["error"]["code"] == -1
-
-
-def test_a_frame_answering_with_null_still_counts_as_a_response() -> None:
-    assert wire.is_response(wire.response(1, None))
-    assert wire.is_response(
-        wire.error_response(1, RpcErrorObject(code=-1, message="m"))
-    )
-    assert not wire.is_response(wire.request(1, "m", {}))
-    assert not wire.is_response(wire.notification("m", {}))
-
-
-def test_classify_separates_the_three_kinds() -> None:
-    from nspawn.wire import IncomingKind, classify
-
-    answered = classify(wire.response(1, {"ok": True}))
-    assert answered.kind is IncomingKind.RESPONSE
-    assert answered.result == {"ok": True}
-    assert answered.error is None
-
-    failed = classify(wire.error_response(1, RpcErrorObject(code=-2, message="bad")))
-    assert failed.kind is IncomingKind.RESPONSE
-    assert failed.error is not None
-    assert failed.result is None
-
-    asked = classify(wire.request("abc", "thread/start", {"cwd": "/tmp"}))
-    assert asked.kind is IncomingKind.REQUEST
-    assert asked.method == "thread/start"
-
-    told = classify(wire.notification("warning", None))
-    assert told.kind is IncomingKind.NOTIFICATION
-    # An absent params member becomes an empty object, never None.
-    assert told.params == {}
-
-
-def test_classify_refuses_what_would_cross_into_durable_state() -> None:
-    from nspawn.wire import WireError, classify
-
-    with pytest.raises(WireError, match="neither response nor method"):
-        classify(RpcFrame(id=1))
-    with pytest.raises(WireError, match="exceeds"):
-        classify(wire.notification("m" * (wire.MAX_METHOD_BYTES + 1), {}))
-    with pytest.raises(WireError, match="bounded scalar"):
-        classify(RpcFrame(id={"nested": "id"}, method="m", params={}))
-    with pytest.raises(WireError, match="bounded scalar"):
-        classify(RpcFrame(id="x" * (wire.MAX_IDENTIFIER_BYTES + 1), method="m"))
 
 
 def test_an_identifier_that_cannot_be_stored_is_absent_not_truncated() -> None:
@@ -260,40 +214,6 @@ def test_the_handshake_opts_out_of_the_delta_firehose() -> None:
     ]
     assert wire.initialized_notification().method == "initialized"
     assert wire.initialized_notification().id is None
-
-
-def test_the_thread_this_client_opens_is_confined() -> None:
-    from nspawn.wire import ApprovalPolicy, ExecutorSandbox
-
-    read_only = wire.thread_start_params(
-        "gpt-5", "/tmp/wt", ApprovalPolicy.NEVER, ExecutorSandbox.READ_ONLY
-    )
-    config = read_only["config"]
-    assert config["sandbox_workspace_write.network_access"] is False
-    assert config["tools.web_search"] is False
-    assert config["web_search"] == "disabled"
-    assert config["notify"] == []
-    assert config["orchestrator.mcp.enabled"] is False
-    assert config["shell_environment_policy.inherit"] == "none"
-    # The literal per platform is pinned below.
-    assert config["shell_environment_policy.set.PATH"] == wire.SANDBOX_TOOL_PATH
-    assert read_only["allowProviderModelFallback"] is False
-    # A read-only thread names no writable root at all.
-    assert "sandbox_workspace_write.writable_roots" not in config
-
-
-def test_a_writable_thread_names_its_one_root_and_excludes_the_temp_dirs() -> None:
-    from nspawn.wire import ApprovalPolicy, ExecutorSandbox
-
-    params = wire.thread_start_params(
-        "gpt-5", "/tmp/wt", ApprovalPolicy.ON_REQUEST, ExecutorSandbox.WORKSPACE_WRITE
-    )
-    config = params["config"]
-    assert config["sandbox_workspace_write.writable_roots"] == ["/tmp/wt"]
-    assert config["sandbox_workspace_write.exclude_tmpdir_env_var"] is True
-    assert config["sandbox_workspace_write.exclude_slash_tmp"] is True
-    assert params["approvalPolicy"] == "on-request"
-    assert params["sandbox"] == "workspace-write"
 
 
 def test_the_optional_params_appear_only_when_named() -> None:

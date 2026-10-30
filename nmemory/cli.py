@@ -41,7 +41,6 @@ from .commands.curator import cmd_curator_set
 from .commands.database import cmd_database_create, cmd_database_snapshot
 from .commands.digest import cmd_digest_show
 from .commands.embedding import cmd_embedding_show
-from .commands.github import cmd_github_sync
 from .commands.index import cmd_index_build
 from .commands.portal import cmd_portal_export
 from .commands.project import cmd_project_bootstrap, cmd_project_scan
@@ -285,11 +284,6 @@ COMMANDS: Final[dict[tuple[str, str], Command]] = {
         "export selected private portal pages from the read-only store",
         cmd_portal_export,
     ),
-    ("github", "sync"): Command(
-        "[--verify] [--config F] [--repo R] [--label L] [--max-writes N] [--effort REF]",
-        "mirror the nMEMORY planning graph to GitHub issues",
-        cmd_github_sync,
-    ),
     ("anchor", "list"): Command(
         "", "print the live capsule anchor index", cmd_anchor_list
     ),
@@ -300,7 +294,7 @@ COMMANDS: Final[dict[tuple[str, str], Command]] = {
     ),
     ("quality", "measure"): Command(
         "[--json] [--dry-run]",
-        "measure store hygiene and capture the result as a capsule",
+        "measure store hygiene and the audit chain, and capture the result as a capsule",
         cmd_quality_measure,
     ),
     ("review", "run"): Command("--daily", "the daily curator review", cmd_review_run),
@@ -337,8 +331,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         case [noun, verb, *rest] if (noun, verb) in COMMANDS:
             try:
-                refuse(os.environ, READS)
-                system1_refuse(os.environ, SYSTEM1_RENAMED)
+                refuse(frozenset(os.environ), READS)
+                system1_refuse(frozenset(os.environ), SYSTEM1_RENAMED)
                 # `mcp serve` starts, and its server refuses each call itself.
                 if (noun, verb) != ("mcp", "serve") and inherited_session():
                     raise ConfigError(INHERITED_REFUSAL)

@@ -158,12 +158,6 @@ def command_parser() -> argparse.ArgumentParser:
         feedback_p.add_argument(
             flag, type=date.fromisoformat, required=True, help="YYYY-MM-DD (UTC)"
         )
-    digest_p.add_argument(
-        "--headlines",
-        type=int,
-        default=None,
-        help="Compatibility option; the census always counts the whole scope",
-    )
     digest_p.add_argument("--project-prefix", type=str, help="Project prefix filter")
 
     list_p = subparsers.add_parser("capsule list", help="List pinned capsule headlines")
@@ -230,24 +224,6 @@ def command_parser() -> argparse.ArgumentParser:
     portal_p.add_argument(
         "--digest", action="store_true", help="Print only the selected-pages digest"
     )
-
-    # github-sync
-    gh_sync_p = subparsers.add_parser(
-        "github sync", help="Sync nMEMORY planning graph with GitHub issues"
-    )
-    gh_sync_p.add_argument(
-        "--verify", action="store_true", help="Report drift without writing"
-    )
-    gh_sync_p.add_argument("--config", type=str, help="Path to config.toml")
-    gh_sync_p.add_argument("--repo", type=str, help="Target repository (owner/name)")
-    gh_sync_p.add_argument("--label", type=str, help="Fence label")
-    gh_sync_p.add_argument(
-        "--project", type=str, default=argparse.SUPPRESS, help="Project prefix filter"
-    )
-    gh_sync_p.add_argument(
-        "--max-writes", type=int, default=None, help="Max plan-derived writes"
-    )
-    gh_sync_p.add_argument("--effort", type=str, help="Narrow to effort epic reference")
 
     # relate
     relate_p = subparsers.add_parser(
@@ -321,7 +297,7 @@ def command_parser() -> argparse.ArgumentParser:
     # hygiene
     hygiene_p = subparsers.add_parser(
         "quality measure",
-        help="Measure store hygiene and capture the result as a capsule",
+        help="Measure store hygiene and the audit chain, and capture the result as a capsule",
     )
     hygiene_p.add_argument("--json", action="store_true", help="Output JSON")
     hygiene_p.add_argument(

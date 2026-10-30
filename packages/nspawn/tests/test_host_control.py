@@ -9,7 +9,7 @@ from supervisor_support import _drain_worker_threads, registry
 from test_driver import _call, _payload
 
 from nspawn import cli, driver, main, mcp, route, session
-from nspawn.mcp import INVALID_PARAMS, McpServer, tool_result
+from nspawn.mcp import INVALID_PARAMS, McpServer
 from nspawn.registry import Registry
 from nspawn.rows import Backend, NativeSessionContext, RunPhase, RunRow
 from nspawn.supervisor import InvalidRunRequest, Supervisor
@@ -56,7 +56,7 @@ def test_agent_server_refuses_host_control_before_dispatch(
 
     def dispatch(self: McpServer, tool: str, arguments: dict[str, Any]) -> dict:
         dispatched.append(tool)
-        return tool_result("{}")
+        return {"content": [{"type": "text", "text": "{}"}], "isError": False}
 
     monkeypatch.setattr(McpServer, "_dispatched", dispatch)
     server = McpServer()

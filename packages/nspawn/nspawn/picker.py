@@ -30,7 +30,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Final
 
-from .claude_catalog import ModelCatalogError
+from .claude_catalog import ModelCatalogError, model_efforts_read
 from .errors import (
     NERR_1101,
     NERR_1105,
@@ -44,15 +44,17 @@ from .errors import (
 from .native import request_refusal
 from .owner_roster import (
     EFFORT_LADDER,
+    TIGHTENED,
     UNCLASSIFIED,
     ClassPolicy,
     NativeAccount,
     Provider,
     Roster,
+    account_notes,
     claude_family,
     expand_value_with,
 )
-from .ranks import REVIEW, rank_providers
+from .ranks import JUDGMENT, REVIEW, rank_providers
 from .rows import AccountUsageRow
 
 
@@ -278,51 +280,78 @@ class PickerResult:
     requested_model: str | None = None
     requested_effort: str | None = None
     #: A model the verb prefers when the caller asked for none (the ping's fast
-    #: lane): resolved like a request, but never judged as a caller's pin.
+    #: lane, an agent file's suggestion): resolved like a request, but never
+    #: judged as a caller's pin. The provider and effort an agent file suggests
+    #: beside it ride here too, so a re-pick repeats the whole suggestion.
     preferred_model: str | None = None
+    preferred_provider: str | None = None
+    preferred_effort: str | None = None
+    role_model: str | None = None
+    role_effort: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class Preference:
-    """One route an unpinned review or verification tries, in the declared order.
+    """One route an unpinned witness or fresh native writer tries.
 
-    `route` is a provider name or an account alias; a `model` or `effort` it
-    does not name is the route's own default.
+    `route` is a provider name or account alias. A role entry gives route
+    defaults; other entries pin their model and effort when they name them.
     """
 
     route: str
     model: str | None = None
     effort: str | None = None
+    role: str | None = None
 
     def __str__(self) -> str:
         return self.route if self.model is None else f"{self.route}/{self.model}"
 
 
-def preferences(roster: Roster, execution_class: str | None) -> list[Preference]:
-    """The order an unpinned witness of another agent's work tries routes in.
+def preferences(
+    roster: Roster,
+    execution_class: str | None,
+    *,
+    preferred_provider: str | None = None,
+    preferred_model: str | None = None,
+    native_write: bool = False,
+) -> list[Preference]:
+    """The owner's route order for an unpinned witness or fresh native writer.
 
-    First the roster's `[preference]` list for the class, then, for a review,
-    the route `[roles]` binds to the reviewer with its `[role_profile]`, then
-    every provider in the class's rank except a named_only one. An entry listed
-    twice keeps its first place. Reachability is not judged here: the admission
-    skips what cannot serve now and records why.
+    A native writer takes the writer role; a review takes the reviewer role.
+    Other calls take no role. First comes the class's `[preference]` list,
+    then its role's route and `[role_profile]`, then routes that serve the
+    agent's model in class rank, then the rank except named_only routes.
+    An entry listed twice keeps its first place. Admission skips routes that
+    cannot serve now and records why.
     """
+    serving = [
+        Preference(provider.name)
+        for provider in rank_providers(roster.providers, execution_class)
+        if preferred_model is not None
+        and not provider.named_only
+        and suggested_model(provider, preferred_provider, preferred_model) is not None
+    ]
     declared = [
         Preference(route, model)
         for route, model in roster.preferences.get(execution_class or "", ())
     ]
     role: list[Preference] = []
-    reviewer = roster.roles.get("reviewer")
-    if execution_class == REVIEW and reviewer is not None:
-        profile = roster.role_profiles.get("reviewer", {})
-        role.append(Preference(reviewer, profile.get("model"), profile.get("effort")))
+    name = (
+        "writer" if native_write else "reviewer" if execution_class == REVIEW else None
+    )
+    route = roster.roles.get(name) if name is not None else None
+    if name is not None and route is not None:
+        profile = roster.role_profiles.get(name, {})
+        role.append(
+            Preference(route, profile.get("model"), profile.get("effort"), role=name)
+        )
     # A named_only route serves only where the roster names it above.
     ranked = [
         Preference(provider.name)
         for provider in rank_providers(roster.providers, execution_class)
         if not provider.named_only
     ]
-    return list(dict.fromkeys([*declared, *role, *ranked]))
+    return list(dict.fromkeys([*declared, *role, *serving, *ranked]))
 
 
 @dataclass(frozen=True, slots=True)
@@ -443,14 +472,35 @@ def without_accounts(roster: Roster, accounts: frozenset[str]) -> Roster:
     )
 
 
-def exclusion_check(provider: Provider, accounts: Sequence[str]) -> None:
-    """Refuse exclusion aliases that do not name a configured account."""
-    unknown = sorted(set(provider.excluded_accounts) - set(accounts))
-    if unknown:
-        raise PickerError(
-            f'provider "{provider.name}" excluded_accounts names unknown accounts: '
-            + ", ".join(unknown)
-        )
+#: The most that the roster notes add to one run warning, whose row holds
+#: `MAX_DURABLE_OBSERVATION_BYTES`. `nspawn provider list` shows every note.
+NOTES_LIMIT: Final = 2048
+
+
+def _run_notes(notes: Sequence[str]) -> str:
+    """``notes`` joined: the whole ones that fit in `NOTES_LIMIT`, then a count.
+
+    A tightened note goes first, and the tail that points to `nspawn provider
+    list` never counts it: the file is owner-only now, so that list never shows
+    it again. Tightened notes that do not fit get a count of their own.
+    """
+    ordered = sorted(notes, key=lambda note: not note.startswith(TIGHTENED))
+    kept: list[str] = []
+    size = 0
+    listed = tightened = 0
+    for note in ordered:
+        size += len(note.encode("utf-8", "replace")) + 2
+        if size <= NOTES_LIMIT and not (listed or tightened):
+            kept.append(note)
+        elif note.startswith(TIGHTENED):
+            tightened += 1
+        else:
+            listed += 1
+    if tightened:
+        kept.append(f"{tightened} more token files tightened")
+    if listed:
+        kept.append(f"{listed} more notes in nspawn provider list")
+    return "; ".join(kept)
 
 
 def _nearest_reset(
@@ -463,7 +513,6 @@ def _nearest_reset(
     blocking: list[int] = []
     for provider in candidates:
         accounts = provider.discovered_accounts()
-        exclusion_check(provider, accounts)
         if accounts and all(alias in provider.excluded_accounts for alias in accounts):
             continue
         provider_until = provider_walls.get(provider.name)
@@ -590,7 +639,6 @@ def _unwalled_account(
     # qwen roster declares the 3090 first and the laptop sorts first, so the
     # alphabet sent every idle dispatch at the laptop.
     accounts = provider.ordered_accounts()
-    exclusion_check(provider, accounts)
     if not accounts:
         return None, True
     unwalled = [
@@ -616,7 +664,6 @@ def _account_running(
     refused naming every account and model seen when none does."""
     seen = []
     accounts = provider.ordered_accounts()
-    exclusion_check(provider, accounts)
     for alias in accounts:
         if alias in provider.excluded_accounts:
             continue
@@ -629,66 +676,6 @@ def _account_running(
     if not running:
         raise PickerError.no_account_runs(provider.name, model, seen)
     return _spread(provider, running, now, account_load, use)
-
-
-def key_refusal(provider: Provider, alias: str | None, model: str | None) -> str | None:
-    """Why `alias` (the route itself for None) may not run `model`, or None.
-
-    A base url sends the key to another endpoint (a local qwen), so
-        that account is not one. `None` is a model chosen later (a new canvas node).
-    """
-    if model is not None and "haiku" in model.lower():
-        return None
-    account = provider.accounts.get(alias or "")
-    auth = (account.auth_env if account is not None else None) or provider.auth_env
-    base = (account.base_url if account is not None else None) or (
-        provider.env or {}
-    ).get("ANTHROPIC_BASE_URL")
-    if auth != "ANTHROPIC_API_KEY" or base:
-        return None
-    where = f'account "{alias}"' if alias else f'provider "{provider.name}"'
-    return (
-        f"{where} sends an Anthropic API key, which runs a Haiku model "
-        f"only, not {model or 'a model chosen later'}"
-    )
-
-
-def _runs(
-    provider: Provider, alias: str | None, model: str | None, pinned: bool
-) -> str | None:
-    """The model `alias` runs: a pinned model, else the account's own, else `model`.
-
-    `None` stays `None`: a canvas node switches model at any time, so the
-    account's declared model does not protect it.
-    """
-    account = provider.accounts.get(alias or "")
-    if pinned or model is None or account is None:
-        return model
-    return account.model or model
-
-
-def _key_emptied_message(model: str | None) -> str:
-    return (
-        "every open account left for this run sends an Anthropic API "
-        f"key, which runs a Haiku model only, not {model or 'a model chosen later'}"
-    )
-
-
-def keyless(provider: Provider, model: str | None, pinned: bool = False) -> Provider:
-    """`provider` with the accounts `key_refusal` refuses for `model` excluded.
-
-    Eligibility, the account choice and the wall's reset read this view, so an
-    unpinned run moves to the next account or route and never to the key.
-    """
-    keyed = [
-        alias
-        for alias in provider.ordered_accounts()
-        if alias not in provider.excluded_accounts
-        and key_refusal(provider, alias, _runs(provider, alias, model, pinned))
-    ]
-    if not keyed:
-        return provider
-    return replace(provider, excluded_accounts=[*provider.excluded_accounts, *keyed])
 
 
 def _is_eligible(
@@ -718,7 +705,6 @@ def _select_account(
     Raises:
         AllProvidersWalled: naming the blocking wall's nearest reset.
     """
-    exclusion_check(provider, provider.ordered_accounts())
     provider_until = provider_walls.get(provider.name)
     if provider_until is not None and provider_until > now:
         raise AllProvidersWalled(
@@ -741,6 +727,51 @@ def _select_account(
             reset,
         )
     return alias
+
+
+def suggested_model(
+    provider: Provider, suggested_provider: str | None, model: str
+) -> str | None:
+    """The model id `provider` runs for an agent file's suggested `model`, or None
+    when the route does not serve the suggestion.
+
+    A route serves it when it is a Claude-kind route of the suggestion's
+    provider, by kind (`claude` for a `model` key) or by name (`nott-provider: gpt` is the route
+    `gpt`), and its catalog holds the model, or for a Claude family alias the
+    first model of that family it declares, or it declares no catalog. A
+    suggestion with no provider (the ping's fast lane) asks the catalog alone.
+    A catalog that cannot be read serves nothing: a suggestion never refuses.
+    """
+    if suggested_provider is not None and (
+        provider.kind != "claude"
+        or suggested_provider not in (provider.kind, provider.name)
+    ):
+        return None
+    catalog = _model_catalog(provider)
+    try:
+        # A declared `models` list is judged as `_validate_model` judges it.
+        served = (
+            provider.serves(model)
+            if provider.models
+            else catalog is None or model in catalog
+        )
+    except ModelCatalogError:
+        served = False
+    if served or catalog is None:
+        return model
+    family = claude_family(model)
+    if family is None:
+        return None
+    return next(
+        (
+            declared
+            for declared in catalog
+            if re.fullmatch(
+                rf"claude-{family}-[a-zA-Z0-9.-]+", declared.removesuffix("[1m]")
+            )
+        ),
+        None,
+    )
 
 
 def _resolve_model(
@@ -889,9 +920,7 @@ def _clamp_to_served(provider: Provider, effort: str) -> str:
     if not provider.efforts or effort in provider.efforts:
         return effort
     on_ladder = [e for e in provider.efforts if e in EFFORT_LADDER]
-    below = [
-        e for e in on_ladder if EFFORT_LADDER.index(e) <= EFFORT_LADDER.index(effort)
-    ]
+    below = [e for e in on_ladder if _ladder_rank(e) <= _ladder_rank(effort)]
     if below:
         return max(below, key=_ladder_rank)
     return min(on_ladder or provider.efforts, key=_ladder_rank)
@@ -930,6 +959,51 @@ def _resolve_effort(
             served_efforts(provider),
         )
     return effort
+
+
+def _suggested_effort(
+    provider: Provider,
+    roster: Roster,
+    execution_class: str | None,
+    effort: str,
+    *,
+    source: str = "suggested",
+) -> tuple[str | None, str | None]:
+    """Resolve an agent or role effort default, never a refusal.
+
+    Above the class ceiling it runs at the ceiling, and a rung the route does
+    not serve runs as the nearest one it serves (`_clamp_to_served`), each with
+    a note. A value off the ladder that the route does not declare is no effort
+    at all: None, and the class or the route decides as with no suggestion.
+    """
+    name = execution_class or UNCLASSIFIED
+    policy = roster.classes.get(name)
+    capped, note = effort, None
+    if policy is not None and _ladder_rank(effort) > EFFORT_LADDER.index(
+        policy.ceiling
+    ):
+        capped = policy.ceiling
+        note = (
+            f'the {source} effort "{effort}" is above the {name} ceiling: '
+            f'ran "{capped}"'
+        )
+    if (
+        capped not in EFFORT_LADDER
+        and provider.efforts
+        and capped not in provider.efforts
+    ):
+        return None, (
+            f'route "{provider.name}" does not serve the {source} effort "{effort}"'
+        )
+    served = _clamp_to_served(provider, capped)
+    if provider.kind == "codex" and served in CODEX_REWRITTEN_EFFORTS:
+        return None, f'route "{provider.name}" rewrites the {source} effort "{served}"'
+    if served != capped:
+        note = (
+            f'route "{provider.name}" does not serve the {source} effort '
+            f'"{effort}": ran "{served}"'
+        )
+    return served, note
 
 
 def _pick_effort(
@@ -972,7 +1046,7 @@ def refuse_roster_override(
 
     The child applies `[defaults.env]`, `[provider.env]` and the account's env
     AFTER the requested values, so a literal there wins in the child. Only a child
-    that receives the roster's env and args is judged: the cage composes its own.
+    that receives the roster's env and args is judged.
     """
     # The env and args as the child receives them: `Roster.resolve`, expanded
     # the way `child.build_child_env` and the supervisor expand them.
@@ -1192,6 +1266,10 @@ def pick_execution(
     requested_effort: str | None = None,
     execution_class: str | None = None,
     preferred_model: str | None = None,
+    preferred_provider: str | None = None,
+    preferred_effort: str | None = None,
+    role_model: str | None = None,
+    role_effort: str | None = None,
     account_load: dict[str, int] | None = None,
     account_use: AccountUse | None = None,
     producer: str | None = None,
@@ -1200,7 +1278,15 @@ def pick_execution(
     read_paths: Sequence[str] = (),
     system_prompt: str | None = None,
 ) -> PickerResult:
-    """Apply the declared four-step ladder and return the observed route."""
+    """Apply the declared four-step ladder and return the observed route.
+
+    The precedence (`plugin/skills/workflow/references/model-tiers.md`): the
+    caller's pinned model or effort, then the class tier for a `judgment` class,
+    then the preferred (suggested) model and effort, then the role defaults
+    before the class route and its fast lane. A suggestion never refuses:
+    one no open route serves, or one
+    the pinned route does not serve, runs the route's own choice with a warning.
+    """
     walled_providers = provider_walls if provider_walls is not None else {}
     walled_accounts = account_walls if account_walls is not None else {}
     warning: str | None = None
@@ -1208,44 +1294,51 @@ def pick_execution(
     strength_policy = _class_strength_policy(roster, execution_class)
     # Validate the pin before letting it replace the class's initial effort.
     _class_effort(roster, execution_class, requested_effort)
-    wanted = requested_model if requested_model is not None else preferred_model
+    # Step 2 of the precedence: a judgment class runs its class tier, so it
+    # skips a suggested model.
+    suggested = (
+        preferred_model
+        if requested_model is None and execution_class != JUDGMENT
+        else None
+    )
+    wanted = requested_model if requested_model is not None else suggested
     policy = roster.classes.get(execution_class or UNCLASSIFIED)
-    pinned_model = requested_model is not None
 
-    def planned(p: Provider) -> str | None:
-        # The model `_resolve_model` picks below, before the account is known.
-        fast = p.model_fast if policy is not None and policy.fast else None
-        return (
-            wanted
-            or fast
-            or p.model
-            or next(iter(p.models), None)
-            or (roster.defaults.model)
-        )
+    def admission_effort(p: Provider) -> str | None:
+        if requested_effort is not None or role_effort is None:
+            return requested_effort
+        if strength_policy is not None and not _serves_at_or_below(
+            p, strength_policy.ceiling
+        ):
+            return None
+        return role_effort
 
-    def keyed(p: Provider) -> Provider:
-        return keyless(p, planned(p), pinned_model)
-
-    def key_emptied(p: Provider) -> bool:
-        accounts = p.ordered_accounts()
-        if not accounts:
-            return key_refusal(p, None, planned(p)) is not None
-        view = keyed(p)
-        return any(a not in p.excluded_accounts for a in accounts) and all(
-            a in view.excluded_accounts for a in accounts
-        )
+    def reset_of(routes: list[Provider]) -> int | None:
+        # The first moment an account of `routes` runs this run. A walled route
+        # runs nothing before its own wall lifts.
+        resets = []
+        for p in routes:
+            accounts = p.discovered_accounts()
+            if accounts and set(accounts) <= set(p.excluded_accounts):
+                continue
+            first = _nearest_reset([p], {}, walled_accounts, now)
+            route_until = walled_providers.get(p.name, 0)
+            if route_until > now:
+                free = _unwalled_account(p, walled_accounts, now)[1]
+                resets.append(
+                    route_until if free or first is None else max(route_until, first)
+                )
+            elif first is not None:
+                resets.append(first)
+        return min(resets, default=None)
 
     def eligible(p: Provider) -> bool:
-        return not key_emptied(p) and _is_eligible(
-            keyed(p), walled_providers, walled_accounts, now
-        )
+        return _is_eligible(p, walled_providers, walled_accounts, now)
 
     def walled(routes: list[Provider]) -> NSpawnError:
-        pool = [keyed(p) for p in routes if not key_emptied(p)]
-        reset = _nearest_reset(pool, walled_providers, walled_accounts, now)
-        if reset is None and len(pool) < len(routes):
-            return PickerError(_key_emptied_message(planned(routes[0])))
-        return AllProvidersWalled("every eligible Claude route is cooling down", reset)
+        return AllProvidersWalled(
+            "every eligible Claude route is cooling down", reset_of(routes)
+        )
 
     if requested_provider is not None:
         provider = roster.select(requested_provider)
@@ -1259,7 +1352,7 @@ def pick_execution(
             raise PickerError(refusal)
         # An explicit request is never rerouted (step 1 of the ladder), so a pin
         # above the class cap is a refusal that names where to go instead.
-        if not _class_admits(provider, strength_policy, requested_effort):
+        if not _class_admits(provider, strength_policy, admission_effort(provider)):
             assert execution_class is not None and strength_policy is not None
             cap = strength_policy.max_strength
             if cap is None or provider.strength is None or provider.strength <= cap:
@@ -1284,14 +1377,11 @@ def pick_execution(
             requested_provider if requested_provider != provider.name else None
         )
         account_pinned = pinned_alias is not None
-        if account_pinned or not provider.ordered_accounts():
-            runs = _runs(provider, pinned_alias, planned(provider), pinned_model)
-            if refusal := key_refusal(provider, pinned_alias, runs):
-                raise PickerError(refusal)
-        elif key_emptied(provider):
-            raise PickerError(_key_emptied_message(planned(provider)))
+        if suggested is not None:
+            # A pinned route that does not serve the suggestion runs its own model.
+            wanted = suggested_model(provider, preferred_provider, suggested)
         executed_account = _select_account(
-            keyed(provider),
+            provider,
             pinned_alias,
             walled_providers,
             walled_accounts,
@@ -1340,10 +1430,26 @@ def pick_execution(
                     "no declared provider supports the requested read_paths/system_prompt capabilities"
                 )
             raise PickerError.no_eligible_provider()
+        if suggested is not None:
+            # Step 3: the open routes of the class that serve the suggestion,
+            # else every route as if there were none (its fast lane included).
+            serving = [
+                p
+                for p in candidates
+                if suggested_model(p, preferred_provider, suggested) is not None
+                and eligible(p)
+                and _class_admits(p, strength_policy, admission_effort(p))
+            ]
+            if serving:
+                candidates = serving
+            else:
+                wanted = None
         if execution_class is not None:
             open_ = [p for p in candidates if eligible(p)]
             affordable = [
-                p for p in open_ if _class_admits(p, strength_policy, requested_effort)
+                p
+                for p in open_
+                if _class_admits(p, strength_policy, admission_effort(p))
             ]
             # Two causes, two answers: a pool the cap emptied never refills, so
             # telling the caller to wait for a wall would be a lie.
@@ -1360,7 +1466,7 @@ def pick_execution(
                 raise walled(candidates)
             provider = ranked[0]
             executed_account = _select_account(
-                keyed(provider),
+                provider,
                 None,
                 walled_providers,
                 walled_accounts,
@@ -1373,7 +1479,7 @@ def pick_execution(
             if eligible(default_provider):
                 provider = default_provider
                 executed_account = _select_account(
-                    keyed(provider),
+                    provider,
                     None,
                     walled_providers,
                     walled_accounts,
@@ -1387,7 +1493,7 @@ def pick_execution(
                     raise walled(candidates)
                 provider = ranked[0]
                 executed_account = _select_account(
-                    keyed(provider),
+                    provider,
                     None,
                     walled_providers,
                     walled_accounts,
@@ -1400,12 +1506,17 @@ def pick_execution(
                     f'routed to "{provider.name}"'
                 )
 
+    if suggested is not None and requested_provider is None and wanted is not None:
+        wanted = suggested_model(provider, preferred_provider, suggested)
     if provider.kind not in ("claude", "codex", "agy"):
         raise PickerError(
             f"provider {provider.name!r} has kind {provider.kind!r}: "
             f"the {provider.kind} launcher is not implemented yet"
         )
 
+    role_default = role_model if wanted is None else None
+    if role_default is not None:
+        wanted = role_default
     # The class's fast lane ranks below a pin and the verb's preference: it is
     # the owner's default for that kind of work, not a request a re-pick repeats.
     fast_lane = None
@@ -1428,7 +1539,7 @@ def pick_execution(
         # A pinned model chooses among the accounts that run it; load chose
         # without asking (audit 2026-10-09: eight qwen pins refused this way).
         executed_account = _account_running(
-            keyed(provider),
+            provider,
             requested_model,
             walled_accounts,
             now,
@@ -1436,27 +1547,26 @@ def pick_execution(
             account_use,
         )
         chosen = provider.accounts.get(executed_account or "")
+    account_default = role_default if role_default is not None else fast_lane
     if (
         chosen is not None
         and chosen.model
-        and fast_lane is not None
-        and fast_lane != chosen.model
+        and account_default is not None
+        and account_default != chosen.model
         and provider.serves(
             chosen.model,
             declared=[*provider.models, *([provider.model] if provider.model else [])],
         )
         and not account_pinned
     ):
-        # Load picked an account pinned to another DECLARED model of the route
-        # (its `model` is declared even when the optional `models` is omitted);
-        # prefer one that runs the class's fast lane. An undeclared id is the
-        # same model spelled by that account's server (vLLM `m-27b`, ollama
-        # `m:27b`), so load stands. None runs it: the lane is a default, not a
-        # pin, so the load's account and its model stand.
+        # Load chose another declared model. Prefer an account that runs the
+        # role default or fast lane. An undeclared id is an account spelling
+        # of the same model, so load stands. Neither default is a pin.
+        account_model = chosen.model
         try:
             executed_account = _account_running(
-                keyed(provider),
-                fast_lane,
+                provider,
+                account_default,
                 walled_accounts,
                 now,
                 account_load,
@@ -1464,7 +1574,12 @@ def pick_execution(
             )
             chosen = provider.accounts.get(executed_account or "")
         except PickerError:
-            pass
+            if role_default is not None:
+                account_note = (
+                    f'account "{executed_account}" runs "{account_model}", '
+                    f'not the role model "{role_default}"'
+                )
+                warning = f"{warning}; {account_note}" if warning else account_note
     if chosen is not None and chosen.model:
         # A caller-pinned model is never swapped for the account's: refuse before
         # any run exists. An omitted model takes the account's override.
@@ -1477,13 +1592,92 @@ def pick_execution(
         # The fast lane reaches the child as ANTHROPIC_DEFAULT_HAIKU_MODEL with
         # no other check; a dead id there fails in the vendor, mid-run.
         _validate_model(provider, provider.model_fast)
-    effort = _resolve_effort(
-        provider,
-        requested_effort,
-        roster.defaults.effort,
-        roster=roster,
-        execution_class=execution_class,
-    )
+    effort: str | None = None
+    effort_note: str | None = None
+    if requested_effort is None and preferred_effort is not None:
+        effort, effort_note = _suggested_effort(
+            provider, roster, execution_class, preferred_effort
+        )
+    if effort is None and requested_effort is None and role_effort is not None:
+        effort, note = _suggested_effort(
+            provider, roster, execution_class, role_effort, source="role"
+        )
+        if note is not None:
+            effort_note = f"{effort_note}; {note}" if effort_note else note
+    try:
+        if effort is None:
+            effort = _resolve_effort(
+                provider,
+                requested_effort,
+                roster.defaults.effort,
+                roster=roster,
+                execution_class=execution_class,
+            )
+    except PickerError as refusal:
+        if requested_effort is None:
+            raise
+        raise PickerError(
+            f'{refusal}; model "{model}" cannot serve effort "{requested_effort}"',
+            entry=refusal.entry,
+        ) from refusal
+    if (
+        effort is not None
+        and provider.kind == "claude"
+        and provider.bin is not None
+        and not _routes_off_native(provider)
+        and (claude_family(model) is not None or model.startswith("claude-"))
+    ):
+        try:
+            model_efforts = model_efforts_read(provider.bin, model)
+        except ModelCatalogError:
+            # Older or unavailable catalogues leave the roster's declared ladder.
+            model_efforts = None
+        if model_efforts is not None and effort not in model_efforts:
+            route_efforts = served_efforts(provider)
+            shared_efforts = [
+                level
+                for level in model_efforts
+                if level in EFFORT_LADDER
+                and (not provider.efforts or level in route_efforts)
+            ]
+            if (
+                requested_effort is not None
+                or effort not in EFFORT_LADDER
+                or not shared_efforts
+            ):
+                raise PickerError(
+                    f'model "{model}" cannot serve effort "{effort}"; '
+                    f"it supports [{', '.join(model_efforts)}]",
+                    entry=NERR_1124,
+                )
+            original = effort
+            effort = _clamp_to_served(replace(provider, efforts=shared_efforts), effort)
+            actual = f'effort "{effort}"'
+            note = f'model "{model}" cannot serve effort "{original}": ran {actual}'
+            effort_note = f"{effort_note}; {note}" if effort_note else note
+    if preferred_model is not None and requested_model is None:
+        expected = suggested_model(provider, preferred_provider, preferred_model)
+        if model != expected:
+            if execution_class == JUDGMENT:
+                why = "a judgment class runs its class tier"
+            elif expected is not None:
+                why = f'account "{executed_account}" runs its own model'
+            elif requested_provider is not None:
+                why = f'route "{provider.name}" does not serve it'
+            else:
+                why = "no open route of this class serves it"
+            note = (
+                f'ran "{model}" on "{provider.name}", not the suggested model '
+                f'"{preferred_model}": {why}'
+            )
+            warning = f"{warning}; {note}" if warning else note
+    if effort_note is not None:
+        warning = f"{warning}; {effort_note}" if warning else effort_note
+    # What the owner fixes in the roster rides on every run of the route.
+    notes = account_notes(provider)
+    if notes:
+        bounded = _run_notes(notes)
+        warning = f"{warning}; {bounded}" if warning else bounded
     return PickerResult(
         requested_provider=requested_provider,
         executed_provider=provider,
@@ -1494,4 +1688,8 @@ def pick_execution(
         requested_model=requested_model,
         requested_effort=requested_effort,
         preferred_model=preferred_model,
+        preferred_provider=preferred_provider,
+        preferred_effort=preferred_effort,
+        role_model=role_model,
+        role_effort=role_effort,
     )

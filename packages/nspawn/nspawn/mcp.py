@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import errno
 import fcntl
+import functools
 import json
 import os
 import sys
@@ -16,7 +17,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
@@ -24,10 +25,19 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from jsonschema import Draft202012Validator, validators  # type: ignore[import-untyped]
 from jsonschema.exceptions import best_match  # type: ignore[import-untyped]
+from nott_database import BusyError
 
-from . import child, config, driver, native, notify, ranks
+from . import (
+    child,
+    config,
+    driver,
+    notify,
+    operations,
+    ranks,
+)
 from .errors import UNKNOWN_CODE, NSpawnError, nerr_of
 from .limits import MAX_DURABLE_ROW_BYTES
+from .operations import OMITTED as OPERATIONS_OMITTED
 from .picker import PickerError
 from .registry import (
     STORE_ERRORS,
@@ -38,13 +48,17 @@ from .registry import (
 )
 from .rows import RunPhase, validate_system_prompt
 from .supervisor import (
+    DRIVE_CALL,
     HOST_CONTROL_REFUSAL,
+    DriveCall,
     InvalidRunRequest,
     RunResult,
     RunStatus,
     Supervisor,
+    UnknownRun,
     agent_system_prompt,
     provider_report,
+    refuse_writer_read_paths,
     review_branch,
 )
 
@@ -60,8 +74,6 @@ if TYPE_CHECKING:
 SERVER_NAME = "nspawn"
 SERVER_VERSION = "0.1.0"
 
-#: The hard cap on one tool's rendered answer.
-MAX_MCP_RESPONSE_BYTES = 1024 * 1024
 #: Compact JSON tools/call params ceiling; checked before dispatch.
 MAX_MCP_PARAMS_BYTES = 1024 * 1024
 #: Maximum serialized result bytes inline before lossless artifact spill.
@@ -100,72 +112,62 @@ EXECUTION_CLASSES: tuple[str, ...] = tuple(
     if name.isupper() and isinstance(value, str)
 )
 
-#: The one sentence a caller needs to choose the cage. It names the CONSEQUENCE
+#: The one sentence a caller needs to choose the mode. It names the CONSEQUENCE
 #: rather than the flag: a caller picking a dispatch mode is deciding what the
 #: child may do to the disk, not which vendor argument carries it.
 _READ_ONLY_DESCRIPTION = (
-    "Dispatch the child caged: it can read and search inside `cwd` and explicit "
-    "`read_paths`, and every write refuses — the operator's `bypassPermissions` "
-    "does not reach it. Under the Claude `dontAsk` cage the child runs only the "
+    "Dispatch a read-only child. It starts the native client with the tools of "
+    "its agent file and no other tool, in a run slice of its own, with no bwrap "
+    "settings. It can read and search inside `cwd` and explicit `read_paths`, "
+    "and every write refuses — the operator's `bypassPermissions` does not "
+    "reach it. Under the Claude `dontAsk` mode the child runs only the "
     "shell commands the vendor classifies as read-only (grep, find, wc) and "
     "never runs a script, an interpreter, a clone or a mktemp: every other "
     "command is denied with nobody to ask. nSPAWN makes no git contract on any "
     "route; pass history as a file in `read_paths`. (Measured 2026-10-09, a "
-    "fact and not a promise: that cage, with `--disallowedTools Bash(git:*)`, "
+    "fact and not a promise: that mode, with `--disallowedTools Bash(git:*)`, "
     "denied every git spelling tried.) Use it for any audit, survey or "
-    "investigation that reads. A run that must write is not caged: a writable "
+    "investigation that reads. A run that must write is not read-only: a writable "
     "dispatch (false, the default) must also set `native_write`, and is "
-    "otherwise refused before a child starts. `read_paths` requires this cage "
-    "or `native_write`; `nspawn_review_start` and `nspawn_batch_start` are "
-    "always caged."
+    "otherwise refused before a child starts. `read_paths` requires "
+    "`read_only=true` and is refused with `native_write`. Drop `read_paths` for "
+    "a native writer; it reads the host with ordinary native access without "
+    "this field. `nspawn_review_start` and `nspawn_batch_start` are always "
+    "read-only."
 )
 _NATIVE_WRITE_DESCRIPTION = (
-    "Run one writer turn that can write only inside `cwd`. Use a route that "
-    "lists `write` in `nspawn_provider_list`. Today, these routes are claude "
-    "and codex. AGY has no write capability. nSPAWN refuses a claude route that "
-    "sends its model calls to a different endpoint. `cwd` must be an existing "
-    "absolute directory under a `[native_write]` root of the roster. `cwd` must "
-    "be a standalone clone: its `.git` is a directory, not a linked worktree. "
-    "The run takes the one-writer claim on `cwd`. The child gets private state "
-    "and no network. On claude, the writer has the Bash tool only, no MCP tools "
-    "and the explicit `dontAsk` permission mode, and cannot read or write `.git`. "
-    "On codex, the writer can read `.git` but cannot write it. On codex, HOME, "
-    "TMPDIR and the caches are disposable directories under "
-    "`cwd/.nott/disposable`, and `nmemory_context_show` is the only MCP tool. "
-    "Every process that the writer starts runs in the systemd slice of the run. "
-    "Close empties the slice before it releases the claim. The writer does not "
-    "commit or push. You commit and push after the run. nSPAWN refuses the run "
-    "with `read_only` and on a route that does not list `write`. A `session_id` "
-    "resume of a writer run must repeat `native_write=true`. nSPAWN refuses "
-    "`native_write` with any other `session_id`. An `original_run` continuation "
-    "retains the recorded opt-in."
+    "Run one native writer turn in its standalone clone without a writer cage. "
+    "Use a route that lists `write` in `nspawn_provider_list`: claude, codex or agy. "
+    "`cwd` must be an existing absolute directory under a `[native_write]` roster root. "
+    "Its `.git` must be a directory, not a linked worktree. "
+    "The run takes the one-writer claim on `cwd` and keeps process custody. "
+    "Close empties the run's scope before it releases the claim. "
+    "Claude starts in the clone with ordinary settings and an inherited environment. "
+    "Writer plugins retain their hooks but do not load the nSPAWN MCP server. "
+    "Codex and AGY start without an adapter writer permission profile. "
+    "nSPAWN refuses `native_write` with `read_only` or `read_paths`. "
+    "A `session_id` resume must repeat `native_write=true`; an `original_run` "
+    "continuation retains the recorded opt-in. "
+    "Use `read_only=true` without `native_write` for a read-only child."
 )
 
-_ORCHESTRATOR_DESCRIPTION = (
-    "Bind this read-only codex turn to one durable conversation session and one "
-    "memory project, and give it the private orchestrator MCP and nothing else: "
-    "{session, project, repository, runtime, database_dir, interpreter}, every "
-    "path absolute and canonical. `repository` is the session's REAL repository "
-    "root — the tree its proposals are bound to; state it, because nothing stands "
-    "in for it and a dispatch that omits it is refused by name. The turn never "
-    "reads or writes it: it reads only `cwd` (its clean inspection snapshot, "
-    "recorded beside the repository as `snapshot`) and `runtime`, takes no "
-    "`read_paths` beside them, no `native_write`, and no route but codex. Its "
-    "session, both trees, permission profile and tool contract are recorded with "
-    "the admission itself, in one transaction, so a turn that exists is a turn "
-    "whose binding is on record. Omit it and nothing changes: the dispatch is the "
-    "one this verb always admitted, down to its idempotency key."
-)
 _CWD_DESCRIPTION = (
-    "The child's working directory. A caged child is confined to this `cwd` plus "
-    "trees explicitly named by `read_paths`; no other path is granted."
+    "The child's working directory. A read-only child reads and searches this "
+    "`cwd` plus trees explicitly named by `read_paths`; no other path is granted."
 )
 _READ_PATHS_DESCRIPTION = (
-    "Extra trees the caged child may read, each passed as one literal `--add-dir` "
-    "argument. They never grant writes and are refused on a writable execute "
-    "other than `native_write`."
+    "Extra trees the read-only child may read, each passed as one literal "
+    "`--add-dir` argument. They require `read_only=true` and never grant writes. "
+    "nSPAWN refuses `read_paths` with `native_write` before admission. "
+    "Drop `read_paths` for a native writer: it uses ordinary native access "
+    "without this field. Or use `read_only=true` for a read-only child."
 )
 _RUN_ID_DESCRIPTION = "A run_id from a start tool or `nspawn_run_list`."
+_NOTICE_DESCRIPTION = (
+    "Send the caller a terminal notice, true by default. With `notice: false`, "
+    "the run gives no notice. Use `nspawn run wait <run_id>` to wait for it. "
+    "A node door refuses false because the host counts each run's notice."
+)
 
 
 #: One sentence per routing argument, shared by every verb that takes it, so a
@@ -183,9 +185,13 @@ _SYSTEM_PROMPT_DESCRIPTION = (
 _AGENT_DESCRIPTION = (
     "Name of an agent file in the NOTT plugin, for example nott:python-reviewer "
     "or python-reviewer. nSPAWN reads agents/<name>.md in the plugin root, removes "
-    "the frontmatter and uses the body as system_prompt. Do not give agent and "
-    "system_prompt together. If the name is unknown, nSPAWN refuses the call and "
-    "gives the known names."
+    "the frontmatter and uses the body as system_prompt; a Claude child also gets "
+    "the SKILL.md of each skill its `skills` key names, and without agent it runs "
+    "as worker. The agent's model and effort apply when the call pins none, on the "
+    "route that the roster chooses. A route that cannot serve them runs its own, with "
+    "a warning, never a refusal. "
+    "Do not give agent and system_prompt together. If the name is "
+    "unknown, nSPAWN refuses the call and gives the known names."
 )
 
 
@@ -197,8 +203,10 @@ _PROVIDER_DESCRIPTION = (
     "owner data, not a closed set: a name it declares "
     "later is served here without any change to this schema. When both are "
     "present, explicit provider wins "
-    "and `class` does not route. Omit to let `class` route, or to take the "
-    "roster's own default."
+    "and `class` does not route. Omit it to let the roster route. A review or a "
+    "native writer takes the route that `[roles]` binds to its role, after the "
+    "`[preference]` list of its class. Another run takes its `class` route or "
+    "the roster's own default."
 )
 _MODEL_DESCRIPTION = (
     "Model id, caller-pinned and checked against the chosen provider's declared "
@@ -229,7 +237,7 @@ _CLASS_DESCRIPTION = (
     "when the roster has a `[classes]` table, the first 4000 characters of "
     "`prompt` go to the configured System1 classifier, and the run executes as "
     "the observed class only when it is cheaper on every axis, else as the "
-    "declared one (a classifier failure observes `unclassified`); a "
+    "declared one. A classifier failure keeps the declared class; a "
     "disagreement or a failure is reported in `nspawn_run_show`'s `warning`."
 )
 
@@ -280,8 +288,9 @@ _PRODUCER_DESCRIPTION = (
     "or model ids, for example the author's own route and model. The run never "
     "executes as one of them. nSPAWN refuses a pinned `provider` that is one of "
     "them. With no `provider`, a review or verification run takes the routes in "
-    "the owner's order: the roster's `[preference]` list for the class, then the "
-    "reviewer role, then the class rank. nSPAWN skips each route that cannot serve "
+    "the owner's order. First the roster's `[preference]` list for the class, then "
+    "the reviewer role. Then each route that serves the agent's model, then the "
+    "class rank. nSPAWN skips each route that cannot serve "
     "now and writes the reason in `warning`. When a route refuses the turn, the "
     "work continues as a new run on the next route, and the failed run's "
     "`warning` names it."
@@ -368,18 +377,16 @@ def _swarm_group(group: str | None, swarm: str | None) -> str | None:
     refuses `swarm`: the host takes a node's notices one by one.
     """
     if group is not None and group.startswith(SWARM_PREFIX):
-        raise McpError(
-            INVALID_PARAMS,
-            f"group must not start with {SWARM_PREFIX!r}: use the swarm option",
+        raise _invalid_arguments(
+            f"group must not start with {SWARM_PREFIX!r}: use the swarm option"
         )
     if swarm is None:
         return group
     if group is not None:
-        raise McpError(INVALID_PARAMS, "give swarm or group, not both")
+        raise _invalid_arguments("give swarm or group, not both")
     if driver.node_owner(os.environ) is not None:
-        raise McpError(
-            INVALID_PARAMS,
-            "a node door does not accept swarm: the host gives one notice per run",
+        raise _invalid_arguments(
+            "a node door does not accept swarm: the host gives one notice per run"
         )
     return SWARM_PREFIX + swarm
 
@@ -413,14 +420,16 @@ NSPAWN_TOOL_CONTRACTS = (
             "at the project's next session start; read the answer with "
             "`nspawn_result_show` when it arrives. A run with `swarm` gives no "
             "notice of its own: the swarm gives one notice for all its runs. "
-            "Other clients receive no "
+            "With `notice: false`, the run gives no notice. Use "
+            "`nspawn run wait <run_id>` to wait for it. Other clients receive no "
             "notice: block on `nspawn_result_show` with a positive timeout_ms, "
-            "or read `nspawn_run_list`."
+            "or read `nspawn_run_list` with `include_terminal=true`."
         ),
         input_schema={
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "operations": operations.SCHEMA,
                 "prompt": {
                     "type": "string",
                     "minLength": 1,
@@ -536,19 +545,21 @@ NSPAWN_TOOL_CONTRACTS = (
                     "type": "boolean",
                     "description": _READ_ONLY_DESCRIPTION,
                 },
+                "red_record": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Clone-relative RED record for an implementation writer.",
+                },
                 "native_write": {
                     "type": "boolean",
                     "description": _NATIVE_WRITE_DESCRIPTION,
-                },
-                "orchestrator": {
-                    "type": "object",
-                    "description": _ORCHESTRATOR_DESCRIPTION,
                 },
                 "read_paths": _read_paths_property(),
                 "system_prompt": _system_prompt_property(),
                 "agent": _agent_property(),
                 "producer": _producer_property(),
                 "swarm": _swarm_property(),
+                "notice": {"type": "boolean", "description": _NOTICE_DESCRIPTION},
                 "inference_profile": {
                     "type": "object",
                     "additionalProperties": False,
@@ -560,7 +571,7 @@ NSPAWN_TOOL_CONTRACTS = (
                     "description": (
                         "Tool-free native JSON Schema inference on a Claude transport. "
                         "Requires read_only, loads no plugin or MCP, and refuses "
-                        "read_paths, system_prompt, native_write and orchestrator. "
+                        "read_paths, system_prompt and native_write. "
                         "The profile is recorded at admission and retained on resume."
                     ),
                 },
@@ -585,6 +596,7 @@ NSPAWN_TOOL_CONTRACTS = (
                         "not": {
                             "anyOf": [
                                 {"required": ["original_run"]},
+                                {"required": ["session_id"]},
                                 {"required": ["activation"]},
                                 {"required": ["command"]},
                                 # A pinned, tool-free and read-only inference (the
@@ -618,16 +630,32 @@ NSPAWN_TOOL_CONTRACTS = (
             "Do not pin `provider` or `model` to choose a reviewer: nSPAWN chooses "
             "it by the owner's preference order, skips a route that cannot serve "
             "now, and never runs as a `producer`. "
-            "The child reads and searches. Under the Claude `dontAsk` cage, the "
-            "child never runs a script or a gate. A review that must run a "
-            "script or a gate is not caged. It needs a `nspawn_run_start` with "
-            "`native_write`, on a route that lists `write` (today, claude and codex). nSPAWN reports "
-            "its terminal phase as it reports the phase of `nspawn_run_start`."
+            "The child reads and searches. Under the Claude `dontAsk` mode, the "
+            "child never runs a script or a gate. A review round starts only "
+            "with `nspawn_review_start`, which counts its head when `subject` "
+            "and `candidate` are given. Run a required check as its own "
+            "`nspawn_run_start` with `native_write` on a write-capable route "
+            "(claude, codex or agy) before the review. That check is not read-only. "
+            "Put its exits in the review prompt. nSPAWN reports "
+            "its terminal phase as it reports the phase of `nspawn_run_start`. "
+            "With `notice: false`, the run gives no notice. Use "
+            "`nspawn run wait <run_id>` to wait for it."
         ),
         input_schema={
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "operations": operations.SCHEMA,
+                "subject": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "One repository-qualified artifact lineage, never a base branch. Give candidate with it.",
+                },
+                "candidate": {
+                    "type": "string",
+                    "pattern": "^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$",
+                    "description": "The review head. Give subject and a prompt with this whole value.",
+                },
                 "branch": {
                     "type": "string",
                     "minLength": 1,
@@ -688,6 +716,7 @@ NSPAWN_TOOL_CONTRACTS = (
                 "agent": _agent_property(),
                 "producer": _producer_property(),
                 "swarm": _swarm_property(),
+                "notice": {"type": "boolean", "description": _NOTICE_DESCRIPTION},
                 **_dedup_properties(),
             },
             "required": ["cwd"],
@@ -699,9 +728,10 @@ NSPAWN_TOOL_CONTRACTS = (
             "Start one prompt on several routes at once and return {runs: "
             "[{provider, run_id, deduplicated, phase}], refused: [{provider, "
             "reason, type[, launch_uuid]}]} — the fan-out for exploration and "
-            "for review, where the "
-            "answer you want is the disagreement between routes. Every child "
-            "is caged (read-only) by construction, never by argument: the "
+            "not for a review round. A review round starts only with "
+            "`nspawn_review_start`, which counts its head. Run a required check "
+            "before it as its own run and put its exits in the prompt. Every child "
+            "is read-only by construction, never by argument: the "
             "verb takes one `cwd`, and N writers in one tree is the "
             "one-writer law broken N-1 times. A writable fan-out is N "
             "`nspawn_run_start` calls into N worktrees, each admitted only as "
@@ -714,6 +744,7 @@ NSPAWN_TOOL_CONTRACTS = (
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "operations": operations.SCHEMA,
                 "prompt": {
                     "type": "string",
                     "minLength": 1,
@@ -756,8 +787,12 @@ NSPAWN_TOOL_CONTRACTS = (
     NSpawnToolContract(
         name="nspawn_run_list",
         description=(
-            "List the newest 128 runs in the registry (every project on this "
-            "account), newest first, under one clock (`observed_at`): run_id, "
+            "Read the newest 128 runs in the registry (every project on this "
+            "account). By default, list nonterminal runs and terminal runs with "
+            "undelivered notices. Pass `include_terminal=true` to list all runs "
+            "on this page, including terminal runs. `terminal_omitted` counts "
+            "terminal runs left out; it is zero when `include_terminal=true`. "
+            "Keep newest-first order under one clock (`observed_at`): run_id, "
             "lane, phase, executed provider and account, model, tokens, "
             "turn_count, group, created_at and updated_at, plus `notices` — "
             "terminal notices no session has received yet. Older runs are not "
@@ -767,14 +802,23 @@ NSPAWN_TOOL_CONTRACTS = (
         input_schema={
             "type": "object",
             "additionalProperties": False,
-            "properties": {},
+            "properties": {
+                "include_terminal": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Include terminal runs without undelivered notices. "
+                        "Pass true to read terminal phases."
+                    ),
+                },
+            },
             "required": [],
         },
     ),
     NSpawnToolContract(
         name="nspawn_run_show",
         description=(
-            "Read one run's status: phase, run_dir, failure_reason, tokens, "
+            "Read one run's status: phase, run_dir, failure_reason, tokens, turn_count, "
             "executed provider and account, warning, marker (the executor's own "
             "DONE/BLOCKED claim, reported as an observation), thread_id, group "
             "and child_addr. Use it for what a run is doing mid-flight; outside "
@@ -791,7 +835,13 @@ NSPAWN_TOOL_CONTRACTS = (
             "`admission` is the observed {group, node, releasedGeneration, nodeGeneration} "
             "binding, or null for an unbound run. `terminal_receipt` is the first observed "
             "terminal {phase, reason, at}, preserved after close; null means unknown "
-            "for a run that ended before receipts existed. Both fields are read-only."
+            "for a run that ended before receipts existed. Both fields are read-only. "
+            "`agent` and `skills` are the agent file and skill names a Claude "
+            "launch composed; `none` and [] for a Claude or AGY run with no agent; "
+            "null when the launch recorded none (Codex, older runs). "
+            "`observation` allowlists the recorded cwd, writer_scope {unit, cgroup} "
+            "and transcript_home; individual fields are null when unrecorded. It reads no "
+            "process arguments, environment or vendor records."
         ),
         input_schema={
             "type": "object",
@@ -1261,9 +1311,8 @@ NSPAWN_TOOL_BY_NAME: dict[str, NSpawnToolContract] = {
 #: registry cannot drift from it, and `test_mcp_l6` fails on any `nspawn_*`
 #: token here that the registry does not carry.
 SERVER_INSTRUCTIONS = (
-    "nSPAWN controls executors; each dispatch runs in its own driver "
-    "process, so a run outlives the session that started it. Triggers — reach "
-    "for these by when to use them, not by what they are: "
+    "nSPAWN controls executors in separate drivers, so runs outlive their callers. "
+    "Triggers: "
     "bounded independent work goes to nspawn_run_start (one unit) or "
     "nspawn_batch_start (one prompt, several read-only routes), never to an "
     "improvised runner; a "
@@ -1277,18 +1326,19 @@ SERVER_INSTRUCTIONS = (
     "arrives, read the answer with nspawn_result_show rather than re-dispatching. "
     "Tools: "
     + ", ".join(contract.name for contract in NSPAWN_TOOL_CONTRACTS)
-    + ". Model is caller-pinned; writable linked worktrees are "
-    "one-writer claimed. "
-    "In a Claude Code session every run that reaches a terminal phase — a "
-    "clean exit, a failure, or a signal death — owes the dispatching session "
-    "one cross-session notice naming the run and its phase: pushed while "
-    "that session lives, else printed once at the project's next session "
-    "start; one notice per `swarm`. Other clients get "
-    "no notice. nspawn_run_list lists the fleet and "
-    "never long-polls; "
-    "nspawn_run_show with a positive timeout_ms long-polls that one run. "
-    "nspawn_provider_list reads roster routes and native model metadata without the store, so it "
-    "answers even while the registry is unreachable. An answer over "
+    + ". Model is caller-pinned. Writers take one-writer claims. "
+    "With `notice: false`, the run gives no notice. "
+    "Use `nspawn run wait <run_id>` to wait for it. "
+    "By default in Claude Code, each terminal run "
+    "owes its dispatching session one notice naming the run and phase: "
+    "pushed while that session lives, else printed once at the project's "
+    "next session start; one notice per `swarm`. Other clients get no notice. "
+    "nspawn_run_list lists the fleet without long-polling. By default, it "
+    "keeps nonterminal runs and terminal runs with undelivered notices; "
+    "pass include_terminal=true to see terminal runs. "
+    "nspawn_run_show with a positive timeout_ms long-polls one run. "
+    "nspawn_provider_list reads roster routes and native model metadata "
+    "without the registry. An answer over "
     f"{MAX_RESPONSE_BYTES} bytes of JSON arrives as "
     "{preview, path, bytes}: path is a file holding all of it. The "
     "executor's DONE/BLOCKED marker is parsed as an observation, never a "
@@ -1312,15 +1362,14 @@ class McpError(NSpawnError):
         return wire
 
 
-class ResponseTooLarge(McpError):
-    """One tool's answer exceeded the hard cap."""
+def _invalid_arguments(message: str) -> McpError:
+    """The arguments of a tool call, refused before the tool runs."""
+    return McpError(INVALID_PARAMS, message, data={"type": "InvalidArguments"})
 
-    def __init__(self, size: int) -> None:
-        super().__init__(
-            INTERNAL_ERROR,
-            f"nspawn response of {size} bytes exceeded the "
-            f"{MAX_MCP_RESPONSE_BYTES}-byte hard cap; use pagination or a smaller window",
-        )
+
+def _spill_failed(message: str) -> McpError:
+    """An answer too large to send inline, which nSPAWN could not store."""
+    return McpError(INTERNAL_ERROR, message, data={"type": "ResultSpillFailed"})
 
 
 class SupervisorUnconfigured(McpError):
@@ -1338,17 +1387,24 @@ class SupervisorUnconfigured(McpError):
             INTERNAL_ERROR,
             f"nspawn has no supervisor configured: the registry at {store} "
             f"cannot be opened ({detail})",
-            data={"store": store},
+            data={"type": "SupervisorUnconfigured", "store": store},
         )
 
 
 def _default_supervisor(
-    sidecar_kind: str = "stdio", *, host_control: bool = False
+    sidecar_kind: str = "stdio",
+    *,
+    host_control: bool = False,
+    reconciles: bool = False,
+    read_only: bool = False,
 ) -> Supervisor:
     """Build the live Supervisor on this account's registry file.
 
     `stdio` for the session's own door, `driver` inside a per-call driver. A
     node's identity and grant are read first: a malformed one opens no store.
+    `reconciles` for the door that serves, which stops the empty slices of its
+    store's ended runs for as long as it lives (`Supervisor.reconcile_slices`).
+    `read_only` checks the schema but registers no instance and starts no lifecycle workers.
     """
     owner = driver.node_owner(os.environ)
     read_grant = driver.read_grant(os.environ)
@@ -1364,7 +1420,14 @@ def _default_supervisor(
         raise SupervisorUnconfigured(str(path), str(error)) from error
     try:
         # MILLISECONDS, like the reaper tick and every peer's mark_orphans.
-        registry.open(int(time.time() * 1000))
+        if read_only:
+            registry.upgrade()
+        else:
+            registry.open(int(time.time() * 1000))
+    except BusyError:
+        # A busy store keeps its type: the caller can try the same call again.
+        registry.close()
+        raise
     except STORE_ERRORS as error:
         registry.close()
         raise RegistryError(
@@ -1373,25 +1436,19 @@ def _default_supervisor(
     except BaseException:
         registry.close()
         raise
-    # ARMED HERE AND NOWHERE ELSE: this is the supervisor that SERVES a caller,
-    # so this is the only one whose terminal phases are that caller's business.
+    # A reader records only proven owner loss, without lifecycle workers.
+    # A writer keeps instance registration and terminal announcements.
     return Supervisor(
         registry,
         run_root,
-        announces_terminal=True,
-        sidecar_kind=sidecar_kind,
+        announces_terminal=not read_only,
+        sidecar_kind=None if read_only else sidecar_kind,
         owner=owner,
         read_grant=read_grant,
         host_control=host_control,
+        reconciles=reconciles,
+        read_only=read_only,
     )
-
-
-def tool_result(text: str) -> dict[str, Any]:
-    """Package one tool's answer the way the oracle packages it."""
-    encoded = text.encode("utf-8")
-    if len(encoded) > MAX_MCP_RESPONSE_BYTES:
-        raise ResponseTooLarge(len(encoded))
-    return {"content": [{"type": "text", "text": text}], "isError": False}
 
 
 def batch_runs(
@@ -1405,8 +1462,9 @@ def batch_runs(
     dispatch: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None,
     idempotency_key: str | None = None,
     group: str | None = None,
+    operations: object = OPERATIONS_OMITTED,
 ) -> dict[str, Any]:
-    """Dispatch ONE prompt across several routes, caged, and report both sides.
+    """Dispatch ONE prompt across several routes, read-only, and report both sides.
 
     The two refusals are not the same failure and must not share an answer.
 
@@ -1443,7 +1501,7 @@ def batch_runs(
 
     # Every entry is its own driver; they launch together and their acks are
     # collected under one deadline, so a dead launch refuses only its entry.
-    entries = [
+    entries: list[dict[str, Any]] = [
         {
             "prompt": prompt,
             "cwd": cwd,
@@ -1461,6 +1519,9 @@ def batch_runs(
         }
         for index, name in enumerate(providers)
     ]
+    if operations is not OPERATIONS_OMITTED:
+        for entry in entries:
+            entry["operations"] = operations
     if idempotency_key is None or not entries:
         acks = dispatch(entries)
     else:
@@ -1485,6 +1546,12 @@ def batch_runs(
         refusal = ack.get("refused")
         if isinstance(refusal, dict):
             entry = {
+                **{
+                    key: value
+                    for key, value in refusal.items()
+                    if refusal.get("type") == "OperationRefused"
+                    and key in ("cause", "failures", "remedy", "operation_admission")
+                },
                 "provider": name,
                 "reason": refusal.get("message"),
                 "type": refusal.get("type"),
@@ -1499,6 +1566,11 @@ def batch_runs(
                 "run_id": ack["run_id"],
                 "deduplicated": ack.get("deduplicated", False),
                 "phase": ack.get("phase"),
+                **(
+                    {"operation_admission": ack["operation_admission"]}
+                    if "operation_admission" in ack
+                    else {}
+                ),
             }
         )
     return {"runs": runs, "refused": refused}
@@ -1577,10 +1649,24 @@ def _ping_verdict(
         )
         if successor is None:
             break
+        try:
+            next_status = supervisor.status(
+                successor, timeout_ms=max(1, int((deadline - time.monotonic()) * 1000))
+            )
+        except UnknownRun as error:
+            # A failed run can name a successor this supervisor cannot read:
+            # its row is gone, or it belongs to another supervisor. Name this
+            # route red with that reason and keep the last run the caller CAN
+            # open. The alternative is the whole call dying on one dangling
+            # note, which loses every other route's verdict too.
+            return _ping_row(
+                provider,
+                3,
+                f"the failed run names a successor nSPAWN cannot read: {error}",
+                run_id,
+            )
         run_id = successor
-        status = supervisor.status(
-            run_id, timeout_ms=max(1, int((deadline - time.monotonic()) * 1000))
-        )
+        status = next_status
     expired = time.monotonic() >= deadline
     if not status.phase.is_terminal():
         return _ping_row(
@@ -1626,6 +1712,24 @@ def _ping_verdict(
         status.failure_reason or f"the run ended {status.phase.value}",
         run_id,
     )
+
+
+def _ping_expired_row(provider: str, deadline_ms: int) -> dict[str, Any]:
+    """The row of a route that the ping did not admit before its deadline."""
+    return _ping_row(
+        provider,
+        2,
+        f"the ping's {deadline_ms} ms deadline expired before this "
+        "route's turn to dispatch",
+        None,
+    )
+
+
+#: The run leases of the route pings of this stdio process. A ping runs in-process
+#: (the exemption in `driver.py`), so the stdio holds the lease of each tree that
+#: a ping runs in until it exits, and the kernel closes it then. No code closes
+#: it. Repeated pings of one tree use one descriptor.
+PING_LEASES: Final = driver.RunLeases()
 
 
 def ping_routes(
@@ -1680,16 +1784,17 @@ def ping_routes(
             # `deadline_ms <= 0` as NO deadline and waits forever. Dispatching
             # here would hand the last route an unbounded run, the exact
             # opposite of the absolute deadline this loop enforces.
-            rows.append(
-                _ping_row(
-                    name,
-                    2,
-                    f"the ping's {deadline_ms} ms deadline expired before this "
-                    "route's turn to dispatch",
-                    None,
-                )
-            )
+            rows.append(_ping_expired_row(name, deadline_ms))
             continue
+        # Each route admits through its own drive call, whose lease callback
+        # the admission calls before its run directory. Its failover successors
+        # keep the call, so they use the same lease. The lease discovery gets
+        # only what remains of the deadline, and refuses after it.
+        call = DriveCall(
+            launch_uuid=uuid.uuid4().hex,
+            take_lease=functools.partial(PING_LEASES.take, deadline=deadline),
+        )
+        token = DRIVE_CALL.set(call)
         try:
             accepted = supervisor.execute(
                 PING_PROMPT,
@@ -1709,6 +1814,14 @@ def ping_routes(
                 timeout_ms=remaining_ms,
             )
         except NSpawnError as error:
+            if (
+                isinstance(error, driver.RunLeaseUnavailable)
+                and time.monotonic() >= deadline
+            ):
+                # The deadline passed during the lease discovery: no admission,
+                # and the answer of a route whose turn came after the deadline.
+                rows.append(_ping_expired_row(name, deadline_ms))
+                continue
             # `.entry` is NOT guaranteed: subclasses that define their own
             # `__init__` (`VendorHomeError` among them) never set it. Reading
             # it blind kills the whole ping on the first such refusal and
@@ -1718,6 +1831,8 @@ def ping_routes(
             cause = str(error) if entry is None else f"nERR-{entry.code_str()}: {error}"
             rows.append(_ping_row(name, 2, cause, None))
             continue
+        finally:
+            DRIVE_CALL.reset(token)
         in_flight.append((name, accepted.run_id))
     for name, run_id in in_flight:
         remaining = max(0, int((deadline - time.monotonic()) * 1000))
@@ -1742,27 +1857,34 @@ def validate_arguments(schema: dict[str, Any], arguments: dict[str, Any]) -> Non
     A refusal names the argument and the rule it broke, never the value: a prompt
     or a system prompt is not echoed back into an error.
     """
+    if "operations" in arguments and "operations" in schema.get("properties", {}):
+        try:
+            operations.Declaration.parse(arguments["operations"])
+        except operations.OperationRefused as refused:
+            raise McpError(
+                INVALID_PARAMS,
+                str(refused),
+                data={"type": "OperationRefused", **refused.data},
+            ) from refused
     closed = {**schema, "additionalProperties": False}
     error = best_match(_SCHEMA_VALIDATOR(closed).iter_errors(arguments))
     if error is not None:
         if error.validator in ("required", "additionalProperties"):
-            raise McpError(INVALID_PARAMS, error.message)
+            raise _invalid_arguments(error.message)
         where = "".join(
             f"[{part}]" if isinstance(part, int) else f".{part}"
             for part in error.absolute_path
         ).lstrip(".")
-        raise McpError(
-            INVALID_PARAMS,
+        raise _invalid_arguments(
             f"argument {where!r} must satisfy {error.validator}: "
-            f"{error.validator_value!r}",
+            f"{error.validator_value!r}"
         )
     alternatives = schema.get(EXACTLY_ONE_OF)
     if alternatives is not None:
         given = [name for name in alternatives if name in arguments]
         if len(given) != 1:
-            raise McpError(
-                INVALID_PARAMS,
-                f"exactly one of {' or '.join(alternatives)} is required, got {given}",
+            raise _invalid_arguments(
+                f"exactly one of {' or '.join(alternatives)} is required, got {given}"
             )
 
 
@@ -1781,7 +1903,9 @@ def _to_jsonable(value: Any) -> Any:
             field.name: _to_jsonable(getattr(value, field.name))
             for field in fields(value)
             if not (
-                isinstance(value, RunResult)
+                field.name == "operation_admission"
+                and getattr(value, field.name) is None
+                or isinstance(value, RunResult)
                 and field.name
                 in {"failure_reason", "structured_output", "phase", "alert"}
                 and getattr(value, field.name) is None
@@ -1813,9 +1937,7 @@ def _bounded_result(
     encoded = payload.encode("utf-8")
     if len(encoded) > MAX_RESPONSE_BYTES:
         if not isinstance(root_fd, int):
-            raise McpError(
-                INTERNAL_ERROR, "result spill failed: missing run-root descriptor"
-            )
+            raise _spill_failed("result spill failed: missing run-root descriptor")
         artifact: Path | None = None
         try:
             run_id = rendered.get("run_id")
@@ -1831,7 +1953,7 @@ def _bounded_result(
                     or run_id in (".", "..")
                     or "\x00" in run_id
                 ):
-                    raise McpError(INTERNAL_ERROR, "unsafe spill run_id")
+                    raise _spill_failed("unsafe spill run_id")
                 child_name = run_id
             expected_root_stat = os.fstat(root_fd)
             try:
@@ -1842,9 +1964,7 @@ def _bounded_result(
                 )
             except OSError as error:
                 if error.errno in {errno.ELOOP, errno.ENOTDIR}:
-                    raise McpError(
-                        INTERNAL_ERROR, "spill run directory is a symlink"
-                    ) from error
+                    raise _spill_failed("spill run directory is a symlink") from error
                 raise
             try:
                 expected_dir_stat = os.fstat(directory_fd)
@@ -1876,9 +1996,7 @@ def _bounded_result(
                             os.stat(name, dir_fd=directory_fd, follow_symlinks=False),
                         )
                     ):
-                        raise McpError(
-                            INTERNAL_ERROR, "spill directory or file changed"
-                        )
+                        raise _spill_failed("spill directory or file changed")
                 except OSError, McpError:
                     if artifact is not None:
                         try:
@@ -1908,8 +2026,8 @@ def _bounded_result(
         except McpError:
             raise
         except (OSError, NSpawnError) as error:
-            raise McpError(
-                INTERNAL_ERROR, f"result spill failed: {type(error).__name__}"
+            raise _spill_failed(
+                f"result spill failed: {type(error).__name__}"
             ) from error
     return {"content": [{"type": "text", "text": payload}], "isError": False}
 
@@ -1932,6 +2050,8 @@ class McpServer:
     _resolving: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False, compare=False
     )
+
+    _reader: Supervisor | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.launcher is None:
@@ -1957,10 +2077,30 @@ class McpServer:
             finally:
                 self.supervisor = None
 
+        if self._reader is not None:
+            try:
+                self._reader.shutdown()
+            finally:
+                self._reader = None
+
+    def _resolve_reader(self) -> Supervisor:
+        """Read without instance rows, heartbeats, or slice reconciliation."""
+        with self._resolving:
+            if self.supervisor is not None:
+                return self.supervisor
+            if self._reader is None:
+                self._reader = _default_supervisor(
+                    host_control=self.host_control, read_only=True
+                )
+            self._reader.reap_orphans()
+            return self._reader
+
     def _resolve_supervisor(self) -> Supervisor:
         with self._resolving:
             if self.supervisor is None:
-                self.supervisor = _default_supervisor(host_control=self.host_control)
+                self.supervisor = _default_supervisor(
+                    host_control=self.host_control, reconciles=True
+                )
             return self.supervisor
 
     def nspawn_run_start(
@@ -1980,8 +2120,9 @@ class McpServer:
         idempotency_key: str | None = None,
         group: str | None = None,
         swarm: str | None = None,
+        notice: bool = True,
         native_write: bool = False,
-        orchestrator: dict[str, Any] | None = None,
+        red_record: str | None = None,
         inference_profile: dict[str, Any] | None = None,
         original_run: str | None = None,
         activation: dict[str, Any] | None = None,
@@ -1989,19 +2130,23 @@ class McpServer:
         command: dict[str, Any] | None = None,
         agent: str | None = None,
         producer: Sequence[str] | None = None,
+        operations: object = OPERATIONS_OMITTED,
     ) -> dict[str, Any]:
         """L6 maps wire key ``class`` to ``execution_class`` before dispatch."""
+        if not notice and driver.node_owner(os.environ) is not None:
+            raise _invalid_arguments("a node door does not accept notice: false")
         if (
             activation is not None or session_operation is not None
         ) and not self.host_control:
-            raise McpError(INVALID_PARAMS, HOST_CONTROL_REFUSAL)
-        system_prompt = _agent_prompt(agent, system_prompt, cwd)
-        if read_paths is not None and not (read_only or native_write):
             raise McpError(
-                INVALID_PARAMS, "read_paths requires read_only=true or native_write"
+                INVALID_PARAMS,
+                HOST_CONTROL_REFUSAL,
+                data={"type": "HostControlRequired"},
             )
-        if orchestrator is not None and not read_only:
-            raise McpError(INVALID_PARAMS, "orchestrator requires read_only=true")
+        refuse_writer_read_paths(native_write, read_paths)
+        system_prompt = _agent_prompt(agent, system_prompt, cwd)
+        if read_paths is not None and not read_only and original_run is None:
+            raise _invalid_arguments("read_paths requires read_only=true")
         if (
             timeout_ms <= 0
             and original_run is None
@@ -2010,19 +2155,9 @@ class McpServer:
         ):
             # A node's front outlives the turn that sent it: nobody is left to
             # stop a run with no deadline.
-            raise McpError(
-                INVALID_PARAMS, "a node's nspawn_run_start requires timeout_ms > 0"
+            raise _invalid_arguments(
+                "a node's nspawn_run_start requires timeout_ms > 0"
             )
-        # Invalid input, refused as invalid input: a coordinate that is too long,
-        # empty, blank, not printable, not an absolute canonical path or not even
-        # a string never becomes a dispatch, so no launch and no store write
-        # happens for it. The rule is the binding's own
-        # (`native.OrchestratorBinding.request_refusal`), so this door and the
-        # admission cannot drift apart.
-        if orchestrator is not None and (
-            refusal := native.OrchestratorBinding.request_refusal(orchestrator)
-        ):
-            raise McpError(INVALID_PARAMS, refusal)
         _refuse_slashed(idempotency_key)
         group = _swarm_group(group, swarm)
         arguments: dict[str, Any] = {
@@ -2040,13 +2175,21 @@ class McpServer:
             "idempotency_key": idempotency_key,
             "group": group,
         }
+        if red_record is not None:
+            arguments["red_record"] = red_record
+
+        if operations is not OPERATIONS_OMITTED:
+            arguments["operations"] = operations
+
+        # Only when named: the body above is what the fingerprint prints, and the
+        # name only picks the skills and the agent the launch composes.
+        if agent is not None:
+            arguments["agent"] = agent
         # Only when set, so a dispatch without it reaches `execute` as before.
         if native_write:
             arguments["native_write"] = True
         if producer is not None:
             arguments["producer"] = list(producer)
-        if orchestrator is not None:
-            arguments["orchestrator"] = orchestrator
         if inference_profile is not None:
             arguments["inference_profile"] = inference_profile
         if original_run is not None:
@@ -2057,6 +2200,8 @@ class McpServer:
             arguments["session_operation"] = session_operation
         if command is not None:
             arguments["command"] = command
+        if not notice:
+            arguments["notice"] = False
         return self._dispatched("nspawn_run_start", arguments)
 
     def _drivers_dir(self, supervisor: Supervisor) -> Path | None:
@@ -2090,6 +2235,7 @@ class McpServer:
         system_prompt: str | None = None,
         idempotency_key: str | None = None,
         group: str | None = None,
+        operations: object = OPERATIONS_OMITTED,
     ) -> dict[str, Any]:
         _refuse_slashed(idempotency_key)
         group = _swarm_group(group, None)
@@ -2103,6 +2249,7 @@ class McpServer:
             dispatch=lambda entries: self._launch("nspawn_run_start", entries),
             idempotency_key=idempotency_key,
             group=group,
+            operations=operations,
         )
 
     def nspawn_route_ping(
@@ -2120,6 +2267,8 @@ class McpServer:
         branch: str | None = None,
         cwd: str = "",
         *,
+        subject: str | None = None,
+        candidate: str | None = None,
         base: str | None = None,
         provider: str | None = None,
         model: str | None = None,
@@ -2132,7 +2281,11 @@ class McpServer:
         group: str | None = None,
         producer: Sequence[str] | None = None,
         swarm: str | None = None,
+        notice: bool = True,
+        operations: object = OPERATIONS_OMITTED,
     ) -> dict[str, Any]:
+        if not notice and driver.node_owner(os.environ) is not None:
+            raise _invalid_arguments("a node door does not accept notice: false")
         _refuse_slashed(idempotency_key)
         group = _swarm_group(group, swarm)
         arguments: dict[str, Any] = {
@@ -2148,16 +2301,36 @@ class McpServer:
             "idempotency_key": idempotency_key,
             "group": group,
         }
+        if operations is not OPERATIONS_OMITTED:
+            arguments["operations"] = operations
+
+        for name, value in (("subject", subject), ("candidate", candidate)):
+            if value is not None:
+                arguments[name] = value
         # Only when set, so a review without it reaches `review` as before.
         if producer is not None:
             arguments["producer"] = list(producer)
+        if agent is not None:
+            arguments["agent"] = agent
+        if not notice:
+            arguments["notice"] = False
         return self._dispatched("nspawn_review_start", arguments)
 
-    def nspawn_run_list(self) -> FleetPage:
-        """The whole fleet. It takes no timeout: a listing never long-polls."""
-        # DECLARED, NOT YET BUILT — see the `FleetPage` import above.
-        page: FleetPage = self._resolve_supervisor().fleet()
-        return page
+    def nspawn_run_list(self, include_terminal: bool = False) -> dict[str, Any]:
+        """List live runs and undelivered notices, or the whole fleet on request."""
+        page: FleetPage = self._resolve_reader().fleet()
+        notice_runs = {notice.run_id for notice in page.notices}
+        runs = tuple(
+            run
+            for run in page.runs
+            if include_terminal
+            or not run.phase.is_terminal()
+            or run.run_id in notice_runs
+        )
+        return {
+            **_to_jsonable(replace(page, runs=runs)),
+            "terminal_omitted": len(page.runs) - len(runs),
+        }
 
     def nspawn_run_show(
         self,
@@ -2170,7 +2343,7 @@ class McpServer:
         """One run, by its run_id, by the launch_uuid a pending dispatch answered
         with, or by the idempotency key of a keyed dispatch. A positive timeout
         long-polls."""
-        supervisor = self._resolve_supervisor()
+        supervisor = self._resolve_reader()
         if idempotency_key is not None:
             if timeout_ms is not None:
                 raise McpError(
@@ -2196,7 +2369,7 @@ class McpServer:
         return _status_show(supervisor, run_id, timeout_ms=timeout_ms or 0)
 
     def nspawn_result_show(self, run_id: str, timeout_ms: int = 0) -> RunResult:
-        supervisor = self._resolve_supervisor()
+        supervisor = self._resolve_reader()
         if timeout_ms > 0:
             # The wait follows the work to the run that serves it.
             return supervisor.result(run_id, timeout_ms=timeout_ms)
@@ -2209,7 +2382,7 @@ class McpServer:
         max_bytes: int | None = None,
         frame_types: Sequence[str] | None = None,
     ) -> TranscriptPage:
-        return self._resolve_supervisor().transcript(
+        return self._resolve_reader().transcript(
             run_id,
             since_seq=since_seq,
             max_bytes=max_bytes,
@@ -2248,7 +2421,7 @@ class McpServer:
             raise McpError(
                 INVALID_PARAMS, "timeZone must identify an IANA time zone"
             ) from error
-        return self._resolve_supervisor().usage_show(timeZone)
+        return self._resolve_reader().usage_show(timeZone)
 
     def nspawn_quota_show(
         self, provider: str | None = None, refresh: int = 0
@@ -2259,9 +2432,9 @@ class McpServer:
         model turn. Other accounts answer from what their runs' wire recorded.
         Refresh zero uses only durable observations; active walls skip pulls.
         """
-        report: QuotaReport = self._resolve_supervisor().quota(
-            provider=provider, refresh=refresh
-        )
+        report: QuotaReport = (
+            self._resolve_supervisor() if refresh else self._resolve_reader()
+        ).quota(provider=provider, refresh=refresh)
         return report
 
     def nspawn_provider_list(self, provider: str | None = None) -> ProviderReport:
@@ -2360,20 +2533,20 @@ class McpServer:
                 ).encode("utf-8")
             )
         except UnicodeEncodeError as error:
-            raise McpError(
-                INVALID_PARAMS, "tools/call params must be valid UTF-8"
-            ) from error
+            contract = NSPAWN_TOOL_BY_NAME.get(name)
+            if contract is not None and isinstance(arguments, dict):
+                validate_arguments(contract.input_schema, arguments)
+            raise _invalid_arguments("tools/call params must be valid UTF-8") from error
         if size > MAX_MCP_PARAMS_BYTES:
-            raise McpError(
-                INVALID_PARAMS,
+            raise _invalid_arguments(
                 f"tools/call params of {size} bytes exceeded the "
-                f"{MAX_MCP_PARAMS_BYTES}-byte ceiling",
+                f"{MAX_MCP_PARAMS_BYTES}-byte ceiling"
             )
         contract = NSPAWN_TOOL_BY_NAME.get(name)
         if contract is None:
             raise McpError(INVALID_PARAMS, f"nSPAWN has no tool named {name!r}")
         if arguments is not None and not isinstance(arguments, dict):
-            raise McpError(INVALID_PARAMS, "tool arguments must be an object")
+            raise _invalid_arguments("tool arguments must be an object")
         payload = arguments if isinstance(arguments, dict) else {}
         validate_arguments(contract.input_schema, payload)
         system_prompt = payload.get("system_prompt")
@@ -2381,7 +2554,7 @@ class McpServer:
             try:
                 validate_system_prompt(system_prompt)
             except ValueError as error:
-                raise McpError(INVALID_PARAMS, str(error)) from error
+                raise _invalid_arguments(str(error)) from error
         kwargs = _wire_kwargs(name, payload)
         try:
             result = getattr(self, name)(**kwargs)
@@ -2418,7 +2591,8 @@ class McpServer:
                 # thread and killed the stdio port without any frame. In `main`
                 # these paths returned a poorly encoded but VALID -32602 frame:
                 # a wrong code turned into a dead port.
-                if getattr(getattr(error, "entry", None), "code", UNKNOWN_CODE)
+                if isinstance(error, (operations.OperationRefused, InvalidRunRequest))
+                or getattr(getattr(error, "entry", None), "code", UNKNOWN_CODE)
                 != UNKNOWN_CODE
                 else INTERNAL_ERROR
             )
@@ -2444,13 +2618,41 @@ class McpServer:
                 f"the nSPAWN store failed during {name}: {error}",
                 data={"tool": name, "type": type(error).__name__},
             ) from error
+        supervisor = self.supervisor if self.supervisor is not None else self._reader
         return _bounded_result(
-            _to_jsonable(result), getattr(self.supervisor, "_run_root", None)
+            _to_jsonable(result), getattr(supervisor, "_run_root", None)
         )
 
 
 #: The keyed dispatches `nspawn_run_show` finds by key.
 _KEYED_TOOLS: Final = ("nspawn_run_start", "nspawn_review_start")
+
+
+def _run_observation(registry: Registry, run_id: str) -> dict[str, Any]:
+    """Allowlisted recorded coordinates for the read-only campaign detector."""
+    row = registry.get_run(run_id)
+    if row is None:
+        raise UnknownRun("run observation no longer exists")
+    scope = registry.writer_scope(run_id)
+    contexts = [
+        event.payload["journal_context"]
+        for event in registry.read_run_events(run_id)
+        if event.kind == "lifecycle"
+        and isinstance(event.payload, dict)
+        and "journal_context" in event.payload
+    ]
+    if len(contexts) > 1 or (contexts and not isinstance(contexts[0], dict)):
+        raise RegistryError("run journal context is ambiguous")
+    home = contexts[0].get("home") if contexts else None
+    if home is not None and (not isinstance(home, str) or not Path(home).is_absolute()):
+        raise RegistryError("run journal home is not an absolute path")
+    return {
+        "cwd": row.worktree,
+        "writer_scope": None
+        if scope is None
+        else {"unit": scope[0], "cgroup": scope[1]},
+        "transcript_home": home,
+    }
 
 
 def _status_show(
@@ -2464,13 +2666,35 @@ def _status_show(
     # A status-only injected supervisor has no store observation. Production
     # supervisors always carry their registry; store failures propagate.
     if registry is None:
-        return {**status, "admission": None, "terminal_receipt": None}
-    with supervisor._lock:
         return {
             **status,
+            "admission": None,
+            "terminal_receipt": None,
+            "native_write": False,
+            "red_record": None,
+        }
+    with supervisor._lock:
+        profile = registry.session_profile(run_id)
+        writer_red = registry.writer_red(run_id)
+        shown = {
+            **status,
+            "native_write": bool(profile and profile.native_write),
+            "red_record": None if writer_red is None else writer_red[0].record,
             "admission": registry.admission_show(run_id),
             "terminal_receipt": registry.terminal_receipt_show(run_id),
+            "observation": _run_observation(registry, run_id),
         }
+    # The agent the launch recorded: none on AGY, and absent for a run launched
+    # before agents were recorded.
+    recorded = supervisor.run_agent(run_id)
+    return {
+        **shown,
+        "agent": None if recorded is None else recorded.get("agent"),
+        "skills": None if recorded is None else recorded.get("skills"),
+        # The model and effort the agent file suggested; `warning` names a
+        # difference from what ran.
+        "suggestion": None if recorded is None else recorded.get("suggestion"),
+    }
 
 
 def _keyed_lookup(
@@ -2552,11 +2776,11 @@ def _agent_prompt(agent: str | None, system_prompt: str | None, cwd: str) -> str
     if agent is None:
         return system_prompt
     if system_prompt is not None:
-        raise McpError(INVALID_PARAMS, "give agent or system_prompt, not both")
+        raise _invalid_arguments("give agent or system_prompt, not both")
     try:
-        return agent_system_prompt(agent, cwd)
+        return agent_system_prompt(agent, cwd).body
     except InvalidRunRequest as error:
-        raise McpError(INVALID_PARAMS, str(error)) from error
+        raise _invalid_arguments(str(error)) from error
 
 
 def _review_branch(branch: str | None, cwd: str) -> str:
@@ -2572,9 +2796,8 @@ def _review_branch(branch: str | None, cwd: str) -> str:
 def _refuse_slashed(idempotency_key: str | None) -> None:
     """A caller key never holds `/`: `key/index` is how a batch keys its entries."""
     if idempotency_key is not None and "/" in idempotency_key:
-        raise McpError(
-            INVALID_PARAMS,
-            "idempotency_key may not contain '/': a batch keys its entries key/index",
+        raise _invalid_arguments(
+            "idempotency_key may not contain '/': a batch keys its entries key/index"
         )
 
 

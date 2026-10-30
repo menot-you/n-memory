@@ -319,7 +319,7 @@ def judge_anchor(root: Path, path: str, line: int | None) -> str:
 
 
 def effective_anchor(store: Store, sc: StoredCapsule) -> str:
-    """`nmemory_capsule_reanchor` already exists and is the repair path: its anchor wins."""
+    """A reanchor (the curator's repair path) wins over the capture anchor."""
     return store.anchors.get_reanchor(sc.id) or sc.capsule.provenance.anchor
 
 

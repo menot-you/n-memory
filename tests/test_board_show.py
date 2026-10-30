@@ -336,18 +336,17 @@ def test_one_card_by_id_and_each_refusal() -> None:
         )
 
 
-def test_a_waiting_github_proposal_is_listed_by_id_only() -> None:
+def test_a_staged_or_rejected_proposal_closes_no_task() -> None:
     store = Store.open_disposable_test_store()
     server = MemoryServer(store=store)
-    task = _capture(server, "A mirrored task the owner changed on GitHub.")
+    task = _capture(server, "A task that an imported change is about.")
 
     def stage(event: int) -> str:
         proposal = _capture(
             server,
-            f"GitHub change: acme/repo#7 comment added by @owner at "
-            f"2026-10-13T12:00:00Z (comment {event})",
+            f"Imported change {event} to acme/repo#7 by the owner.",
             kind="fact",
-            source="github-pull",
+            source="test-import",
             anchor="github:acme/repo#7",
             authority_class="externally-imported",
             staged=True,
@@ -379,7 +378,7 @@ def test_a_waiting_github_proposal_is_listed_by_id_only() -> None:
             {
                 "kind": "decision",
                 "content": "Staged closer that must not supersede before review.",
-                "source": "github-pull",
+                "source": "test-import",
                 "anchor": "github:acme/repo#7",
                 "authority_class": "externally-imported",
                 "source_quote": QUOTE,
@@ -399,7 +398,6 @@ def test_a_waiting_github_proposal_is_listed_by_id_only() -> None:
 
     assert _column(board, "ready") == [task]
     assert _column(board, "done") == []
-    assert board["pending"] == {"total": 1, "ids": [{"id": waiting, "task": task}]}
     assert QUOTE not in json.dumps(board)
 
 
@@ -418,7 +416,7 @@ def test_a_mixed_batch_cannot_close_from_its_unapproved_dedup() -> None:
     item = {
         "kind": "decision",
         "content": "A batch closer still needs approval.",
-        "source": "github-pull",
+        "source": "test-import",
         "anchor": "github:acme/repo#7",
         "source_quote": QUOTE,
         "project_id": PROJECT,

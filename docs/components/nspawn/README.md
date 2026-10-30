@@ -6,7 +6,7 @@ The [reference](REFERENCE.md) lists the source declarations and command argument
 
 | Need | Page |
 | --- | --- |
-| Contributor development configuration and catalog | [Setup](https://github.com/menot-you/n-spawn/blob/main/docs/SETUP.md) |
+| Contributor development configuration | [Setup](https://github.com/menot-you/n-spawn/blob/main/docs/SETUP.md) |
 | Checks and security review | [Quality](https://github.com/menot-you/n-spawn/blob/main/docs/QUALITY.md) |
 | Setup and processing choices | [Installation](../../INSTALLATION.md) |
 | Local data and external services | [Privacy](../../PRIVACY.md) |

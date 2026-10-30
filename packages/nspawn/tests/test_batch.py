@@ -29,6 +29,7 @@ from nspawn import mcp as mcp_module
 from nspawn.errors import NERR_1112, NSpawnError
 from nspawn.mcp import NSPAWN_TOOL_BY_NAME, McpError
 from nspawn.rows import RunPhase
+from nspawn.supervisor import RunAccepted
 
 
 def _schema() -> dict[str, Any]:
@@ -55,6 +56,7 @@ def test_the_contract_adds_only_shared_dispatch_context_to_required_fields() -> 
         "system_prompt",
         "idempotency_key",
         "group",
+        "operations",
     }
     providers = schema["properties"]["providers"]
     assert providers["type"] == "array"
@@ -112,11 +114,7 @@ class _Spy:
             raise NSpawnError(NERR_1112, "account wall is up")
         self.calls.append((provider, bool(kwargs["read_only"])))
 
-        class _Accepted:
-            run_id = f"run-{provider}"
-            phase = RunPhase.SPAWNING
-
-        return _Accepted()
+        return RunAccepted(run_id=f"run-{provider}", phase=RunPhase.SPAWNING)
 
 
 def test_every_entry_is_dispatched_caged(monkeypatch: Any) -> None:

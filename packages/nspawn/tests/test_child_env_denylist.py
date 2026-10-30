@@ -77,7 +77,9 @@ def test_the_provider_may_still_declare_a_credential_by_that_name(
     """The denylist filters the AMBIENT, never what the roster declares."""
     secrets = tmp_path / "secrets"
     secrets.mkdir()
+    secrets.chmod(0o700)  # whatever the umask
     (secrets / "default.token").write_text("token-secret\n")
+    (secrets / "default.token").chmod(0o600)  # whatever the umask
     env, _ = child.build_child_env(
         Provider(
             name="custom",
@@ -101,7 +103,9 @@ def test_a_caller_on_another_endpoint_does_not_redirect_the_child(
     never the caller's."""
     secrets = tmp_path / "secrets"
     secrets.mkdir()
+    secrets.chmod(0o700)  # whatever the umask
     (secrets / "default.token").write_text("token-secret\n")
+    (secrets / "default.token").chmod(0o600)  # whatever the umask
     env, _ = child.build_child_env(
         Provider(name="claude", secrets=secrets, env={}),
         None,
@@ -111,6 +115,12 @@ def test_a_caller_on_another_endpoint_does_not_redirect_the_child(
             "ANTHROPIC_SMALL_FAST_MODEL": "glm-4.5-air",
             "CLAUDE_CODE_USE_BEDROCK": "1",
             "CLAUDE_CODE_USE_VERTEX": "1",
+            # The other provider switches of client 2.1.306.
+            "CLAUDE_CODE_USE_FOUNDRY": "1",
+            "CLAUDE_CODE_USE_ANTHROPIC_AWS": "1",
+            "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD": "1",
+            "CLAUDE_CODE_USE_MANTLE": "1",
+            "CLAUDE_CODE_USE_GATEWAY": "1",
         },
         base_environ={"PATH": "/usr/bin"},
     )
@@ -119,6 +129,11 @@ def test_a_caller_on_another_endpoint_does_not_redirect_the_child(
         "ANTHROPIC_SMALL_FAST_MODEL",
         "CLAUDE_CODE_USE_BEDROCK",
         "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_USE_FOUNDRY",
+        "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+        "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
+        "CLAUDE_CODE_USE_MANTLE",
+        "CLAUDE_CODE_USE_GATEWAY",
     } & set(env)
     assert not leaked, leaked
 
@@ -126,7 +141,9 @@ def test_a_caller_on_another_endpoint_does_not_redirect_the_child(
 def test_a_route_that_declares_its_endpoint_keeps_it(tmp_path: Path) -> None:
     secrets = tmp_path / "secrets"
     secrets.mkdir()
+    secrets.chmod(0o700)  # whatever the umask
     (secrets / "default.token").write_text("token-secret\n")
+    (secrets / "default.token").chmod(0o600)  # whatever the umask
     env, _ = child.build_child_env(
         Provider(
             name="zai",

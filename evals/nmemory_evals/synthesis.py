@@ -11,9 +11,6 @@ rules are conjunctive — any one that fails takes the path down —, and R2b
 decides over the DISCORDANT PAIRS, which the file orders read one by one: a
 pair without its reading is a refusal, not a verdict.
 
-This module's sibling is `comparison/arena.py`, with the arena's
-pre-registration.
-
 The pre-registration moved byte for byte (identity 76fa72659 at docs/plans/nmemory-sintese/PRE-REGISTERED-SYNTHESIS.md, base 233dd4aaa).
 """
 

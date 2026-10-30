@@ -1,10 +1,10 @@
-"""Passive composition of AGY's kernel-enforced native process boundary.
+"""Compose AGY's kernel boundary for reader runs and native nodes.
 
 The selected executable and account HOME remain at their installed paths.
 Only the checkout and explicitly admitted administrative destinations may be
 writable. Every descendant inherits the mount, privilege and PID boundary;
 the caller still supplies the owning AggregateScope and process custody.
-This does not establish vendor compatibility or lift AGY admission refusal.
+Native writer turns use their selected launch without this node cage.
 """
 
 from __future__ import annotations
@@ -108,7 +108,7 @@ def _git_paths(checkout: Path, read_paths: tuple[Path, ...]) -> tuple[Path, ...]
     return (git, *linked)
 
 
-def compose_restricted_launch(
+def compose_node_launch(
     *,
     argv: tuple[str, ...],
     env: Mapping[str, str],

@@ -2,27 +2,14 @@
 
 from __future__ import annotations
 
-import json
-from typing import Any
-
 import pytest
+from mcp_helpers import fresh_server, ok
 from storefile import fresh_store_path, put_embedding
 
 from nmemory.embedding import EmbeddingClient
 from nmemory.server import MemoryServer
 from nmemory.space import DIMENSION
 from nmemory.store import Store
-
-
-def fresh_server() -> MemoryServer:
-    url = fresh_store_path("tw")
-    return MemoryServer(store=Store.open(url))
-
-
-def ok(res: dict[str, Any]) -> dict[str, Any]:
-    assert "result" in res and res["result"]["isError"] is False, res
-    payload: dict[str, Any] = json.loads(res["result"]["content"][0]["text"])
-    return payload
 
 
 @pytest.mark.parametrize("lane", ["term", "vector", "fused"])

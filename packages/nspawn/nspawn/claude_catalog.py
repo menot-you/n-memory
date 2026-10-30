@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import claude_child
@@ -23,8 +24,23 @@ class ModelCatalogError(NSpawnError):
         super().__init__(NERR_2002, detail)
 
 
+@dataclass(frozen=True)
+class _Catalog:
+    models: tuple[tuple[str, str], ...]
+    efforts: tuple[tuple[str, tuple[str, ...]], ...]
+
+
 def catalog_read(binary: str | Path | None) -> dict[str, str]:
     """Read native model metadata without a prompt or a credential."""
+    return dict(_read(binary).models)
+
+
+def model_efforts_read(binary: str | Path | None, model: str) -> tuple[str, ...] | None:
+    """The vendor's supported efforts, or None when its catalogue supplies no limit."""
+    return dict(_read(binary).efforts).get(model.removesuffix("[1m]"))
+
+
+def _read(binary: str | Path | None) -> _Catalog:
     if binary is None or not Path(binary).is_absolute():
         raise ModelCatalogError("Claude model catalogue needs a declared binary")
     try:
@@ -37,13 +53,11 @@ def catalog_read(binary: str | Path | None) -> dict[str, str]:
         identity = claude_child.binary_identity(path)
     except (OSError, RuntimeError, claude_child.BinaryIdentityError) as error:
         raise ModelCatalogError(str(error)) from error
-    return dict(_catalog_read(path, identity))
+    return _catalog_read(path, identity)
 
 
 @functools.lru_cache(maxsize=16)
-def _catalog_read(
-    binary: str, identity: claude_child.BinaryIdentity
-) -> tuple[tuple[str, str], ...]:
+def _catalog_read(binary: str, identity: claude_child.BinaryIdentity) -> _Catalog:
     with tempfile.TemporaryDirectory(prefix="nott-catalog-", dir="/var/tmp") as home:
         environment = {
             "HOME": home,
@@ -144,6 +158,7 @@ def _catalog_read(
                             "Claude model catalogue did not return models"
                         )
                     models: dict[str, str] = {}
+                    efforts: dict[str, tuple[str, ...]] = {}
                     for row in rows:
                         if not isinstance(row, dict) or not isinstance(
                             row.get("value"), str
@@ -157,6 +172,20 @@ def _catalog_read(
                             resolved = value
                         if isinstance(resolved, str) and resolved:
                             models[value] = resolved
+                        levels = row.get("supportedEffortLevels")
+                        if row.get("supportsEffort") is False:
+                            levels = []
+                        if levels is not None:
+                            if not isinstance(levels, list) or not all(
+                                isinstance(level, str) and level for level in levels
+                            ):
+                                raise ModelCatalogError(
+                                    "Claude model catalogue has invalid effort levels"
+                                )
+                            served = tuple(levels)
+                            efforts[value] = served
+                            if isinstance(resolved, str) and resolved:
+                                efforts[resolved] = served
                     try:
                         current = claude_child.binary_identity(binary)
                     except claude_child.BinaryIdentityError as error:
@@ -165,7 +194,7 @@ def _catalog_read(
                         raise ModelCatalogError(
                             "Claude binary changed during the catalogue read"
                         )
-                    return tuple(models.items())
+                    return _Catalog(tuple(models.items()), tuple(efforts.items()))
             raise ModelCatalogError("Claude model catalogue did not answer")
         finally:
             if process.poll() is None:

@@ -7,7 +7,7 @@ became `unclassified` --- more than any real kind except `fact` and
 it is a write that nobody ever evaluates again.
 
 The door belongs to the tool VERB, not to `ingest()`: internal writers
-(curator, GitHub sync, bridge) call `ingest()` directly and are excluded
+(curator, bridge) call `ingest()` directly and are excluded
 by construction, as the proof door already is.
 """
 

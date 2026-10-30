@@ -19,15 +19,8 @@ from typing import Any
 #: answered BLOCKED, with nothing edited.
 PROMPT = "write IT_WORKS.md with the text "
 
-#: What codex reports for a thread started with a native write profile
-#: (tests/test_native_write.py, observed 2026-09-28).
-WRITER_SANDBOX = {
-    "type": "workspaceWrite",
-    "writableRoots": [],
-    "networkAccess": False,
-    "excludeTmpdirEnvVar": True,
-    "excludeSlashTmp": True,
-}
+#: The native sandbox echo for an uncaged writer.
+WRITER_SANDBOX = {"type": "dangerFullAccess"}
 
 
 def send(value: dict[str, Any]) -> None:
@@ -66,8 +59,7 @@ def main() -> None:
         elif method in ("thread/start", "thread/resume"):
             config = params.get("config", {})
             profile = params.get("permissions")
-            granted = config.get("permissions", {}).get(profile, {})
-            writer = "write" in granted.get("filesystem", {}).values()
+            writer = params.get("sandbox") == "danger-full-access"
             result = {
                 "thread": {"id": thread, "ephemeral": params.get("ephemeral", False)},
                 "model": params["model"],

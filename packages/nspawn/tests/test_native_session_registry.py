@@ -398,3 +398,53 @@ def test_finished_claude_run_with_legacy_process_group_keeps_thread_fenced(regis
             )
         )
     assert registry.get_run("grouped-failed").phase is RunPhase.FAILED
+
+
+@pytest.mark.parametrize(
+    "execution_class",
+    [
+        "implementation",
+        "judgment",
+        "planning",
+        "review",
+        "mechanical_fanout",
+        "design",
+        "deterministic",
+        None,
+        "future_writer",
+    ],
+)
+def test_c1_implementation_admission_requires_atomic_receipt(
+    registry, context, execution_class
+):
+    from nspawn.rows import SessionProfile
+
+    candidate = row("c1lock-no-receipt")
+    profile = SessionProfile(
+        original_run_id=candidate.run_id,
+        native_write=True,
+        read_only=False,
+        read_paths=(),
+        execution_class=execution_class,
+    )
+    error = None
+    try:
+        registry.admit_run(
+            candidate,
+            True,
+            1,
+            100,
+            native_context=context,
+            session_profile=profile,
+        )
+    except Exception as caught:  # noqa: BLE001 - assert the exact boundary refusal below
+        error = caught
+    assert isinstance(error, RegistryError), (
+        "registry admission must enforce writer roles and implementation receipts",
+        execution_class,
+        error,
+    )
+    assert registry.get_run(candidate.run_id) is None
+    assert registry.read_claim(candidate.worktree) is None
+    for table in ("runs", "run_events", "native_contexts", "claims", "run_keys"):
+        assert sql(registry, f"SELECT count(*) AS n FROM {table}").fetchone()["n"] == 0

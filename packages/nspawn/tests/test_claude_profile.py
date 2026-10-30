@@ -18,6 +18,7 @@ root = test_route.root
 def test_child_selects_config_without_changing_home(alias: str, tmp_path: Path) -> None:
     for name in ("alpha", "beta"):
         (tmp_path / f"{name}.token").write_text("fixture-token-profile")
+        (tmp_path / f"{name}.token").chmod(0o600)  # whatever the umask
     provider = Provider(
         name="claude",
         secrets=tmp_path,
@@ -39,9 +40,9 @@ def test_child_selects_config_without_changing_home(alias: str, tmp_path: Path) 
 
 
 def test_profile_routes_agree(root: Path, tmp_path: Path) -> None:
-    from nspawn.route import read_roster
+    from nspawn.route import node_roster
 
-    roster = read_roster()
+    roster = node_roster()
     provider = roster.providers[0]
     provider.accounts = {
         alias: NativeAccount(home=root / alias) for alias in ("alpha", "beta")
@@ -77,9 +78,9 @@ def test_duplicate_declared_config_is_refused(tmp_path: Path) -> None:
 
 
 def test_changed_config_refuses_recorded_alias(root: Path) -> None:
-    from nspawn.route import read_roster
+    from nspawn.route import node_roster
 
-    roster = read_roster()
+    roster = node_roster()
     roster.providers[0].accounts = {"alpha": NativeAccount(home=root / "new-profile")}
     with pytest.raises(
         RouteRefused, match="Claude config directory changed for account alpha"
@@ -105,7 +106,7 @@ def test_external_discovery_reads_declared_config_dirs(
             Provider(name="claude", accounts={"alpha": NativeAccount(home=declared)})
         ]
     )
-    monkeypatch.setattr(supervisor, "_read_roster", lambda: roster)
+    monkeypatch.setattr(supervisor, "read_roster", lambda: roster)
     seen: list[Path] = []
 
     def sessions(
@@ -140,6 +141,7 @@ def test_sdk_admission_retains_private_config_with_declared_account(
     declared = tmp_path / "account-config"
     declared.mkdir()
     (tmp_path / "alpha.token").write_text("fixture-profile-token")
+    (tmp_path / "alpha.token").chmod(0o600)  # whatever the umask
     roster = Roster(
         providers=[
             Provider(
@@ -165,7 +167,7 @@ def test_sdk_admission_retains_private_config_with_declared_account(
     staged = tmp_path / "run" / "prelaunch.json"
     staged.write_bytes(prepared.encoded)
     staged.chmod(0o600)
-    monkeypatch.setattr(route, "read_roster", lambda: roster)
+    monkeypatch.setattr(route, "node_roster", lambda: roster)
     with route.profile_prepare(
         "claude",
         raw["route_ref"],

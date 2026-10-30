@@ -117,9 +117,9 @@ def calculate(
         elif obs_item.outcome == RecallOutcome.ABSTAIN:
             # The n1 contract is the owner's live Rust oracle (monorepo
             # mcps/nmemory/evals/src/score.rs:105): it counts ONLY outcome ==
-            # Abstain. The `is_true_abstain` helper ("or empty return") is the
-            # ARENA A.3 definition, which lives in that arena's runner — there
-            # the empty return counts; here it does not.
+            # Abstain. The `is_true_abstain` helper ("or empty return") is a
+            # different definition, which the pilot uses — there the empty
+            # return counts; here it does not.
             true_abstains += 1
 
     return Scores(

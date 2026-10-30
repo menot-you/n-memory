@@ -13,9 +13,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from live.live_support import FAKE_CLAUDE, McpStdio, store_rows
 from workspace_root import WORKSPACE_ROOT
 
+from live.live_support import FAKE_CLAUDE, McpStdio, store_rows
 from nspawn.mcp import NSPAWN_TOOL_CONTRACTS
 from nspawn.owner_roster import Roster, RosterError
 from nspawn.process_identity import (
@@ -602,6 +602,8 @@ def _ld3_observation(
             "provider": "writer",
             "cwd": str(output.parent),
             "prompt": prompt,
+            # LD-3 writes a scratch marker, not product code. C1 refuses mechanical writers.
+            "class": "verification",
             "read_only": False,
             "native_write": True,
         },

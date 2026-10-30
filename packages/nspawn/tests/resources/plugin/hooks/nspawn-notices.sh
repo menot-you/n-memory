@@ -10,6 +10,11 @@
 # dir, so every lane worktree of a repository shares it; outside a repository,
 # realpath(cwd)). Two derivations of one key would be two answers.
 #
+# A compaction continues a session; it is not the next session, so it takes no row.
+# On 2026-10-29, with Claude Code 2.1.312, a teammate compaction payload had
+# no `agent_id` and had the lead session's `session_id`. Neither field identifies
+# that teammate; the `source` field keeps its compaction from taking lead notices.
+#
 # Inside an nSPAWN run it does nothing: a child would take its caller's notice
 # into the wrong conversation. Only a session that owns a messaging socket is a
 # notice caller, so a headless one drains nothing either. It runs the published
@@ -19,7 +24,8 @@
 # silence with rc 0; a session never fails to start here.
 #
 # Bounded under the client's 5 s: `timeout 3` (then KILL at 4 s), and the hook's
-# own death is passed on at once. The drain's budget runs from the start mark
+# own death is passed on at once. The start mark includes the payload read
+# (at most 1 s). The drain's budget runs from the start mark
 # passed here, and it holds TERM only across its delivering UPDATE and the print
 # (at most 0.8 s, ending by 3.6 s, before the KILL): it stops at a TERM before that, or prints what
 # it delivered. The hook waits for that print before it exits.
@@ -31,7 +37,11 @@ else
   entry=$(command -v nspawn) || exit 0
 fi
 [ -x "$entry" ] || exit 0
-NOTT_NSPAWN_DRAIN_STARTED="$EPOCHREALTIME" \
+started=$EPOCHREALTIME
+payload=''
+[ -t 0 ] || payload=$(timeout 1 cat 2>/dev/null) || payload=''
+printf '%s' "$payload" | grep -Eq '"source"[[:space:]]*:[[:space:]]*"compact"' && exit 0
+NOTT_NSPAWN_DRAIN_STARTED="$started" \
   timeout -k 1 3 "$entry" notice drain --project "$PWD" 2>/dev/null &
 drain=$!
 trap 'kill -TERM "$drain" 2>/dev/null; wait "$drain"; exit 0' TERM INT HUP

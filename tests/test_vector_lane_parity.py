@@ -75,6 +75,15 @@ def seed_embedding(store: Store, cid: str, client: EmbeddingClient) -> None:
     )
 
 
+def _miss_terms(store: Store) -> list[tuple[str, int]]:
+    """Each recorded recall-miss term with its row count, in term order."""
+    with store.db.connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT term, COUNT(*) FROM recall_misses GROUP BY term ORDER BY term ASC"
+        )
+        return [(str(r[0]), int(r[1])) for r in cur.fetchall()]
+
+
 def test_term_lane_miss_recorded_despite_vector_grounding() -> None:
     store = Store.open_disposable_test_store()
     cid, _ = store.append(
@@ -99,7 +108,7 @@ def test_term_lane_miss_recorded_despite_vector_grounding() -> None:
     assert res["outcome"] == "grounded"
     # ...and the term lane's abstain miss is recorded anyway, with the raw
     # caller term as its own folded ledger row.
-    assert store.traffic.recall_miss_terms() == [("zzzunmatchedterm", 1)]
+    assert _miss_terms(store) == [("zzzunmatchedterm", 1)]
 
 
 def test_term_lane_miss_one_row_per_caller_term() -> None:
@@ -122,7 +131,7 @@ def test_term_lane_miss_one_row_per_caller_term() -> None:
 
     assert res["outcome"] == "grounded"
     # One row per RAW caller term — never one row for the joined query string.
-    assert store.traffic.recall_miss_terms() == [("alpha", 1), ("beta", 1)]
+    assert _miss_terms(store) == [("alpha", 1), ("beta", 1)]
 
 
 def test_context_fails_closed_on_tombstoned_semantic_candidate() -> None:

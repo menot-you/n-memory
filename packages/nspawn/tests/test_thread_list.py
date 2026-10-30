@@ -7,6 +7,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -115,6 +116,31 @@ class World:
         assert done.returncode == 0, done.stderr
         shown: dict[str, Any] = json.loads(done.stdout)
         return shown
+
+    def journal(self, *homes: Path) -> None:
+        """Install the unit marker and run the writer on private fixture homes."""
+        from test_journal import drain
+
+        from nspawn.journal.serve import Daemon, Settings
+        from nspawn.owner_roster import Roster
+
+        nott = self.private(self.home / ".nott")
+        unit = self.home / ".config/systemd/user/nspawn-session-serve.service"
+        unit.parent.mkdir(parents=True, exist_ok=True)
+        unit.write_text("[Service]\nExecStart=/fixture/nspawn session serve\n")
+        daemon = Daemon(
+            Settings(
+                homes=[(None, home) for home in homes],
+                nott_root=nott,
+                store=store(),
+                roster=Roster.read(self.roster),
+            )
+        )
+        try:
+            daemon.start()
+            drain(daemon)
+        finally:
+            daemon.close()
 
     def session(
         self,
@@ -685,6 +711,7 @@ def test_r9_messages_follow_the_active_chain(world: World) -> None:
         ],
         root=copy,
     )
+    world.journal(copy)
     done = world.verb("show", f"claude:{A}", "--messages", "--claude-home", str(copy))
     assert done.returncode == 0, done.stderr
     shown = json.loads(done.stdout)
@@ -707,6 +734,7 @@ def test_r9_messages_keep_the_tail_from_a_prompt(world: World) -> None:
         )
         parent = uuid
     world.session(A, entries, root=copy)
+    world.journal(copy)
     done = world.verb("show", f"claude:{A}", "--messages", "--claude-home", str(copy))
     assert done.returncode == 0, done.stderr
     shown = json.loads(done.stdout)
@@ -766,10 +794,58 @@ def test_r8_a_child_that_does_not_die_stays_in_custody() -> None:
     release.set()
 
 
+@pytest.mark.parametrize(
+    ("adapter_found", "check_returncode", "check_stdout"),
+    [
+        pytest.param(False, 0, "", id="adapter-missing"),
+        pytest.param(True, 2, "", id="check-refuses"),
+        pytest.param(True, 0, "/elsewhere/bin\n", id="check-names-another-bin"),
+    ],
+)
+def test_sdk_prerequisite_failure_names_the_runbook_setup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    adapter_found: bool,
+    check_returncode: int,
+    check_stdout: str,
+) -> None:
+    runbook = (Path(__file__).parents[1] / "docs" / "RUNBOOK.md").read_text()
+    setup = re.search(r"\$\((uv run [^)]*tests/sdk_setup\.py [^)]*)\)", runbook)
+    assert setup is not None, "RUNBOOK.md must name the sdk_setup.py invocation."
+    adapter = tmp_path / "node_modules" / ".bin" / "adapter"
+    checks: list[list[str]] = []
+
+    def which(name: str) -> str | None:
+        return str(adapter) if adapter_found else None
+
+    def run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        checks.append(argv)
+        return subprocess.CompletedProcess(
+            argv, check_returncode, check_stdout, "The check refused the prefix."
+        )
+
+    monkeypatch.setattr(shutil, "which", which)
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(pytest.fail.Exception) as failure:
+        test_sdk_prerequisite_matches_the_installed_runtime()
+    assert setup.group(1) in str(failure.value)
+    assert "the directory that the script prints first on PATH" in str(failure.value)
+    assert len(checks) == (1 if adapter_found else 0)
+    if adapter_found:
+        assert checks[0][-2:] == [str(tmp_path), "--check"]
+
+
 @SDK_REQUIRED
 def test_sdk_prerequisite_matches_the_installed_runtime() -> None:
+    fix = (
+        "From mcps/nspawn, run "
+        'uv run --no-sync python tests/sdk_setup.py "$PWD/.nott/disposable/test-sdk". '
+        "Put the directory that the script prints first on PATH "
+        "(docs/RUNBOOK.md, Developer test prerequisite)."
+    )
     adapter = shutil.which("claude-agent-acp")
-    assert adapter is not None, "Run tests/sdk_setup.py before SDK tests."
+    if adapter is None:
+        pytest.fail(f"The adapter is not on PATH. {fix}")
     prefix = Path(adapter).parent.parent.parent
     done = subprocess.run(
         [
@@ -783,8 +859,13 @@ def test_sdk_prerequisite_matches_the_installed_runtime() -> None:
         timeout=30,
         check=False,
     )
-    assert done.returncode == 0, done.stderr
-    assert Path(done.stdout.strip()) == Path(adapter).parent
+    if done.returncode != 0:
+        pytest.fail(f"{done.stderr.strip()} {fix}")
+    if Path(done.stdout.strip()) != Path(adapter).parent:
+        pytest.fail(
+            f"The script prints {done.stdout.strip()}, "
+            f"but the adapter on PATH is in {Path(adapter).parent}. {fix}"
+        )
 
 
 def test_sdk_setup_refuses_an_install_outside_disposable_state() -> None:

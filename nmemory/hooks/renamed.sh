@@ -12,16 +12,6 @@ renamed_old() {
   case $1 in
     NOTT_NMEMORY_BIN) echo NMEMORY_BIN ;;
     NOTT_NMEMORY_PROJECT) echo NMEMORY_PROJECT ;;
-    NOTT_SYSTEM1_API_KEY) echo NOTT_TYPESAFE_API_KEY ;;
-    NOTT_SYSTEM1_AUDIT) echo NOTT_JEV_AUDIT ;;
-  esac
-}
-
-# Old spellings retired with no new name of their own, keyed by the variable read in
-# their place (RETIRED in renamed.py).
-renamed_retired() {
-  case $1 in
-    NOTT_SYSTEM1_API_KEY) echo TYPESAFE_AI_API_KEY ;;
   esac
 }
 
@@ -30,7 +20,7 @@ renamed_retired() {
 renamed_warn() {
   local new old
   for new in "$@"; do
-    for old in $(renamed_old "$new") $(renamed_retired "$new"); do
+    for old in $(renamed_old "$new"); do
       if printenv "$old" >/dev/null 2>&1; then
         printf 'nott hook: %s was renamed to %s: set %s and unset %s\n' "$old" "$new" "$new" "$old" >&2
       fi

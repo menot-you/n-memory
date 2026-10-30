@@ -279,21 +279,6 @@ def validate_tool_arguments(name: str, args: Any) -> dict[str, Any]:
                 raise DeserializationError(detail)
             return dict_args
 
-    if name == "nmemory_turn_extract":
-        for k in dict_args:
-            if k not in ("content", "text"):
-                raise DeserializationError(
-                    _format_unknown_field_msg(k, ["content", "text"])
-                )
-        if "content" in dict_args and "text" in dict_args:
-            raise DeserializationError("duplicate field `content`")
-        if "content" not in dict_args and "text" not in dict_args:
-            raise DeserializationError("missing field `content`")
-        for k, v in dict_args.items():
-            if not isinstance(v, str):
-                raise DeserializationError(_format_type_error(k, v, "a string"))
-        return dict_args
-
     if (
         name == "nmemory_kind_classify"
         and "capsule_id" in dict_args

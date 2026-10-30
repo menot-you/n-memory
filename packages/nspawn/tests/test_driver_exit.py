@@ -24,7 +24,13 @@ from test_notice_outbox import _admit, _dead_caller, _move, _notice
 
 from nspawn.registry import STORE_ERRORS, Registry, RegistryError
 from nspawn.rows import RunPhase
-from nspawn.supervisor import DRIVE_CALL, RunAccepted, Supervisor, UnknownRun
+from nspawn.supervisor import (
+    DRIVE_CALL,
+    RunAccepted,
+    Supervisor,
+    UnknownRun,
+    start_worker,
+)
 
 __all__ = ["_drain_worker_threads", "_stop_every_reaper", "drv", "reaper", "registry"]
 
@@ -109,8 +115,7 @@ def _admit_unended(caller: Any) -> Any:
         _admit(supervisor._registry, RUN, caller)
         _move(supervisor._registry, RUN, RunPhase.SPAWNING, RunPhase.RUNNING)
         call.run_id = RUN
-        call.worker = threading.Thread(target=lambda: None, daemon=True)
-        call.worker.start()
+        start_worker(call, threading.Thread(target=lambda: None, daemon=True))
         return RunAccepted(run_id=RUN, phase=RunPhase.RUNNING)
 
     return admit
@@ -241,16 +246,16 @@ def test_a_successor_an_exit_retry_admits_is_joined_before_shutdown(
 
     def publish(self: Supervisor) -> bool:
         # The retry admits a successor, as `_fail_over` does from a terminal write.
-        successor = threading.Thread(target=time.sleep, args=(0.2,), daemon=True)
-        successor.start()
-        calls[0].worker = successor
+        start_worker(
+            calls[0], threading.Thread(target=time.sleep, args=(0.2,), daemon=True)
+        )
         return drained
 
     alive_at_shutdown: list[bool] = []
     real_shutdown = Supervisor.shutdown
 
     def shutdown(self: Supervisor) -> None:
-        alive_at_shutdown.append(calls[0].worker.is_alive())
+        alive_at_shutdown.append(calls[0].workers[-1].is_alive())
         real_shutdown(self)
 
     monkeypatch.setattr(drv, "_dispatch", admit_and_keep_call)

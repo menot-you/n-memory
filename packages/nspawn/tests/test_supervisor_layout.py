@@ -83,11 +83,26 @@ def test_supervisor_cases_remain_distributed_and_complete() -> None:
     # for the answer); nspawn-sovereign-fix1 +1 in test_supervisor_status.py (a
     # result wait that ends first names the running phase); nspawn-picker-followup
     # +1 in test_supervisor_failover.py (a failover goes where the shared picker
-    # sends it, not to the next declared account).
+    # sends it, not to the next declared account); nspawn-failover-notes +1 in
+    # test_supervisor_failover.py (u10: a run that dies on its next account keeps
+    # the note of the account it moved off); nspawn-terminal-keep +3 in
+    # test_supervisor_failover.py (a lone surrogate in the fallback answer and
+    # an overflowing cost complete the run; a signal death keeps the note that
+    # names a malformed field); nspawn-terminal-keep round 2 +3 in
+    # test_supervisor_failover.py (a null result serves the kept assistant
+    # answer, short and long; an overflowing utilization is a typed refusal
+    # every reader reads); recipes-u2 renamed the twelve law-delivery instances
+    # in test_supervisor_drive.py: every child silences the plugin's copy of the
+    # law, whatever it appends (count unchanged).
+    # nspawn-resume-every-caged-run +1 in test_supervisor.py
+    # (a read-only run on a route with no account offers no continuation).
+    # m1-reader-cage: the case that a caged review is not judged by the roster's
+    # env left with the cage, and the case that a run is judged by it
+    # gained a direct-review instance, so the count is unchanged.
     # Stage 3 includes the current telemetry and status contracts.
-    assert len(names) == 329
+    assert len(names) == 337
     assert hashlib.sha256("\n".join(names).encode()).hexdigest() == (
-        "df81772e896c99a496ee182d96c30fed962623e8dd1fce91b91223f8dd1737a3"
+        "2b941e198b5ac9622524708c2fa28effa543579de2c0ac63a2226206d6db11d6"
     )
     # Stock mutmut judges a mutant only by tests its stats run recorded, and that
     # run collects exactly `pytest_add_cli_args_test_selection` (plus

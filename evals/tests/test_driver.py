@@ -9,6 +9,7 @@ from pathlib import Path
 import nott_database
 import pytest
 from nmemory.tools.ingest import gate_refusal, item_sidecars
+from test_shadow_confinement import show_as_foreign
 
 from nmemory_evals import cli, narrate, qa, world
 from nmemory_evals.driver import (
@@ -20,6 +21,7 @@ from nmemory_evals.driver import (
     nmemory_command,
     recall_outcome,
     store_command,
+    store_directory,
     tool_payload,
     validate_disposable_store_dir,
 )
@@ -76,6 +78,36 @@ def test_the_live_store_directory_is_refused(monkeypatch: pytest.MonkeyPatch) ->
     with pytest.raises(DriverError, match="live store"):
         validate_disposable_store_dir(live)
     assert validate_disposable_store_dir(BENCH_STORE) == BENCH_STORE
+
+
+def test_a_store_directory_under_an_ancestor_another_account_can_change_is_refused(
+    bench_store_dir: Path,
+) -> None:
+    # Another account that can rename `job` puts a link to the live store parent in
+    # its place, and the store cleanup then deletes live files (PR 1928 review, F1).
+    shared = bench_store_dir / "shared"
+    shared.mkdir(mode=0o700)
+    shared.chmod(0o777)
+    store = shared / "job" / "database"
+    with pytest.raises(DriverError, match=f"{shared}.*writable by group or other"):
+        validate_disposable_store_dir(store)
+    with pytest.raises(DriverError, match=f"{shared}.*writable by group or other"):
+        store_directory(store)
+    assert not (shared / "job").exists()
+    shared.chmod(0o1777)
+    assert validate_disposable_store_dir(store) == store
+
+
+def test_store_directory_refuses_a_foreign_ancestor_made_after_the_preflight(
+    bench_store_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The preflight finds `new-job` missing. Another account makes it before
+    # `directory_open` makes the rest. The admission after creation refuses it
+    # (PR 1928, FM1).
+    job = bench_store_dir / "new-job"
+    show_as_foreign(monkeypatch, job)
+    with pytest.raises(DriverError, match="owned by uid"):
+        store_directory(job / "database")
 
 
 def test_ingest_request_binds_capsule_freshness_to_synthetic_event_time() -> None:

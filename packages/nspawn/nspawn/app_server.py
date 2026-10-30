@@ -11,7 +11,7 @@ import subprocess
 import time
 import uuid
 from collections import deque
-from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -22,14 +22,6 @@ from . import child, wire
 from .custody import ExecutorScope
 from .errors import NERR_1126, NERR_2003, NSpawnError
 from .inference import CodexInference, StructuredInference
-from .native import (
-    ORCHESTRATOR_LAUNCH_MCP_FIELDS,
-    ORCHESTRATOR_MCP_NAME,
-    ORCHESTRATOR_STARTUP_CLOSURE,
-    NativePreparationError,
-    OrchestratorBinding,
-    orchestrator_launch_mcp_servers,
-)
 from .pump import MAX_OUTPUT_LINE_BYTES, PumpLimitExceeded
 from .quota_sources import (
     SourceReading,
@@ -46,16 +38,6 @@ MAX_PENDING_FRAMES = 64
 #: the largest line the pump admits, which a capped command can send before the
 #: `turn/start` response, plus the chatter around it.
 MAX_PENDING_BYTES = MAX_OUTPUT_LINE_BYTES + 4 * 1024 * 1024
-#: What codex reports for a thread started with a native write profile (codex
-#: 0.157.1, observed 2026-09-28): the profile, not the legacy writable roots,
-#: names what is writable, and the network is off.
-NATIVE_WRITE_SANDBOX: Final = {
-    "type": "workspaceWrite",
-    "writableRoots": [],
-    "networkAccess": False,
-    "excludeTmpdirEnvVar": True,
-    "excludeSlashTmp": True,
-}
 RPC_TIMEOUT_SECONDS = 30.0
 MAX_REQUEST_BYTES = MAX_OUTPUT_LINE_BYTES + 16384
 
@@ -341,33 +323,14 @@ def _token_totals(params: Any) -> dict[str, int]:
     return usage
 
 
-def permission_profile(
-    read_roots: Sequence[str], write_root: str | None = None
-) -> dict[str, Any]:
-    """The codex permission profile of a caged turn: everything denied but the
-    minimal system and `read_roots`, `write_root` alone writable with its `.git`
-    read-only, and no network."""
+def permission_profile(read_roots: Sequence[str]) -> dict[str, Any]:
+    """Deny writes and network for a reader with explicit read roots."""
     filesystem = {
         ":root": "deny",
         ":minimal": "read",
         **dict.fromkeys(read_roots, "read"),
     }
-    if write_root is not None:
-        filesystem[write_root] = "write"
-        filesystem[f"{write_root}/.git"] = "read"
     return {"filesystem": filesystem, "network": {"enabled": False}}
-
-
-#: Every capability path an orchestrator turn closes in its own thread config:
-#: the app-server's own disabled list, in the app-server's order, plus the two
-#: code-mode features `child.app_server_arguments` deliberately ENABLES for the
-#: Claude cage. A turn whose only tool is one private MCP needs no browser, no
-#: computer use, no code mode, no sub-agent, no web search and no hook.
-ORCHESTRATOR_CLOSED_FEATURES: Final = (
-    *wire.DISABLED_CAPABILITY_FEATURES,
-    "code_mode",
-    "code_mode_host",
-)
 
 
 def tool_environment_config(tool_environment: Mapping[str, str]) -> dict[str, Any]:
@@ -381,319 +344,6 @@ def tool_environment_config(tool_environment: Mapping[str, str]) -> dict[str, An
         },
         "shell_environment_policy.include_only": ["PATH", *tool_environment],
     }
-
-
-def orchestrator_thread_params(
-    *,
-    model: str,
-    cwd: str,
-    profile: str,
-    read_roots: Sequence[str],
-    mcp_servers: Mapping[str, Mapping[str, Any]],
-    tool_environment: Mapping[str, str],
-    developer_instructions: str | None = None,
-) -> dict[str, Any]:
-    """The whole thread ONE orchestrator turn starts.
-
-    `wire.thread_start_params` is the base — the same closed shape a native
-    writer's thread already carries — so approval stays `never`, the network
-    stays off, the shell inherits nothing, and the vendor's own orchestrator MCP
-    and skills stay disabled. On top of it: the caged reader's root-deny /
-    minimal-read permission profile over `read_roots`, exactly the private
-    orchestrator MCP beside the inherited names it closes, no plugin at all, and
-    every inherited capability path named closed rather than left to a default.
-    The `sandbox` the base names is REPLACED by the profile: two answers to "what
-    may this turn read" is one answer too many, and the profile is the one the
-    vendor enforces.
-
-    An inherited name is carried as `{"enabled": False}` and nothing else. Naming
-    it is not a second MCP: the vendor merges this configuration over the file
-    its `CODEX_HOME` holds, so omitting a name the account declares leaves that
-    declaration standing, and it starts before any catalog check can refuse the
-    turn. A name carrying anything beyond its own closure is refused.
-    """
-    if not read_roots or any(
-        not isinstance(root, str) or not Path(root).is_absolute() for root in read_roots
-    ):
-        raise AppServerError("native orchestrator read roots must be absolute paths")
-    if ORCHESTRATOR_MCP_NAME not in mcp_servers or any(
-        dict(server) != {"enabled": False}
-        for name, server in mcp_servers.items()
-        if name != ORCHESTRATOR_MCP_NAME
-    ):
-        raise AppServerError(
-            "a native orchestrator turn lists exactly the private orchestrator "
-            "MCP, beside inherited names carrying nothing but their own closure"
-        )
-    params = wire.thread_start_params(
-        model, cwd, wire.ApprovalPolicy.NEVER, wire.ExecutorSandbox.READ_ONLY
-    )
-    params.pop("sandbox")
-    params["permissions"] = profile
-    config = params["config"]
-    config["permissions"] = {profile: permission_profile(read_roots)}
-    # Codex 0.157.1 refuses to reload a config whose profiles name no default.
-    config["default_permissions"] = profile
-    # The same closure the LAUNCH states with `-c` before this process started
-    # (`native.orchestrator_startup_arguments`), from the one mapping that
-    # defines it: a thread cannot unload a plugin the process already loaded, nor
-    # untrust a project whose configuration layer it already read, so stating it
-    # here alone was the gap, and stating it in two places from two lists would
-    # let one of them drift.
-    config.update(
-        {
-            key: dict(value) if isinstance(value, dict) else value
-            for key, value in ORCHESTRATOR_STARTUP_CLOSURE.items()
-        }
-    )
-    # AFTER that closure, never before it. The LAUNCH already declared this whole
-    # table (`native.orchestrator_mcp_arguments`) and the vendor's own effective
-    # view of it was validated before this thread was composed
-    # (`orchestrator_config_violation`), so what stands here RESTATES that
-    # declaration and narrows the private server to its tool contract --
-    # `orchestrator_thread_restatement` is what holds it to that. A key of the
-    # shared closure landing on top of it would delete the only server the turn
-    # has.
-    assert "mcp_servers" not in ORCHESTRATOR_STARTUP_CLOSURE
-    config["mcp_servers"] = {name: dict(server) for name, server in mcp_servers.items()}
-    config.update({f"features.{name}": False for name in ORCHESTRATOR_CLOSED_FEATURES})
-    config.update(tool_environment_config(tool_environment))
-    # The base already names PATH, and `tool_environment` names it again because
-    # the private MCP's own launch needs it: the filter is a set, not a list.
-    config["shell_environment_policy.include_only"] = list(
-        dict.fromkeys(config["shell_environment_policy.include_only"])
-    )
-    if developer_instructions is not None:
-        params["developerInstructions"] = developer_instructions
-    return params
-
-
-#: The layer type an orchestrator turn must never see among the vendor's own
-#: configuration layers. Measured against codex 0.159.2 (M-a, 2026-10-01): an
-#: empty `[projects]` or `[mcp_servers]` override does NOT stop that layer loading
-#: for a trusted project, and neither does `trust_level = "untrusted"`. What does
-#: (M-b) is a NEUTRAL cwd, after which `config/read` answered
-#: `[sessionFlags, user, system]` and nothing else. So its absence is ASSERTED
-#: here, on the vendor's own answer, rather than assumed from an override.
-ORCHESTRATOR_PROJECT_LAYER: Final = "project"
-#: What the composed THREAD may carry beyond the launch declaration: the private
-#: server's tool contract, which narrows it and adds no launch field.
-ORCHESTRATOR_THREAD_MCP_KEYS: Final = (
-    *ORCHESTRATOR_LAUNCH_MCP_FIELDS,
-    "env_vars",
-    "enabled_tools",
-)
-
-
-def orchestrator_config_violation(
-    result: object, *, declared: Mapping[str, Mapping[str, Any]]
-) -> str | None:
-    """What the vendor's OWN effective configuration does that this launch does not
-    allow, as one sentence naming the field or the server; `None` is held.
-
-    THE BOUNDARY OF AN ORCHESTRATOR TURN, read from
-    `config/read {cwd: <the neutral cwd>, includeLayers: true}` on the one
-    app-server this turn started, BEFORE any `thread/start` -- so before the vendor
-    has launched one MCP child of this composition. Measured (M-d, M-e): the answer
-    is `{config, layers, origins}`; `config.mcp_servers` carries each server's
-    command, args and env AS MERGED, and `layers` carries each layer's own type.
-    That is the one place the vendor states the launch it will perform.
-
-    `mcpServerStatus/list` CANNOT STAND HERE. Its entries carry no command, no args
-    and no env at all (M-c), so a launch check built on it answers "states no
-    launch" for every turn, the clean one included, and refuses them all. It stays
-    as an additional check on names, tools and resources, after the thread.
-
-    The environment is an EQUALITY, not a containment: the defect was ONE merged
-    `[mcp_servers.nott_orchestrator.env]` key reaching the one server the turn
-    trusts -- from a project layer, and from an account layer too (M-e) -- with the
-    name, the command and the arguments all still right.
-
-    FAIL CLOSED. A layer of type `project`, a shape this reader does not recognise,
-    a field missing or of another type: each is a refusal. An answer nobody could
-    validate proves nothing. And no refusal names a VALUE of the configuration --
-    only the field or the server -- because these values are an environment.
-    """
-    if not isinstance(result, Mapping):
-        return "native orchestrator config/read answered no object"
-    layers = result.get("layers")
-    if not isinstance(layers, list) or not layers:
-        return "native orchestrator config/read states no configuration layers"
-    for layer in layers:
-        if not isinstance(layer, Mapping):
-            return "native orchestrator configuration layer is not an object"
-        name = layer.get("name")
-        if not isinstance(name, Mapping) or not isinstance(name.get("type"), str):
-            return "native orchestrator configuration layer states no type"
-        if name["type"] == ORCHESTRATOR_PROJECT_LAYER:
-            return "native orchestrator turn loaded a project configuration layer"
-    config = result.get("config")
-    if not isinstance(config, Mapping):
-        return "native orchestrator config/read answered no config"
-    servers = config.get("mcp_servers")
-    if not isinstance(servers, Mapping):
-        return "native orchestrator effective configuration states no mcp_servers"
-    composed = declared.get(ORCHESTRATOR_MCP_NAME)
-    if composed is None:
-        return "native orchestrator launch declared no private MCP to compare"
-    private = servers.get(ORCHESTRATOR_MCP_NAME)
-    if not isinstance(private, Mapping):
-        return "native orchestrator effective configuration states no private MCP"
-    if private.get("command") != composed["command"]:
-        return "native orchestrator effective MCP command is not the composed one"
-    arguments = private.get("args")
-    if not isinstance(arguments, list) or arguments != list(composed["args"]):
-        return "native orchestrator effective MCP args are not the composed ones"
-    environment = private.get("env")
-    if not isinstance(environment, Mapping) or dict(environment) != dict(
-        composed["env"]
-    ):
-        return "native orchestrator effective MCP env is not the composed one"
-    if private.get("enabled") is not True:
-        return "native orchestrator effective MCP is not enabled for the turn"
-    for name, server in servers.items():
-        if name == ORCHESTRATOR_MCP_NAME:
-            continue
-        if name not in declared:
-            return (
-                "native orchestrator effective configuration carries a server the "
-                "launch does not declare"
-            )
-        if not isinstance(server, Mapping) or server.get("enabled") is not False:
-            return (
-                "native orchestrator effective configuration leaves another server "
-                "enabled"
-            )
-    return None
-
-
-def orchestrator_thread_restatement(
-    servers: Mapping[str, Mapping[str, Any]],
-    declared: Mapping[str, Mapping[str, Any]],
-) -> str | None:
-    """Whether the composed THREAD restates the launch declaration and nothing
-    more, as one sentence naming the server, or `None`.
-
-    Every MCP of this turn is declared at launch and the vendor's own view of that
-    declaration has just been validated. A thread that added a server, or changed
-    one field of the one it has, would be a launch nobody checked -- so it may
-    restate the same closure and narrow the private server to its tool contract,
-    and it may do nothing else.
-    """
-    if set(servers) != set(declared):
-        return "a native orchestrator thread names a server the launch does not declare"
-    for name, server in servers.items():
-        if any(key not in ORCHESTRATOR_THREAD_MCP_KEYS for key in server):
-            return (
-                f"a native orchestrator thread adds a field to the MCP server {name!r}"
-            )
-        for field_name, value in declared[name].items():
-            if server.get(field_name) != value:
-                return f"a native orchestrator thread changes the MCP server {name!r}"
-    return None
-
-
-def orchestrator_effective_launch(
-    entry: Mapping[str, Any],
-) -> Mapping[str, Any] | None:
-    """The launch a vendor status entry states for the server it started.
-
-    WHEREVER it states it: at the entry's top level, or one level inside it. A
-    `command` is what identifies a launch, so no field name invented here decides
-    whether the vendor's answer was understood; an entry that states no command
-    anywhere states no launch, and `None` says exactly that.
-    """
-    candidates = (
-        entry,
-        *(value for value in entry.values() if isinstance(value, Mapping)),
-    )
-    for candidate in candidates:
-        if isinstance(candidate.get("command"), str):
-            return candidate
-    return None
-
-
-def orchestrator_mcp_violation(
-    binding: OrchestratorBinding,
-    entries: Sequence[Mapping[str, Any]],
-    closed: Collection[str],
-    *,
-    composed: Mapping[str, Any],
-) -> str | None:
-    """What a live MCP catalog does that this binding's tool contract and this
-    turn's composition do not allow, as one sentence; `None` is both held.
-
-    AN ADDITIONAL CHECK, NOT THE BOUNDARY. The boundary is the vendor's own
-    effective configuration, validated before any thread exists
-    (`orchestrator_config_violation`), because an `mcpServerStatus/list` entry
-    carries no command, no args and no env at all: measured against codex 0.159.2
-    (M-c, 2026-10-01), its whole key set is `name`, `runtimeStatus`, `pluginId`,
-    `httpOrigin`, `serverInfo`, `serverCapabilities`, `toolsError`, `resources`,
-    `resourceTemplates`, `authStatus` and `tools`. A check that read the launch out
-    of this list therefore answered "states no launch" for EVERY orchestrator turn,
-    the clean one included, and refused them all. So the launch is compared here
-    only WHERE the vendor states one, and an entry that states none is not a
-    refusal; what this list answers for is the names, the tools and the resources.
-
-    The observed tool set must EQUAL the contract, not merely stay inside it: a
-    turn admitted on a contract naming `nott_proposal_create` and then started
-    against a server offering four tools, or none, has no proposal to create, and
-    admitting it would record an orchestration the turn could not perform.
-
-    A name the binding closed MAY be listed -- the vendor lists a disabled server
-    with no capability of its own, as `_verify_readonly_mcp` already reads on the
-    writer's path -- but one that came up with a tool or a resource anyway did
-    start, and that ends the turn. Each failure is said apart, because a turn that
-    silently lost its one tool reads exactly like a turn that gained another one,
-    and a turn whose one server was started by somebody else's configuration
-    reads, by name and by tool, exactly like a turn that was not.
-    """
-    contract = set(binding.tool_contract()["tools"])
-    present = False
-    for entry in entries:
-        if entry.get("name") != ORCHESTRATOR_MCP_NAME:
-            if entry.get("name") not in closed:
-                return (
-                    "native orchestrator MCP catalog carries a server the binding "
-                    "does not name"
-                )
-            if (
-                entry.get("tools")
-                or entry.get("resources")
-                or entry.get("resourceTemplates")
-            ):
-                return (
-                    "native orchestrator turn reached a server the binding named closed"
-                )
-            continue
-        present = True
-        observed = set(entry.get("tools") or ())
-        if observed - contract:
-            return "native orchestrator MCP exposes a tool outside its contract"
-        if contract - observed:
-            return "native orchestrator MCP is missing a tool its contract requires"
-        if entry.get("resources") or entry.get("resourceTemplates"):
-            return "native orchestrator MCP exposes a resource outside its contract"
-        effective = orchestrator_effective_launch(entry)
-        if effective is None:
-            # The real vendor states none (M-c). The launch was already validated
-            # against the vendor's own effective configuration, before this thread.
-            continue
-        if effective.get("command") != composed.get("command") or list(
-            effective.get("args") or ()
-        ) != list(composed.get("args") or ()):
-            return (
-                "native orchestrator MCP was started with a command the "
-                "composition does not name"
-            )
-        if dict(effective.get("env") or {}) != dict(composed.get("env") or {}):
-            return (
-                "native orchestrator MCP was started with an environment the "
-                "composition does not name"
-            )
-    if not present:
-        return "native orchestrator MCP is not available to the turn"
-    return None
 
 
 def _threads(items: Sequence[object]) -> list[dict[str, Any]]:
@@ -1070,8 +720,6 @@ class AppServerTurn:
         on_thread: Callable[[str], None] | None = None,
         native_write: bool = False,
         tool_environment: Mapping[str, str] | None = None,
-        orchestrator: OrchestratorBinding | None = None,
-        orchestrator_profile: str | None = None,
         inference_profile: StructuredInference | None = None,
         inference: CodexInference | None = None,
     ) -> AppServerResult:
@@ -1084,7 +732,6 @@ class AppServerTurn:
         if inference_profile is not None and (
             not read_only
             or native_write
-            or orchestrator is not None
             or mcp_servers
             or read_roots
             or tool_environment
@@ -1102,38 +749,14 @@ class AppServerTurn:
             read_only
             or self._scope is None
             or not readonly_mcp
-            or not read_roots
-            or tool_environment is None
             or os.path.realpath(self._cwd) != self._cwd
         ):
             raise AppServerError(
                 "native write needs its own aggregate custody, a closed MCP "
-                "catalog, read roots, a tool environment and a canonical cwd"
-            )
-        if orchestrator is not None and not (
-            read_only
-            and not native_write
-            and readonly_mcp
-            and read_roots
-            and tool_environment is not None
-            and orchestrator_profile is not None
-            # The vendor's MCP children run in their own process group and
-            # session, so a process-group kill of this child does not reach them:
-            # the custody that holds every descendant of an orchestrator turn is
-            # the run's own aggregate scope, as it is for a native writer.
-            and self._scope is not None
-        ):
-            raise AppServerError(
-                "a native orchestrator turn is read-only and carries its own "
-                "profile, read roots, closed MCP catalog, tool environment and "
-                "aggregate custody"
+                "catalog and a canonical cwd"
             )
         if inference_profile is not None:
             self._readonly_active_servers = set()
-        elif orchestrator is not None:
-            # The one server that may ever start: not nmemory, and not a name a
-            # catalog of this account happens to hold.
-            self._readonly_active_servers = {ORCHESTRATOR_MCP_NAME}
         elif readonly_mcp:
             self._readonly_active_servers = {
                 name
@@ -1167,59 +790,6 @@ class AppServerTurn:
                 "dynamicTools": [],
                 "selectedCapabilityRoots": [],
             }
-        elif orchestrator is not None:
-            assert read_roots is not None and tool_environment is not None
-            assert orchestrator_profile is not None
-            # BEFORE THE THREAD, AND BEFORE ANY MCP CHILD. The launch declared this
-            # turn's whole MCP table with `-c`, and `config/read` on the SAME
-            # neutral cwd is where the vendor states the launch it will perform
-            # (M-e: it answered the private server's command, args and merged env
-            # with no child started yet). So the vendor's own effective view is
-            # validated here -- no project layer, the private server's command,
-            # args and environment EXACTLY as composed, no other server enabled --
-            # and only then may a thread start.
-            try:
-                launched = orchestrator_launch_mcp_servers(mcp_servers or {})
-            except NativePreparationError as refusal:
-                raise AppServerError(refusal.message) from None
-            try:
-                # Privately: a merged `[mcp_servers]` carries every environment
-                # value of the private MCP, and none of it belongs in a transcript.
-                effective = self._call(
-                    "config/read",
-                    {"cwd": self._cwd, "includeLayers": True},
-                    private=True,
-                )
-            except AppServerDeadlineExceeded:
-                raise
-            except AppServerError as refused:
-                # FAIL CLOSED: an answer nobody could read proves nothing.
-                raise AppServerError(
-                    "native orchestrator effective configuration could not be read"
-                ) from refused
-            violation = orchestrator_config_violation(effective, declared=launched)
-            if violation is not None:
-                raise AppServerError(violation)
-            # One composer owns this turn's whole thread: nothing below may add a
-            # plugin, a second MCP or an inherited capability back into it.
-            params = orchestrator_thread_params(
-                model=model,
-                cwd=self._cwd,
-                profile=orchestrator_profile,
-                read_roots=read_roots,
-                mcp_servers=mcp_servers or {},
-                tool_environment=tool_environment,
-                developer_instructions=developer_instructions,
-            )
-            # And it restates the validated declaration: a thread free to add a
-            # server, or to change one field of the one it has, would be a launch
-            # the check above never saw.
-            restated = orchestrator_thread_restatement(
-                params["config"]["mcp_servers"], launched
-            )
-            if restated is not None:
-                raise AppServerError(restated)
-            profile_id = orchestrator_profile
         else:
             params = {
                 "model": model,
@@ -1229,33 +799,20 @@ class AppServerTurn:
                 "config": {},
             }
             if native_write:
-                params = wire.thread_start_params(
-                    model,
-                    self._cwd,
-                    wire.ApprovalPolicy.NEVER,
-                    wire.ExecutorSandbox.READ_ONLY,
-                )
-            if read_roots is not None:
-                if (
-                    not (read_only or native_write)
-                    or not read_roots
-                    or any(
-                        not isinstance(root, str) or not Path(root).is_absolute()
-                        for root in read_roots
-                    )
+                params["sandbox"] = "danger-full-access"
+            if read_roots is not None and read_only:
+                if not read_roots or any(
+                    not isinstance(root, str) or not Path(root).is_absolute()
+                    for root in read_roots
                 ):
                     raise AppServerError(
                         "native read roots require readonly absolute paths"
                     )
-                profile_id = (
-                    "nott-nspawn-write-" if native_write else "nott-nspawn-read-"
-                ) + uuid.uuid4().hex
+                profile_id = "nott-nspawn-read-" + uuid.uuid4().hex
                 params.pop("sandbox")
                 params["permissions"] = profile_id
                 params["config"]["permissions"] = {
-                    profile_id: permission_profile(
-                        read_roots, self._cwd if native_write else None
-                    )
+                    profile_id: permission_profile(read_roots)
                 }
                 # Codex 0.157.1 refuses to reload, at the first
                 # mcpServerStatus/list, a config whose profiles name no default
@@ -1297,12 +854,10 @@ class AppServerTurn:
             ):
                 raise AppServerError("native server changed the requested read profile")
         reported_sandbox = started.get("sandbox")
-        expected_sandbox = "readOnly" if read_only else "workspaceWrite"
+        expected_sandbox = "readOnly" if read_only else "dangerFullAccess"
         if (
             not isinstance(reported_sandbox, dict)
             or reported_sandbox.get("type") != expected_sandbox
-            or native_write
-            and reported_sandbox != NATIVE_WRITE_SANDBOX
         ):
             raise AppServerError("native server did not preserve the requested sandbox")
         if (
@@ -1335,26 +890,7 @@ class AppServerTurn:
                     )
         if on_thread is not None:
             on_thread(native_thread)
-        if orchestrator is not None:
-            # Before `turn/start`, against the live list of THIS thread, and
-            # ADDITIONAL to the effective-configuration boundary above: the names,
-            # the tools and the resources that actually came up. A server the
-            # binding never named, or one it named closed that came up with a tool
-            # anyway, ends the turn instead of prompting it.
-            composed = (mcp_servers or {}).get(ORCHESTRATOR_MCP_NAME)
-            if composed is None:
-                raise AppServerError(
-                    "a native orchestrator turn composes the private MCP itself"
-                )
-            violation = orchestrator_mcp_violation(
-                orchestrator,
-                list(self._mcp_status(native_thread)),
-                {name for name in (mcp_servers or {}) if name != ORCHESTRATOR_MCP_NAME},
-                composed=composed,
-            )
-            if violation is not None:
-                raise AppServerError(violation)
-        elif readonly_mcp:
+        if readonly_mcp:
             expected = dict(mcp_servers or {})
             for policy in (plugin_mcp_policies or {}).values():
                 for name in policy["mcp_servers"]:

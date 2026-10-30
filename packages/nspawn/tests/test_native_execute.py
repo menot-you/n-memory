@@ -16,6 +16,8 @@ from class_dispatch import DECLARED_CLASS
 from host_process import live_processes_running
 from registry_reset import store
 
+from nspawn.registry import Registry
+
 
 def _store_rows(statement: str, params: tuple[object, ...] = ()) -> list[Any]:
     """Rows of this test's registry file, read on a connection of their own."""
@@ -142,13 +144,12 @@ if KIND == 'codex':
             thread = params.get('threadId', 'native-thread')
             profile = params.get('config', {}).get('permissions', {}).get(params.get('permissions'), {})
             # What codex reports for a native write profile, unless the test plants another.
-            writer = {'type': 'workspaceWrite', 'writableRoots': [], 'networkAccess': False,
-                      'excludeTmpdirEnvVar': True, 'excludeSlashTmp': True}
+            writer = {'type': 'dangerFullAccess'}
             if Path('writer-sandbox.json').exists():
                 writer = json.loads(Path('writer-sandbox.json').read_text())
             send({'id': frame['id'], 'result': {'thread': {'id': thread, 'ephemeral': params.get('ephemeral', False)},
                   'model': params['model'], 'modelProvider': params.get('modelProvider', 'openai'),
-                  'sandbox': writer if 'write' in profile.get('filesystem', {}).values()
+                  'sandbox': writer if params.get('sandbox') == 'danger-full-access'
                   else {'type': 'readOnly' if params.get('permissions') or params.get('sandbox') == 'read-only' else 'workspaceWrite'},
                   'activePermissionProfile': {'id': 'unexpected-profile' if Path('wrong-read-profile').exists() else params['permissions'], 'extends': ':workspace' if Path('read-profile-parent').exists() else None} if params.get('permissions') else None}})
             count_path = Path(os.environ['CODEX_HOME']) / 'fixture-turn-count'
@@ -789,6 +790,42 @@ def test_native_resume_refuses_unmeasured_usage_before_launch(native_client, sna
     assert client.observed("vendor-pid").read_text() == before
 
 
+@pytest.mark.parametrize("native_client", ["codex"], indirect=True)
+def test_a_historical_orchestrator_origin_refuses_its_resume_before_launch(
+    native_client,
+):
+    """An origin admitted as an orchestrator turn before #1297 keeps its
+    `orchestrator_binding` event. The private MCP that turn launched is gone, so
+    a resume of it is refused before any launch, and no second run is admitted."""
+    client, cwd = native_client
+    args = {
+        "provider": "first",
+        "cwd": str(cwd),
+        "prompt": "Reply PONG",
+        "class": DECLARED_CLASS,
+        "read_only": True,
+        "timeout_ms": 5000,
+    }
+    accepted = client.call("nspawn_run_start", args)
+    status = client.terminal(accepted["run_id"])
+    assert status["phase"] == "completed", status
+    before = client.observed("vendor-pid").read_text()
+    with Registry(store(), "historical-binding-fixture") as registry:
+        registry.append_run_event(
+            accepted["run_id"],
+            at=int(time.time() * 1000),
+            kind="lifecycle",
+            payload={"orchestrator_binding": {"session": "conversation-1"}},
+        )
+    args["session_id"] = status["thread_id"]
+    response = client.request(
+        "tools/call", {"name": "nspawn_run_start", "arguments": args}
+    )
+    assert "orchestrator turn" in response["error"]["message"], response
+    assert client.observed("vendor-pid").read_text() == before
+    assert _store_rows("SELECT count(*) FROM runs")[0][0] == 1
+
+
 @pytest.mark.parametrize("native_client", ["codex", "fugu"], indirect=True)
 @pytest.mark.parametrize("moving", [False, True])
 def test_native_readonly_closes_inherited_mcp_catalog(native_client, moving):
@@ -1398,7 +1435,8 @@ def test_native_mcp_close_stops_its_tree_and_releases_writer_claim(native_client
         "provider": "first",
         "cwd": str(cwd),
         "prompt": "wait for close",
-        "class": DECLARED_CLASS,
+        # This custody double does no implementation. C1 refuses mechanical writers.
+        "class": "verification",
         "native_write": True,
         "timeout_ms": 5000,
     }

@@ -581,12 +581,18 @@ class EmbeddingClient:
         if self.space_provider == "gemini":
             items = [e.get("values", []) for e in data.get("embeddings", [])]
             if len(items) != len(texts):
-                raise EmbeddingError(f"expected {len(texts)} Gemini embedding results")
+                raise EmbeddingError(
+                    f"{self.space_provider} embedding response is malformed: "
+                    f"expected {len(texts)} Gemini embedding results"
+                )
             tokens = sum(len(t.split()) for t in texts)
         else:
             results = data.get("data") if isinstance(data, dict) else None
             if not isinstance(results, list) or len(results) != len(texts):
-                raise EmbeddingError(f"expected {len(texts)} OpenAI embedding results")
+                raise EmbeddingError(
+                    f"{self.space_provider} embedding response is malformed: "
+                    f"expected {len(texts)} OpenAI embedding results"
+                )
             indexed: dict[int, list[Any]] = {}
             for result in results:
                 if not isinstance(result, dict):

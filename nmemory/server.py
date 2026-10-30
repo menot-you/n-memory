@@ -505,9 +505,9 @@ class MemoryServer:
                     # triggered on the top-level `error` key. `error_result()`
                     # (`tools.common`) lacks it, so a handler that had already written and
                     # then decided to fail had the write COMMITTED along with
-                    # the error response. `nmemory_index_build` (`tools.index`) is the real path:
-                    # it catches any exception after `index_context` and
-                    # returns `error_result`, having already gone through
+                    # the error response. The measured case was an index handler
+                    # that caught any exception after `index_context` and
+                    # returned `error_result`, having already gone through
                     # `replace_corpus_source`/`append_audit`.
                     #
                     # The output channel does NOT change: it remains `{"result": {...}}`

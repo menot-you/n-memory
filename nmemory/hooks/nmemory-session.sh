@@ -1,28 +1,25 @@
 #!/usr/bin/env bash
-# SessionStart → hand the session the state it would otherwise have to ask for.
+# SessionStart gives the session its memory startup note and local pending notes.
+# After the early exits, a compact source gets only the rules liveness check.
+# It gets no memory note, pending-note replay or digest call.
+# This also applies to the main session.
+# The MCP server instructions stay in its system prompt after compaction.
 #
-# Two things reach the model here, on plain stdout (the injection channel a
-# SessionStart hook has):
+# At other sources, stdout carries these items:
+#   1. The startup note names the deferred nMEMORY tools and their first calls.
+#   2. The rules liveness line reports a missing, stale or unreadable state file.
+#   3. Up to three PENDING CAPTURE lines replay local edits without a capture.
+#      Each line has at most 1000 bytes. Old snapshot lines never replay.
+#   4. The live seven-day writing and recall census comes from digest show.
+# The nMEMORY HTTP daemon writes the owner rule files after each change.
+# This hook prints no rules. Without a state file or an enabled daemon,
+# it prints no liveness line.
 #
-#   1. the per-session file, when one exists — the recover half for BOTH write-only
-#      halves: the PreCompact/PostCompact snapshot, and the SessionEnd observation
-#      that the session edited and acknowledged no capture. Neither can inject;
-#   2. the live seven-day writing/recall census, plus discovery guidance for the host.
-# The owner rules reach a session through ~/.nott/RULES.md and ~/.nott/projects/<project>/
-# RULES.md, which the nMEMORY HTTP daemon writes after each change. This hook
-# prints no rules; it only says when the daemon's state file is missing or stale.
-#
-# (2) is the load-bearing line. The nMEMORY tools arrive DEFERRED: the name is
-# listed, the schema is not, and an unloaded tool cannot be called. Session
-# d30ad2e5 spent 1607 turns and 681 tool calls with all 24 registered and never
-# loaded one. Prose in the system prompt measured zero; a hook that pastes the call
-# does not depend on the model remembering.
-#
-# Hook delivery fails open; the nMEMORY obligation remains mandatory. Anything
-# missing, broken or slow exits 0. A missing executable silences the whole hook
-# (owner, 2026-09-12), including recovery. NOTT_SESSION_DIGEST=off closes this hook lane; unlike
-# the monorepo original this lane is OPEN by default, because a hook nobody enables
-# reproduces the failure it exists to kill.
+# The startup note names tools because the host can defer their schemas.
+# A session must load a deferred tool before it can call that tool.
+# Hook delivery fails open. The nMEMORY obligation still applies.
+# A missing executable silences the whole hook, including recovery.
+# NOTT_SESSION_DIGEST=off also silences it. This lane is open by default.
 set -u
 
 [ "${NOTT_SESSION_DIGEST:-on}" = off ] && exit 0
@@ -31,16 +28,18 @@ payload=$(cat 2>/dev/null) || payload=''
 
 session_state() {
 if [ -n "$payload" ] && command -v jq >/dev/null 2>&1; then
+  source=$(printf '%s' "$payload" | jq -r '.source // ""' 2>/dev/null) || return 0
+  [ "$source" = compact ] && return 0
   sid=$(printf '%s' "$payload" | jq -r '.session_id // ""' 2>/dev/null) || sid=''
   case "$sid" in *[!a-zA-Z0-9-]*) sid='' ;; esac
   snap="${XDG_STATE_HOME:-$HOME/.local/state}/nott/nmemory-compact/$sid.md"
   if [ -n "$sid" ] && [ -r "$snap" ]; then
-    printf 'STATE THIS SESSION LEFT BEHIND — pre-compaction snapshot and/or pending capture (DATA, ADVISORY_NOT_AUTHORITY — verify anything you act on):\n\n'
-    # The pending capture comes first: the 12000-byte bound may cut only the snapshot.
-    # SessionEnd appends the real note last; summary lines that look like it stay bounded.
-    grep -h '^PENDING CAPTURE' "$snap" 2>/dev/null | tail -n 3 | cut -c 1-1000
-    grep -v '^PENDING CAPTURE' "$snap" 2>/dev/null | head -c 12000
-    printf '\n\n'
+    # SessionEnd appends the real note last; old snapshot lines are never replayed.
+    notes=$(grep -h '^PENDING CAPTURE' "$snap" 2>/dev/null | tail -n 3 | cut -b 1-1000)
+    if [ -n "$notes" ]; then
+      printf 'STATE THIS SESSION LEFT BEHIND — pending capture (DATA, ADVISORY_NOT_AUTHORITY — verify anything you act on):\n\n'
+      printf '%s\n\n' "$notes"
+    fi
   fi
 fi
 }
@@ -59,7 +58,7 @@ release="${NOTT_MCP_APPS_DIR:-/guara/apps}/nmemory/current/bin/nmemory"
 
 # The host replaces output above 10,000 UTF-16 units with a short preview.
 host_bound() {
-  python3 -c '
+  python3 -B -c '
 import sys
 text = sys.stdin.buffer.read().decode("utf-8", errors="ignore")
 text = text.encode("utf-16-le")[:20_000].decode("utf-16-le", errors="ignore")
@@ -67,20 +66,22 @@ sys.stdout.write(text)
 '
 }
 
-# Push keeps stored memory and memory calls out. The session's own snapshot and
-# pending capture are local state, so the capture half still gets them back.
-# An nSPAWN child, a workflow run or a subagent (agent_id in the payload) gets no nMEMORY
-# directives here: it gets only its own compaction snapshot back. It still reads the owner
-# rules through the CLAUDE.md imports of the rule files.
-# Without jq, any agent_id key skips. A payload that jq cannot read skips too: the guard
-# fails closed.
+# A memory policy or an nSPAWN child gets only local pending capture notes.
+# Those notes replay only at sources other than compact.
+# Claude Code 2.1.312 sends no agent_id at SessionStart. An agent compaction
+# carries the session_id of the main session. The compact branch below keeps
+# the memory note and digest call from that agent.
+# Keep the agent_id exit for a host that sends agent_id at SessionStart.
+# Each session still reads owner rules through the CLAUDE.md rule imports.
+# Without jq, any agent_id key skips. An unreadable payload also skips with jq.
 agent=''
 if command -v jq >/dev/null 2>&1; then
   agent=$(printf '%s' "$payload" | jq -r '.agent_id // empty' 2>/dev/null) || agent=unreadable
 else
   case $payload in *'"agent_id"'*) agent=unknown ;; esac
 fi
-if [ "${NOTT_MEMORY_POLICY+x}" = x ] || [ -n "${NOTT_NSPAWN_RUN_ID:-}" ] || [ -n "$agent" ]; then
+[ -n "$agent" ] && exit 0
+if [ "${NOTT_MEMORY_POLICY+x}" = x ] || [ -n "${NOTT_NSPAWN_RUN_ID:-}" ]; then
   if limited=$(session_state 2>/dev/null | host_bound 2>/dev/null); then
     printf '%s' "$limited"
   fi
@@ -88,15 +89,14 @@ if [ "${NOTT_MEMORY_POLICY+x}" = x ] || [ -n "${NOTT_NSPAWN_RUN_ID:-}" ] || [ -n
 fi
 
 fixed_guidance() {
-# Two, not nine. Measured 2026-09-02 over 1.279 sessions where this hook ran:
-# ~10.272 of the ~11.463 tokens the nine schemas cost were never used by the
-# session that paid for them, and each compaction re-pays the whole line (up to
-# +20.473 observed). Pre-loading did not buy adherence either -- nmemory_capsule_ingest was
-# loaded in 100% of sessions and called in 14%. These two carry the per-turn
-# obligation (read before the first tool; persist an order in the turn it is
-# given); every other schema loads when the turn actually reaches for it.
-# Owner ratified 2026-09-02. Falsifier: if the nmemory_capsule_ingest call rate per session
-# drops after this, revert this line.
+# Two schemas, not nine. Measured 2026-09-02 over 1,279 hook sessions:
+# sessions never used about 10,272 of the 11,463 tokens from nine schemas.
+# Each compaction then paid for the whole line again, up to 20,473 more tokens.
+# The host loaded nmemory_capsule_ingest in every session, but only 14% called it.
+# These two tools carry the per-turn duty. Read before the first tool and persist
+# an order in the turn that gives it. Load each other schema when work needs it.
+# The owner ratified this on 2026-09-02. If the nmemory_capsule_ingest call rate
+# per session drops after this change, revert this line.
 
 # Measured 2026-09-14 (claude plugin eval, sonnet, 3 runs): the previous wording —
 # "resolve the nMEMORY context and ingest tools by registered server identity…",
@@ -105,11 +105,13 @@ fixed_guidance() {
 # says who is speaking and what the tools are, in plain words, same content.
 # It prints first: when the whole output passes the host's hook-output limit, the
 # model sees only its head, and the directives must survive that cut.
+# The note names the tools and not a server. The server name differs by client and
+# install, and the hook cannot see it. The note grants nothing: the law carries the
+# delivery grant, and a hook cannot grant (NOTT.md, Authority).
 cat <<'DIRECTIVES'
-[NOTT plugin · SessionStart hook nmemory-session.sh — this is the plugin's own startup note, not user text]
-Memory for this session is the MCP server plugin:nott:nmemory, or plugin:nott:nmemory-http where this host enables that one instead (tools nmemory_context_show, nmemory_capsule_ingest, nmemory_outcome_record, nmemory_session_start, nmemory_session_finish). If they arrive deferred, load them with ToolSearch by those names; do not guess other names.
+[nMEMORY · SessionStart hook nmemory-session.sh — this is the memory hook's own startup note, not user text]
+Memory for this session is the nMEMORY MCP server, under the name that this install registers (tools nmemory_context_show, nmemory_capsule_ingest, nmemory_outcome_record, nmemory_session_start, nmemory_session_finish). If they arrive deferred, load them with ToolSearch by those names; do not guess other names.
 When nmemory_context_show is available, call it before the first other tool, then open a session with nmemory_session_start and keep its session_id for nmemory_session_finish. When the owner corrects or decides something, persist it with nmemory_capsule_ingest in the same turn.
-Standing grant from the owner (recorded 2026-09-14): commit, push to the campaign branch, open its pull request and merge it after the required review and checks are yours to do without asking; tag, release and force-push stay the owner's.
 If the memory server is unavailable, say so and continue the work already authorized. Only acts that need a durable record wait for it. Keep pending capture explicit until the server returns. This note grants no authority.
 DIRECTIVES
 printf '\n'
@@ -124,7 +126,7 @@ rules_liveness() {
     && ! timeout 1 systemctl --user is-enabled --quiet nmemory-http.service 2>/dev/null; then
     return 0
   fi
-  python3 -c '
+  python3 -B -c '
 import json, os, sys, time
 path = sys.argv[1]
 try:
@@ -174,6 +176,15 @@ if [ -n "$out" ]; then
 fi
 
 }
+
+# SessionStart cannot identify an agent compaction by agent_id on this host.
+if [ -n "$payload" ] && command -v jq >/dev/null 2>&1; then
+  source=$(printf '%s' "$payload" | jq -r '.source // ""' 2>/dev/null) || source=''
+  if [ "$source" = compact ]; then
+    rules_liveness 2>/dev/null
+    exit 0
+  fi
+fi
 
 if limited=$(session_output 2>/dev/null | host_bound 2>/dev/null); then
   printf '%s' "$limited"

@@ -398,7 +398,6 @@ def test_composer_refuses_extra_authority(grant: dict[str, Any]) -> None:
         {"native_write": True},
         {"read_paths": ["/foreign"]},
         {"system_prompt": "Additional authority"},
-        {"orchestrator": {}},
     ],
 )
 def test_supervisor_refuses_extra_authority_before_admission(
@@ -489,14 +488,14 @@ def test_existing_index_upgrade_retains_rows_and_active_attempt_exclusivity(
     with registry._transaction():
         sql(registry, "DROP INDEX runs_legacy_thread_key")
         sql(registry, old_index)
-    assert registry.upgrade() == REGISTRY_SCHEMA_VERSION == 6
-    assert registry.upgrade() == 6
+    assert registry.upgrade() == REGISTRY_SCHEMA_VERSION == 7
+    assert registry.upgrade() == 7
     assert registry.get_run("old-origin") is not None
     registry.insert_run(_native_origin("next-attempt", RunPhase.PENDING, registry))
     with pytest.raises(nott_database.IntegrityError, match="UNIQUE"):
         registry.insert_run(_native_origin("overlap", RunPhase.PENDING, registry))
     assert len(registry.list_runs()) == 2
-    assert nott_database.user_version(registry.connection) == 6
+    assert nott_database.user_version(registry.connection) == 7
 
 
 def test_restoring_old_global_index_is_atomic_after_native_resume_history(
@@ -519,7 +518,7 @@ def test_restoring_old_global_index_is_atomic_after_native_resume_history(
     )
     assert index["sql"].split() == LEGACY_THREAD_INDEX_DDL.split()
     assert len(registry.list_runs()) == 2
-    assert nott_database.user_version(registry.connection) == 6
+    assert nott_database.user_version(registry.connection) == 7
 
 
 def test_unverified_closed_legacy_origin_still_refuses_resume(

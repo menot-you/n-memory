@@ -424,3 +424,162 @@ def test_the_two_wall_rows_carry_their_columns_and_refuse_the_rest() -> None:
             limit_type="t",
             observed_at=-1,
         )
+
+
+def test_current_schema_upgrade_opens_no_write_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forbidden() -> None:
+        pytest.fail("A current schema must not request a write transaction.")
+
+    with Registry(store(), "reader") as registry:
+        registry.upgrade()
+        monkeypatch.setattr(registry, "_transaction", forbidden)
+        assert registry.upgrade() == schema.REGISTRY_SCHEMA_VERSION
+
+
+@pytest.mark.parametrize(
+    "removed",
+    [
+        "DROP INDEX runs_legacy_thread_key",
+        "DROP INDEX run_events_thread_origin",
+        "DROP TABLE compute_balance",
+        "DROP TABLE review_heads",
+        "DROP TABLE journal_link",
+        "DROP INDEX journal_session_vendor_id",
+        "ALTER TABLE instances DROP COLUMN process_pid",
+        "ALTER TABLE notices DROP COLUMN body",
+        "ALTER TABLE journal_session DROP COLUMN summary",
+        "ALTER TABLE journal_source DROP COLUMN activity",
+        "DROP TRIGGER claims_generation_update",
+    ],
+)
+def test_same_generation_extensions_still_upgrade(removed: str) -> None:
+    with Registry(store(), "setup") as registry:
+        registry.upgrade()
+    _write(removed)
+    with Registry(store(), "upgrader") as registry:
+        assert not registry._extensions_current()
+        assert registry.upgrade() == schema.REGISTRY_SCHEMA_VERSION
+        assert registry._extensions_current()
+
+
+def test_old_legacy_thread_index_still_upgrades() -> None:
+    with Registry(store(), "setup") as registry:
+        registry.upgrade()
+    _write("DROP INDEX runs_legacy_thread_key")
+    _write(
+        "CREATE UNIQUE INDEX runs_legacy_thread_key ON runs(thread_id) "
+        "WHERE backend != 'codex' AND phase != 'closed'"
+    )
+    with Registry(store(), "upgrader") as registry:
+        assert not registry._extensions_current()
+        assert registry.upgrade() == schema.REGISTRY_SCHEMA_VERSION
+        assert registry._extensions_current()
+
+
+GENERATION_OBJECTS = (
+    "worktree_claim_generations",
+    "claims_generation_insert",
+    "claims_generation_update",
+    "claims_generation_delete",
+)
+
+
+def _generation_objects() -> set[str]:
+    conn = nott_database.connect(store(), readonly=True)
+    try:
+        names = {
+            str(row[0])
+            for row in nott_database.query(conn, "SELECT name FROM sqlite_schema")
+        }
+    finally:
+        conn.close()
+    return names & set(GENERATION_OBJECTS)
+
+
+def _claim_generation(worktree: str) -> int | None:
+    conn = nott_database.connect(store(), readonly=True)
+    try:
+        rows = nott_database.query(
+            conn,
+            "SELECT generation FROM worktree_claim_generations WHERE worktree = ?",
+            (worktree,),
+        )
+    finally:
+        conn.close()
+    return None if not rows else int(rows[0][0])
+
+
+def _drop_generation_objects() -> None:
+    for trigger in GENERATION_OBJECTS[1:]:
+        _write(f"DROP TRIGGER {trigger}")
+    _write(f"DROP TABLE {GENERATION_OBJECTS[0]}")
+
+
+def test_a_created_store_carries_the_claim_generation_objects() -> None:
+    assert _generation_objects() == set(GENERATION_OBJECTS)
+
+
+def test_an_existing_version_7_store_gains_the_generation_objects_on_open() -> None:
+    _drop_generation_objects()
+    _write("INSERT INTO claims VALUES ('/w', 'r-old', 'h', 1)")
+    assert _generation_objects() == set()
+    with Registry(store(), "upgrader") as registry:
+        assert not registry._extensions_current()
+        assert registry.upgrade() == schema.REGISTRY_SCHEMA_VERSION == 7
+        assert registry._extensions_current()
+    assert _generation_objects() == set(GENERATION_OBJECTS)
+    # A claim from before the objects has no row: it reads as generation 0.
+    assert _claim_generation("/w") is None
+    _write("DELETE FROM claims WHERE worktree = '/w'")
+    assert _claim_generation("/w") == 1
+
+
+def test_a_failed_generation_install_installs_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _drop_generation_objects()
+    with Registry(store(), "upgrader") as registry:
+        run = registry._run
+
+        def fail_on_delete_trigger(statement: str, params: object = ()) -> int:
+            if "claims_generation_delete" in statement:
+                raise nott_database.OperationalError("fixture install failure")
+            return run(statement, params)
+
+        monkeypatch.setattr(registry, "_run", fail_on_delete_trigger)
+        with pytest.raises(nott_database.OperationalError, match="fixture"):
+            registry.upgrade()
+    assert _generation_objects() == set()
+
+
+def test_legacy_claim_sql_advances_the_claim_generation() -> None:
+    """A writer that knows nothing of the generation still advances it."""
+    _write("INSERT INTO claims VALUES ('/w', 'r-1', 'h', 1)")
+    assert _claim_generation("/w") == 1
+    _write("UPDATE claims SET lease_until = 2 WHERE worktree = '/w'")
+    assert _claim_generation("/w") == 2
+    _write(
+        "INSERT INTO claims VALUES ('/w', 'r-2', 'h', 3) ON CONFLICT (worktree) "
+        "DO UPDATE SET run_id = excluded.run_id"
+    )
+    assert _claim_generation("/w") == 3
+    _write("DELETE FROM claims WHERE worktree = '/w'")
+    assert _claim_generation("/w") == 4
+    _write("INSERT INTO claims VALUES ('/w', 'r-3', 'h', 5)")
+    assert _claim_generation("/w") == 5
+
+
+def test_a_generation_at_its_limit_refuses_the_claim_change() -> None:
+    """The counter never wraps: the claim change is refused and nothing moves."""
+    limit = 2**63 - 1
+    _write("INSERT INTO worktree_claim_generations VALUES ('/w', ?)", (limit,))
+    with pytest.raises(nott_database.IntegrityError, match="generation"):
+        _write("INSERT INTO claims VALUES ('/w', 'r-1', 'h', 1)")
+    assert _claim_generation("/w") == limit
+    conn = nott_database.connect(store(), readonly=True)
+    try:
+        assert nott_database.query(conn, "SELECT count(*) FROM claims")[0][0] == 0
+    finally:
+        conn.close()

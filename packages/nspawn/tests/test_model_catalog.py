@@ -146,3 +146,41 @@ def test_catalogue_starts_a_js_entry_with_the_installed_node(
     binary = tmp_path / "claude"
     binary.symlink_to(entry)
     assert catalog_read(binary) == {"haiku": "claude-haiku-5-5"}
+
+
+@pytest.mark.parametrize(
+    ("metadata", "expected"),
+    [
+        ({"supportsEffort": False}, ()),
+        ({"supportedEffortLevels": ["low", "high"]}, ("low", "high")),
+        ({}, None),
+    ],
+)
+def test_native_effort_limits_follow_the_alias_and_the_resolved_model(
+    tmp_path: Path, metadata: dict[str, object], expected: tuple[str, ...] | None
+) -> None:
+    from nspawn.claude_catalog import model_efforts_read
+
+    binary = client(
+        tmp_path,
+        response(
+            [{"value": "sonnet", "resolvedModel": "claude-sonnet-5-5", **metadata}]
+        ),
+    )
+    assert model_efforts_read(binary, "sonnet") == expected
+    assert model_efforts_read(binary, "claude-sonnet-5-5[1m]") == expected
+    assert model_efforts_read(binary, "unknown-model") is None
+    assert catalog_read(binary) == {"sonnet": "claude-sonnet-5-5"}
+
+
+@pytest.mark.parametrize("levels", ["high", [None], [1], [""]])
+def test_native_effort_limits_refuse_invalid_metadata(
+    tmp_path: Path, levels: object
+) -> None:
+    from nspawn.claude_catalog import model_efforts_read
+
+    binary = client(
+        tmp_path, response([{"value": "sonnet", "supportedEffortLevels": levels}])
+    )
+    with pytest.raises(ModelCatalogError, match="invalid effort levels"):
+        model_efforts_read(binary, "sonnet")

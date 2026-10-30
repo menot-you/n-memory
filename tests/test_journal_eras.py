@@ -9,9 +9,10 @@ verifier in `journal.py`.
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 
-from storefile import sample_capsule_id
+import pytest
+from storefile import fresh_store_path, sample_capsule_id
 
 from nmemory import audit_actions
 from nmemory.capsule import parse_rfc3339
@@ -253,3 +254,73 @@ def test_a_near_marker_with_the_action_changed_is_refused() -> None:
     )
     near = replace(near, chained_hash=compute_chained_hash("", near.canonical_line()))
     assert verify_chain([near]) == ChainStatus(is_ok=False, broken_seq=1)
+
+
+def test_persisted_audit_decoders_keep_exact_fields_and_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nmemory import journal
+    from nmemory.queries import journal as journal_queries
+    from nmemory.repositories import audit
+    from nmemory.store import Store
+
+    store = Store.open(fresh_store_path("audit-decoders"))
+    events = _mixed_chain()
+    events.append(_boundary(3, "2026-08-28T12:35:00.5Z", events[-1].chained_hash))
+    last = replace(
+        _event(4, "2026-08-28T12:35:01.25Z", "caller", sample_capsule_id(4), ""),
+        reason=None,
+    )
+    events.append(
+        replace(
+            last,
+            chained_hash=compute_chained_hash(
+                events[-1].chained_hash, last.canonical_line()
+            ),
+        )
+    )
+    expected = [list(asdict(event).items()) for event in events]
+    with store.db.writing() as conn, conn.cursor() as cur:
+        cur.executemany(
+            "INSERT INTO audit_events "
+            "(seq, at, actor, action, subject, reason, chained_hash) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    e.seq,
+                    e.stored_at,
+                    e.actor,
+                    e.action,
+                    e.subject,
+                    e.reason,
+                    e.chained_hash,
+                )
+                for e in events
+            ],
+        )
+
+    assert [list(asdict(e).items()) for e in store.audit.list_audit()] == [
+        expected[3],
+        expected[1],
+        expected[0],
+    ]
+    assert store.audit.list_audit()[-1].canonical_line() == (
+        '{"seq":1,"at":"2026-07-18T14:43:54.150006Z","actor":"rust-migrator",'
+        f'"action":"{audit_actions.INGEST}","subject":"cap-1","reason":"captured"}}'
+    )
+
+    def check_chain(decoded: list[AuditEvent]) -> ChainStatus:
+        assert [list(asdict(e).items()) for e in decoded] == expected
+        return verify_chain(decoded)
+
+    verify_replay = journal.verify_replay
+
+    def check_replay(
+        decoded: list[AuditEvent], live_ids: list[str], tomb_ids: list[str]
+    ) -> journal.ReplayReport:
+        assert [list(asdict(e).items()) for e in decoded] == expected
+        return verify_replay(decoded, live_ids, tomb_ids)
+
+    monkeypatch.setattr(audit, "verify_chain", check_chain)
+    monkeypatch.setattr(journal, "verify_replay", check_replay)
+    assert store.audit.verify_chain().is_ok
+    assert journal_queries.verify_replay(store.db).chain.is_ok

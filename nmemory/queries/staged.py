@@ -63,17 +63,6 @@ class StagedCensus:
     evidence: int
     oldest_days: float | None
 
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "awaiting": self.awaiting,
-            "expired": self.expired,
-            "evidence": self.evidence,
-            "oldest_days": (
-                None if self.oldest_days is None else round(self.oldest_days, 1)
-            ),
-            "horizon_days": STAGED_HORIZON_DAYS,
-        }
-
 
 def staged_census(
     db: Database, scope: str | None, *, subtree: bool, now: datetime

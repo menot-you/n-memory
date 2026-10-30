@@ -20,6 +20,7 @@ from mcp_fakes import FakeSupervisor, handle
 from nspawn.mcp import EXACTLY_ONE_OF, NSPAWN_TOOL_CONTRACTS, McpServer
 from nspawn.supervisor import (
     CloseReadback,
+    FleetPage,
     ProcessTreeReadback,
     ProviderReport,
     QuotaReport,
@@ -60,7 +61,7 @@ SUCCESSES = {
     ),
     "quota_result": QuotaReport(observed_at=1, providers=()),
     "providers_result": ProviderReport(providers=()),
-    "fleet_result": {"observed_at": 1, "runs": []},
+    "fleet_result": FleetPage(observed_at=1, runs=()),
     "usage_result": {"timeZone": "UTC", "agents": []},
 }
 
@@ -177,3 +178,26 @@ def test_every_verb_answers_in_the_content_envelope(contract: Any) -> None:
     assert block["type"] == "text"
     # The structured answer survives the envelope: the text IS the payload.
     assert isinstance(json.loads(block["text"]), (dict, list))
+
+
+def _all_text(value: Any):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _all_text(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _all_text(item)
+
+
+def test_no_tool_text_promises_a_reader_cage():
+    """The reader cage is gone. A read-only child gets the tools of its agent file
+    and nothing more, so no tool text may call it caged."""
+    stale = [
+        (contract.name, text)
+        for contract in NSPAWN_TOOL_CONTRACTS
+        for text in (contract.description, *_all_text(contract.input_schema))
+        if "caged" in text.lower()
+    ]
+    assert stale == []

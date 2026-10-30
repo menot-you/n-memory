@@ -464,7 +464,10 @@ def test_close_of_a_writable_execute_with_survivors_keeps_its_claim(
     monkeypatch.setattr(Supervisor, "_drive_native_run", lambda *a, **k: None)
     sv = _sv(registry, tmp_path)
     sv.CLOSE_POLL_TIMEOUT_S = 0.2
-    accepted = sv.execute("fix", str(checkout), native_write=True)
+    # This custody probe starts no implementation. C1 requires an explicit writer role.
+    accepted = sv.execute(
+        "fix", str(checkout), native_write=True, execution_class="verification"
+    )
     held = registry.read_claim(worktree)
     assert held is not None and held.run_id == accepted.run_id
     proc = _spawn_real("sleep", "30")
@@ -605,8 +608,19 @@ def test_a_served_close_of_a_pending_recovery_is_refused_and_keeps_serving(
     sv = Supervisor(registry, tmp_path / "runs")
     run_id, _ = _admit_pending(sv, registry, tmp_path, worktree=str(tmp_path))
     reference = {"path": str(tmp_path / "recovery.json"), "sha256": "a" * 64}
-    # At the admission's own clock (created_at 1), inside its claim's lease.
-    registry.record_implementation_recovery(run_id, str(tmp_path), 2, 60_000, reference)
+    # The legacy row that the retired writer left: a pending event and a
+    # poisoned claim. No current code writes it.
+    registry.append_run_event(
+        run_id,
+        at=2,
+        kind="lifecycle",
+        payload={
+            "schema": "nott.implementation.custody.v1",
+            "state": "pending",
+            "artifact": reference,
+        },
+    )
+    registry.poison_claim(str(tmp_path), run_id)
     server = McpServer(supervisor=sv)
 
     answer = handle(

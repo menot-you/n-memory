@@ -106,6 +106,30 @@ def git_mentions(anchor_root: str, references: list[str]) -> dict[str, Any]:
         }
 
 
+def relation_projection(
+    state: HandlerState, cid: str
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    rels = state.store.relations.list_relations_for(cid)
+    rows = [
+        {
+            "at": format_rfc3339(r.at),
+            "from": r.from_id,
+            "kind": r.kind.value if hasattr(r.kind, "value") else str(r.kind),
+            "to": r.to_id,
+        }
+        for r in rels
+    ]
+    handles = {}
+    for r in rels:
+        h_from = state.store.capsules.get_handle(r.from_id)
+        if h_from:
+            handles[r.from_id] = h_from
+        h_to = state.store.capsules.get_handle(r.to_id)
+        if h_to:
+            handles[r.to_id] = h_to
+    return rows, dict(sorted(handles.items()))
+
+
 def _render_capsule_get(
     state: HandlerState,
     sc: StoredCapsule,
@@ -117,7 +141,7 @@ def _render_capsule_get(
     h = state.store.capsules.get_handle(sc.id)
     ctx = state.store.capsules.get_capture_context(sc.id)
     tier = state.store.tiers.get_tier(sc.id)
-    rels = state.store.relations.list_relations_for(sc.id)
+    rels_list, rel_handles = relation_projection(state, sc.id)
 
     ctx_dict = ctx.to_dict() if ctx else None
 
@@ -137,15 +161,6 @@ def _render_capsule_get(
             "event": audit_actions.INGEST,
         }
 
-    rels_list = [
-        {
-            "at": format_rfc3339(r.at),
-            "from": r.from_id,
-            "kind": r.kind.value if hasattr(r.kind, "value") else str(r.kind),
-            "to": r.to_id,
-        }
-        for r in rels
-    ]
     res_dict: dict[str, Any] = {
         "capsule": {
             "authority_class": cap.authority_class.value,
@@ -185,17 +200,8 @@ def _render_capsule_get(
     if reanchor:
         res_dict["anchor_effective"] = reanchor
 
-    if rels:
-        rel_handles = {}
-        for r in rels:
-            h_from = state.store.capsules.get_handle(r.from_id)
-            if h_from:
-                rel_handles[r.from_id] = h_from
-            h_to = state.store.capsules.get_handle(r.to_id)
-            if h_to:
-                rel_handles[r.to_id] = h_to
-        if rel_handles:
-            res_dict["handles"] = dict(sorted(rel_handles.items()))
+    if rel_handles:
+        res_dict["handles"] = rel_handles
 
     pin = state.store.pins.get_pin(sc.id)
     if pin:
@@ -271,16 +277,7 @@ def render_tombstone_get(
             "at": format_rfc3339(tomb.at),
             "event": audit_actions.FORGET,
         }
-    rels = state.store.relations.list_relations_for(cid)
-    rels_list = [
-        {
-            "at": format_rfc3339(r.at),
-            "from": r.from_id,
-            "kind": r.kind.value if hasattr(r.kind, "value") else str(r.kind),
-            "to": r.to_id,
-        }
-        for r in rels
-    ]
+    rels_list, rel_handles = relation_projection(state, cid)
     tomb_res: dict[str, Any] = {
         "at": format_rfc3339(tomb.at),
         "content_hmac": tomb.content_hmac,
@@ -294,17 +291,8 @@ def render_tombstone_get(
         "reason": tomb.reason,
         "relations": rels_list,
     }
-    if rels:
-        rel_handles = {}
-        for r in rels:
-            h_from = state.store.capsules.get_handle(r.from_id)
-            if h_from:
-                rel_handles[r.from_id] = h_from
-            h_to = state.store.capsules.get_handle(r.to_id)
-            if h_to:
-                rel_handles[r.to_id] = h_to
-        if rel_handles:
-            tomb_res["handles"] = dict(sorted(rel_handles.items()))
+    if rel_handles:
+        tomb_res["handles"] = rel_handles
     return tomb_res
 
 

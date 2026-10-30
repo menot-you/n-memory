@@ -432,7 +432,7 @@ def extract_capsule_id(text: str) -> str | None:
     return None
 
 
-def extract_file_path(text: str) -> str | None:
+def _entity_words(text: str) -> list[str]:
     delims = (" ", "\t", "\n", "(", ")", "[", "]", "`", '"', "'")
     words: list[str] = []
     curr: list[str] = []
@@ -446,8 +446,12 @@ def extract_file_path(text: str) -> str | None:
     if curr:
         words.append("".join(curr))
 
+    return words
+
+
+def extract_file_path(text: str) -> str | None:
     extensions = (".rs", ".sh", ".md", ".toml", ".json", ".py")
-    for w in words:
+    for w in _entity_words(text):
         clean = w.strip(",.:;")
         if (
             "/" in clean
@@ -459,22 +463,9 @@ def extract_file_path(text: str) -> str | None:
 
 
 def extract_branch(text: str) -> str | None:
-    delims = (" ", "\t", "\n", "(", ")", "[", "]", "`", '"', "'")
-    words: list[str] = []
-    curr: list[str] = []
-    for ch in text:
-        if ch in delims:
-            if curr:
-                words.append("".join(curr))
-                curr = []
-        else:
-            curr.append(ch)
-    if curr:
-        words.append("".join(curr))
-
     prefixes = ("feat/", "fix/", "chore/", "docs/")
     extensions = (".rs", ".sh", ".md", ".toml", ".json", ".py")
-    for w in words:
+    for w in _entity_words(text):
         clean = w.strip(",.:;")
         if (
             any(clean.startswith(p) for p in prefixes)

@@ -59,7 +59,7 @@ def _capsule(store: Store, content: str) -> str:
 
 
 def _recall_count(store: Store, cid: str) -> int:
-    """The recall count `nmemory_capsule_consolidate` hands `archive_deadline`: its sidecar."""
+    """The recall count the protective tier moves hand `archive_deadline`: its sidecar."""
     return digest_sidecars(store.db)[cid].recall_count
 
 
@@ -116,12 +116,11 @@ def test_a_capsule_context_serves_is_not_archived_as_never_recalled() -> None:
 def test_orientation_does_not_count_as_a_recall() -> None:
     """The half the union must NOT swallow, and the existing suite caught it.
 
-    `nmemory_project_bootstrap` writes a `read_traffic` row naming everything it packed.
-    Counting those would have the pack inflate its own recall counts, and every
-    capsule orientation ever displayed would read as recalled -- which is the
-    invariant `tests/test_bootstrap.py:143` already pins
-    (`assert server.store.digest_sidecars() == before`). A first version of this
-    change unioned every surface but `retrieve` and broke exactly that test.
+    The bootstrap pack wrote a `read_traffic` row naming everything it packed, and
+    the store keeps those rows. Counting them would have the pack inflate its own
+    recall counts, and every capsule orientation ever displayed would read as
+    recalled. A first version of this change unioned every surface but `retrieve`
+    and broke exactly that invariant.
 
     `context` is a deliberate read and counts; `bootstrap` is orientation and
     does not; `retrieve` is already in `nmemory.usage`.

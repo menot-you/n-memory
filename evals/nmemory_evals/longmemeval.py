@@ -240,8 +240,6 @@ def stream(
         if bracket_idx != -1:
             buffer = buffer[bracket_idx + 1 :]
             break
-    else:
-        raise DatasetError("dataset JSON failed: missing opening bracket")
 
     while True:
         buffer = buffer.lstrip(" \t\r\n,")

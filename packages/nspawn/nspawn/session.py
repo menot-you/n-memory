@@ -20,7 +20,7 @@ from typing import Any
 from nott_socket.door import AcceptError, Admitted, UnixDoor
 
 from . import child
-from .custody import AggregateScope
+from .custody import AggregateScope, ControllerRefusal
 from .errors import NSpawnError
 from .redact import SecretNeedles
 
@@ -131,6 +131,8 @@ class NativeSession:
         self.peer: socket.socket | None = None
         self.scope = scope
         self.failure: BaseException | None = None
+        #: The observing host ended the attachment before nSPAWN stopped it.
+        self.detached = False
         try:
             self.spawned = child.spawn_child(
                 argv,
@@ -143,8 +145,13 @@ class NativeSession:
                 scope=self.scope,
                 pass_fds=pass_fds,
             )
-        except BaseException:
-            self.scope.close()
+        except BaseException as error:
+            try:
+                self.scope.close()
+            except ControllerRefusal as refusal:
+                # The spawn's own failure stays the answer; the reconcile step
+                # stops this slice once its run has ended.
+                error.add_note(f"writer slice {self.scope.unit} stays: {refusal}")
             self.output.close()
             self.control.close()
             for path in self.root.iterdir():
@@ -175,9 +182,13 @@ class NativeSession:
         try:
             action()
         except (OSError, ValueError, TypeError, NSpawnError) as error:
-            if not self.stopped.is_set():
-                self.failure = error
-                self.stopped.set()
+            self.fail(error)
+
+    def fail(self, error: BaseException) -> None:
+        """Record a failure, unless an earlier end is already on record."""
+        if not self.stopped.is_set():
+            self.failure = error
+            self.stopped.set()
 
     def attach(self) -> None:
         try:
@@ -193,8 +204,23 @@ class NativeSession:
             self.attached.set()
             # Requests use the run primitive; this peer only observes and keeps
             # its attachment alive. EOF closes exactly this managed activation.
-            while not self.stopped.is_set() and admitted.stream.recv(1):
-                raise ValueError("native session observer sent an unowned request")
+            # A host that ends with unread frames gives a reset, not EOF.
+            # Each end is on record before this socket closes.
+            try:
+                with contextlib.suppress(ConnectionResetError):
+                    while not self.stopped.is_set() and admitted.stream.recv(1):
+                        raise ValueError(
+                            "native session observer sent an unowned request"
+                        )
+            except (OSError, ValueError) as error:
+                self.fail(error)
+                raise
+            self.detach()
+
+    def detach(self) -> None:
+        """The peer closed the attachment before nSPAWN stopped it."""
+        if not self.stopped.is_set():
+            self.detached = True
         self.stopped.set()
 
     def received(self, raw: bytes) -> bytes:
@@ -212,12 +238,19 @@ class NativeSession:
                     self.observe("output", frame)
             if not self.attached.wait(30) or self.peer is None:
                 raise ValueError("native session has no observing controller")
-            self.peer.sendall(raw)
+            try:
+                self.peer.sendall(raw)
+            except BrokenPipeError, ConnectionResetError:
+                # The peer closed: the same detach as EOF in `attach`.
+                self.detach()
+            except OSError:
+                # nSPAWN closed this socket itself. That is no detach: the end
+                # that nSPAWN recorded first stays the answer.
+                if not self.stopped.is_set():
+                    raise
             return raw
         except (OSError, ValueError, TypeError, NSpawnError) as error:
-            if not self.stopped.is_set():
-                self.failure = error
-                self.stopped.set()
+            self.fail(error)
             if self.peer is not None and self.peer.fileno() >= 0:
                 with contextlib.suppress(OSError):
                     self.peer.shutdown(socket.SHUT_RDWR)
@@ -236,6 +269,10 @@ class NativeSession:
             with admitted.stream, admitted.stream.makefile("rb") as stream:
                 frame = operation(json.loads(stream.readline(FRAME_BYTES + 1)))
                 with self.input_lock:
+                    # `Supervisor._session_wait` reads the phase under this
+                    # lock, so no turn starts after a stop that it acted on.
+                    if self.stopped.is_set():
+                        raise ValueError("native session stopped before the operation")
                     encoded = json.dumps(frame, allow_nan=False).encode() + b"\n"
                     self.observe("input", frame)
                     self.spawned.write_stdin(encoded, timeout=30)
@@ -253,8 +290,15 @@ class NativeSession:
         if self.peer is not None and self.peer.fileno() >= 0:
             with contextlib.suppress(OSError):
                 self.peer.shutdown(socket.SHUT_RDWR)
-        self.scope.close()
-        self.spawned.wait(timeout=10)
+        refusal: ControllerRefusal | None = None
+        try:
+            self.scope.close()
+        except ControllerRefusal as error:
+            # The session's own doors still close; the refusal is raised after
+            # them, and the reconcile step stops the slice once it is empty.
+            refusal = error
+        else:
+            self.spawned.wait(timeout=10)
         self.output.close()
         self.control.close()
         for worker in self.threads:
@@ -262,3 +306,5 @@ class NativeSession:
         for path in self.root.iterdir():
             path.unlink()
         self.root.rmdir()
+        if refusal is not None:
+            raise refusal

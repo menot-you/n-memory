@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -B
 """System1 — the System One client the HOOKS use, and the CLI the routes call.
 
 WHY IT DOES NOT REUSE `nspawn.system1`. The hooks run in the owner's client, outside this

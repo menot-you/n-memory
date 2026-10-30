@@ -1,4 +1,4 @@
-"""`~/.nott/memory.toml`: the typed [system1] and [github] tables.
+"""`~/.nott/memory.toml`: the typed [system1] and [curator] tables.
 
 The environment variable names the PATH to the file, never a value. The store
 is not configured here: it is one SQLite file under `NOTT_DATABASE_DIR`, and a
@@ -11,14 +11,15 @@ from pathlib import Path
 
 import pytest
 from nott_system1 import MODELO_PADRAO, TIMEOUT_PADRAO
-from storefile import sample_capsule_id
 
 from nmemory.config import (
     DEFAULT_CONFIG_PATH,
     ConfigError,
+    CuratorRoute,
     System1Config,
-    github_table,
+    curator_route,
     resolve_system1_config,
+    set_curator_route,
 )
 
 
@@ -34,6 +35,21 @@ def test_a_retired_store_table_is_ignored_not_refused(tmp_path: Path) -> None:
         '[store]\nurl = "a-retired-database-url"\n\n[system1]\nmodel = "system1-do-arquivo"\n'
     )
     assert resolve_system1_config(cfg).model == "system1-do-arquivo"
+
+
+def test_a_retired_github_table_is_ignored_not_refused(tmp_path: Path) -> None:
+    """A live `memory.toml` still carries the retired mirror's `[github]` table.
+
+    The loader reads the file, and a curator write keeps the table bytes. The
+    loader does not check the keys of the table, because no code reads them.
+    """
+    cfg = tmp_path / "memory.toml"
+    github = '[github]\nrepo = 7\nfence = "any"\n'
+    cfg.write_text(github + '\n[system1]\nmodel = "system1-do-arquivo"\n')
+    assert resolve_system1_config(cfg).model == "system1-do-arquivo"
+    set_curator_route(CuratorRoute("zai", None), cfg)
+    assert cfg.read_text().startswith(github)
+    assert curator_route(cfg) == CuratorRoute("zai", None)
 
 
 def test_an_unknown_table_is_still_refused(tmp_path: Path) -> None:
@@ -180,49 +196,6 @@ def test_a_non_numeric_timeout_is_refused(tmp_path) -> None:
     cfg.write_text('[system1]\ntimeout_seconds = "90"\n')
     with pytest.raises(ConfigError):
         resolve_system1_config(cfg)
-
-
-def test_a_tabela_github_e_lida_do_ficheiro_do_host(tmp_path) -> None:
-    """The github-sync fence lives here because this path is ABSOLUTE.
-
-    The repository's (`.nott/nmemory/config.toml`) is relative to the CWD
-    and only loads `if exists()`: a process started in the wrong directory
-    does not find the config, gains no fence, and silently proposes the
-    whole graph.
-    """
-    cfg = tmp_path / "memory.toml"
-    cfg.write_text(
-        '[github]\nrepo = "org/r"\nlabel = "l"\nproject = "p"\nefforts = ["'
-        + sample_capsule_id(1)
-        + '", "'
-        + sample_capsule_id(2)
-        + '"]\n'
-    )
-    tbl = github_table(cfg)
-    assert tbl["repo"] == "org/r"
-    assert tbl["efforts"] == ["cap-1", sample_capsule_id(2)]
-
-
-def test_uma_chave_desconhecida_em_github_e_recusada(tmp_path) -> None:
-    cfg = tmp_path / "memory.toml"
-    cfg.write_text('[github]\nrepos = "org/r"\n')
-    with pytest.raises(ConfigError) as excinfo:
-        github_table(cfg)
-    assert "repos" in str(excinfo.value)
-    assert "[github]" in str(excinfo.value)
-
-
-def test_um_ficheiro_sem_github_nao_e_defeito(tmp_path) -> None:
-    cfg = tmp_path / "memory.toml"
-    cfg.write_text("")
-    assert github_table(cfg) == {}
-
-
-def test_um_repo_nao_string_em_github_e_recusado(tmp_path) -> None:
-    cfg = tmp_path / "memory.toml"
-    cfg.write_text("[github]\nrepo = 7\n")
-    with pytest.raises(ConfigError, match="esperava string"):
-        github_table(cfg)
 
 
 def _rota(monkeypatch: pytest.MonkeyPatch, scope: str, **values: str) -> None:

@@ -45,11 +45,13 @@ for line in sys.stdin:
     if peer == "nmemory":
         with (
             pytest.raises(client.NspawnClientError, match="not nspawn"),
-            client.NspawnClient.open(tmp_path),
+            client.NspawnClient(client.configured_server(tmp_path), tmp_path),
         ):
             pass
     else:
-        with client.NspawnClient.open(tmp_path) as transport:
+        with client.NspawnClient(
+            client.configured_server(tmp_path), tmp_path
+        ) as transport:
             assert isinstance(transport, client.NspawnClient)
             assert transport.call("nspawn_run_show", {"run_id": "registered-run"}) == {
                 "run_id": "registered-run"

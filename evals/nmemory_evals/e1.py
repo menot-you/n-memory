@@ -135,7 +135,7 @@ def run_e1_driver(
                 "content": item.fact,
                 "source": f"e1:gold_set:{item.id}",
                 # The anchor is the gold set's own, verbatim — `:1` was a line
-                # invented here (see `comparison/adapters.py`).
+                # invented here.
                 "anchor": item.target,
                 "kind": item.kind,
                 "project_id": E1_PROJECT,

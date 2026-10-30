@@ -18,8 +18,10 @@ has at most one such wait: a `begin` that times out leaves it queued, and the ne
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import fcntl
+import importlib.util
 import os
 import pwd
 import shlex
@@ -32,8 +34,6 @@ import weakref
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Any
-
-import sqlite_vec  # type: ignore[import-untyped]
 
 #: SQLite's only wait, the same 10 s the PostgreSQL boundary gave its lock timeout.
 BUSY_TIMEOUT_MS = 10_000
@@ -62,6 +62,7 @@ class SchemaError(DatabaseError):
 #: imports `sqlite3` itself (Rail P).
 Error = sqlite3.Error
 IntegrityError = sqlite3.IntegrityError
+InternalError = sqlite3.InternalError
 OperationalError = sqlite3.OperationalError
 #: The row type consumers annotate with or install as `row_factory`.
 Row = sqlite3.Row
@@ -75,7 +76,9 @@ class _Wait:
 
     def __init__(self, fd: int, name: str) -> None:
         self.fd: int | None = fd
-        self.guard = threading.Lock()
+        # Reentrant: the collector can run the owning gate's `drop` (`abandon`) in this
+        # wait's own thread inside `_block`, and each guarded step is an idempotent let-go.
+        self.guard = threading.RLock()
         self.done = threading.Event()
         self.wanted = True
         self.error: OSError | None = None
@@ -139,6 +142,7 @@ class _Gate:
         self.identity: tuple[int, int] = (0, 0)
         self.fd: int | None = None
         self.waiting: _Wait | None = None
+        self.claimed = False
 
     def release(self) -> None:
         fd, self.fd = self.fd, None
@@ -146,10 +150,11 @@ class _Gate:
             os.close(fd)
 
     def unclaim(self) -> None:
-        with _claims_lock:
-            holder = _claims.get(self.identity)
-            if holder is not None and holder[1] is self:
-                del _claims[self.identity]
+        # A finalizer the collector can run inside `begin`, under `_claims_lock`: so it
+        # takes no lock and touches no claim, and the next holder of the lock applies it.
+        if self.claimed:
+            self.claimed = False
+            _released.append(self)
 
     def drop(self) -> None:
         waiting, self.waiting = self.waiting, None
@@ -184,9 +189,21 @@ def _release_admission(conn: Connection) -> None:
 # The write lock each database file's holder took, by thread and gate. Taking it again
 # through a second connection in the same thread would wait on itself for the whole
 # busy timeout; `begin` refuses that at once instead. The holder's gate releases it,
-# from whichever thread finishes or closes the write.
+# from whichever thread finishes or closes the write, into `_released`; `begin` applies
+# those releases under `_claims_lock` before it reads a claim.
 _claims: dict[tuple[int, int], tuple[int, _Gate]] = {}
 _claims_lock = threading.Lock()
+_released: collections.deque[_Gate] = collections.deque()
+
+
+def _settle_claims() -> None:
+    """Apply the queued releases. The caller holds `_claims_lock`; only it pops, and a
+    release queued meanwhile (by the collector, in this thread or another) is popped too."""
+    while _released:
+        gate = _released.popleft()
+        holder = _claims.get(gate.identity)
+        if holder is not None and holder[1] is gate:
+            del _claims[gate.identity]
 
 
 def _release_claim(conn: Connection) -> None:
@@ -313,13 +330,6 @@ def _owned_private(st: os.stat_result, path: Path, allowed: int = 0) -> None:
 def _check_directory(folder: Path, allowed: int = 0, cure: str = "") -> None:
     try:
         st = os.lstat(folder)
-        if (
-            sys.platform == "linux"
-            and folder.parent == Path("/proc/self/fd")
-            and folder.name.isascii()
-            and folder.name.isdecimal()
-        ):
-            st = os.fstat(int(folder.name))
     except FileNotFoundError:
         raise RefusedError(f"{folder} is missing{cure}") from None
     if stat.S_ISLNK(st.st_mode):
@@ -329,14 +339,87 @@ def _check_directory(folder: Path, allowed: int = 0, cure: str = "") -> None:
     _owned_private(st, folder, allowed)
 
 
-def directory_bind(descriptor: int) -> Path:
-    """Bind a disposable store to a directory that the caller keeps open."""
-    if sys.platform != "linux":
-        raise RefusedError("descriptor-bound stores require Linux")
-    path = Path(f"/proc/self/fd/{descriptor}")
-    _check_directory(path)
-    _admit(path, allow_live_store=False)
-    return path
+#: The Linux MAXSYMLINKS: the most links that one path resolution follows.
+_MAX_LINKS = 40
+
+
+def _trusted_ancestor(path: Path, st: os.stat_result) -> None:
+    """Check one component that the walk meets, from its `os.lstat` result."""
+    account = os.geteuid()
+    mode = stat.S_IMODE(st.st_mode)
+    if st.st_uid not in (0, account):
+        raise RefusedError(
+            f"ancestor {path} (mode {oct(mode)}) is owned by uid {st.st_uid}, not root"
+            f" or uid {account}; that account can replace the store directory: use"
+            " another parent"
+        )
+    if not stat.S_ISLNK(st.st_mode) and mode & 0o022 and not mode & stat.S_ISVTX:
+        raise RefusedError(
+            f"ancestor {path} (uid {st.st_uid}) has mode {oct(mode)}, writable by"
+            " group or other without the sticky bit; another account can replace the"
+            f" store directory: run `chmod go-w {shlex.quote(str(path))}` or use another"
+            " parent"
+        )
+
+
+def check_ancestors(path: str | os.PathLike[str]) -> None:
+    """Refuse a store directory that another account can move (the OpenSSH StrictModes rule).
+
+    The walk resolves the path from / one component at a time, as the kernel does.
+    At each link, it continues with the components of the link target. Root or this
+    account must own each directory and each link that the walk meets, the last
+    component too. Group and other must not write to a directory that the walk
+    meets, unless it has the sticky bit. The walk refuses more than 40 links (the
+    Linux MAXSYMLINKS) and stops at the first missing component. A swap by this
+    same account stays possible: the account is the trust boundary, and it can open
+    the live store directly."""
+    folder = Path(path).absolute()
+    current = Path("/")
+    _trusted_ancestor(current, os.lstat(current))
+    pending = list(reversed(folder.parts[1:]))
+    links = 0
+    while pending:
+        part = pending.pop()
+        if part in ("", "."):
+            continue
+        if part == "..":
+            # `current` is physical: each link before it is already resolved.
+            current = current.parent
+            continue
+        candidate = current / part
+        try:
+            st = os.lstat(candidate)
+            target = os.readlink(candidate) if stat.S_ISLNK(st.st_mode) else None
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            raise RefusedError(
+                f"ancestor {candidate} cannot be checked: {error}"
+            ) from error
+        _trusted_ancestor(candidate, st)
+        if target is None:
+            current = candidate
+            continue
+        links += 1
+        if links > _MAX_LINKS:
+            raise RefusedError(
+                f"{folder} goes through more than {_MAX_LINKS} links, the Linux"
+                " MAXSYMLINKS bound: remove the link loop or use another path"
+            )
+        if target.startswith("/"):
+            current = Path("/")
+        pending.extend(reversed(target.split("/")))
+
+
+def admit_directory(path: str | os.PathLike[str]) -> Path:
+    """Check a disposable store directory: private, owned, not a link, not the live store.
+
+    Each ancestor must also pass `check_ancestors`."""
+    folder = Path(path).absolute()
+    check_ancestors(folder)
+    _check_directory(folder)
+    _admit(folder, allow_live_store=False)
+    return folder
 
 
 def _check_file(path: Path) -> os.stat_result:
@@ -421,10 +504,6 @@ def connect(
     )
     before = _check_file(path)
     uri = f"{path.as_uri()}?mode={'ro' if readonly else 'rw'}"
-    if sys.platform == "linux" and path.parent.parent == Path("/proc/self/fd"):
-        from ._directory import uri as directory_uri
-
-        uri = directory_uri(path, "ro" if readonly else "rw")
     with mapped():
         conn = sqlite3.connect(
             uri,
@@ -505,15 +584,31 @@ def user_version(conn: sqlite3.Connection) -> int:
     return int(_scalar(conn, "PRAGMA user_version"))
 
 
+def vec_path() -> str:
+    """The path `sqlite_vec.loadable_path()` gives, found without running the package.
+
+    The package body imports numpy, and numpy's BLAS threads cost each process about
+    2 s of CPU at import. SQLite adds the platform suffix to this path when it loads.
+    """
+    spec = importlib.util.find_spec("sqlite_vec")
+    if spec is None or spec.origin is None:
+        raise DatabaseError("sqlite-vec is not installed")
+    path = os.path.normpath(os.path.join(os.path.dirname(spec.origin), "vec0"))
+    if not any(os.path.isfile(path + suffix) for suffix in (".so", ".dylib", ".dll")):
+        raise DatabaseError(f"sqlite-vec has no vec0 extension file at {path}")
+    return path
+
+
 def load_vec(conn: sqlite3.Connection) -> None:
     """Load `sqlite-vec`, with extension loading on only for this call and only in C.
 
     The SQL `load_extension()` function stays disabled throughout, so no statement or
     trigger can load anything even while the loader is open.
     """
+    path = vec_path()
     conn.setconfig(sqlite3.SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION, True)
     try:
-        conn.load_extension(sqlite_vec.loadable_path())
+        conn.load_extension(path)
     finally:
         conn.setconfig(sqlite3.SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION, False)
 
@@ -530,6 +625,7 @@ def begin(conn: Connection) -> None:
         return
     gate = conn.gate
     with _claims_lock:
+        _settle_claims()
         holder = _claims.get(gate.identity)
     if holder is not None and holder[0] == threading.get_ident():
         raise BusyError(
@@ -556,6 +652,7 @@ def begin(conn: Connection) -> None:
                 conn.execute(f"PRAGMA busy_timeout = {busy_ms}")
         conn.depth = 1
         with _claims_lock:
+            gate.claimed = True
             _claims[gate.identity] = (threading.get_ident(), gate)
     except BaseException:
         _end(conn)

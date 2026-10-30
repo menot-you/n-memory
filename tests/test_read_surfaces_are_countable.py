@@ -3,7 +3,7 @@
 Measured on the live store 2026-09-13, and the reason this file exists:
 `store.record_recall` is called from exactly one place — `retrieve.py` — so
 `nmemory.usage`, the table the control metric "% ever recalled" reads, can only
-see `nmemory_capsule_retrieve`. `nmemory_context_show` and `nmemory_project_bootstrap` recorded nothing,
+see `nmemory_capsule_retrieve`. `nmemory_context_show` and the bootstrap pack recorded nothing,
 and the tool contract makes `nmemory_context_show` mandatory before any other tool in
 every session. The metric was blind to the dominant read path, and no amount of
 waiting fixes a blind metric.
@@ -107,14 +107,13 @@ def test_every_read_surface_leaves_a_row_naming_itself_and_its_session() -> None
     for tool, arguments in (
         ("nmemory_capsule_retrieve", {"terms": ["countable"]}),
         ("nmemory_context_show", {"query": "countable read surface"}),
-        ("nmemory_project_bootstrap", {}),
     ):
         response = server.call_tool(tool, arguments, context=_context())
         assert not response["result"]["isError"], (tool, response)
 
     rows = _traffic(pg)
-    assert [r[0] for r in rows] == ["retrieve", "context", "bootstrap"]
-    assert [r[1] for r in rows] == [SESSION] * 3, (
+    assert [r[0] for r in rows] == ["retrieve", "context"]
+    assert [r[1] for r in rows] == [SESSION] * 2, (
         "every row carries the session that asked, on every surface"
     )
     assert rows[0][3] == "grounded", "retrieve records its outcome, not just its hits"
@@ -150,7 +149,7 @@ def test_counting_never_moves_the_canonical_generation() -> None:
     """The blocker this design exists to avoid, made permanent.
 
     Independent review measured the first attempt: `nmemory_context_show` advanced the
-    generation 301->302 and `nmemory_project_bootstrap` 302->303, because the receipt went
+    generation 301->302 and the bootstrap pack 302->303, because the receipt went
     through a `@writes` method over a native table. Under a concurrent writer
     holding the singleton, both tools returned `isError` and threw away an
     orientation answer they had already computed — on the one tool the contract
@@ -166,17 +165,17 @@ def test_counting_never_moves_the_canonical_generation() -> None:
     # a canonical writer — it records a receipt through `@writes` — so including
     # it here would assert something false and hide the thing under test.
     before = _generation(pg)
-    for tool, arguments in (
-        ("nmemory_context_show", {"query": "countable read surface"}),
-        ("nmemory_project_bootstrap", {}),
-    ):
-        response = server.call_tool(tool, arguments, context=_context())
-        assert not response["result"]["isError"], (tool, response)
+    response = server.call_tool(
+        "nmemory_context_show",
+        {"query": "countable read surface"},
+        context=_context(),
+    )
+    assert not response["result"]["isError"], response
     assert _generation(pg) == before, (
         "a tool that only reads never takes the lock nor pays the digest "
         "(server.py dispatcher, verbatim); counting must not change that"
     )
-    assert len(_traffic(pg)) == 2, "and both were still counted"
+    assert len(_traffic(pg)) == 1, "and it was still counted"
 
     # Not vacuous: a real write still moves it, so the assertion above measures
     # the read path rather than a generation counter that never moves at all.
@@ -201,17 +200,17 @@ def test_orientation_is_counted_but_never_counts_as_recall() -> None:
     _seed(server)
 
     before = _usage_total(pg)
-    for tool, arguments in (
-        ("nmemory_context_show", {"query": "countable read surface"}),
-        ("nmemory_project_bootstrap", {}),
-    ):
-        response = server.call_tool(tool, arguments, context=_context())
-        assert not response["result"]["isError"], (tool, response)
+    response = server.call_tool(
+        "nmemory_context_show",
+        {"query": "countable read surface"},
+        context=_context(),
+    )
+    assert not response["result"]["isError"], response
     assert _usage_total(pg) == before, (
-        "orientation is not evidence delivery: bootstrap and context must leave "
+        "orientation is not evidence delivery: context must leave "
         "usage.recall_count untouched (nmemory-escrita PLAN, U3, ratified)"
     )
-    assert len(_traffic(pg)) == 2, "counted, though — that is the whole point"
+    assert len(_traffic(pg)) == 1, "counted, though — that is the whole point"
 
     response = server.call_tool(
         "nmemory_capsule_retrieve", {"terms": ["countable"]}, context=_context()

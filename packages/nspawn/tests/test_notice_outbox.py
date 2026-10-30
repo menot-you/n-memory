@@ -1664,3 +1664,63 @@ def test_bodies_that_outrun_the_budget_roll_their_delivery_back(
     assert capsys.readouterr().out == ""
     notice = _notice(registry, DEAD)
     assert notice is not None and notice["delivered_at"] is None
+
+
+def test_nd1_a_compaction_takes_no_row_and_each_start_drains(
+    registry: Registry, tmp_path: Path
+) -> None:
+    apps = _entry(tmp_path)
+    record = tmp_path / "entry-argv"
+    entry = apps / "nspawn" / "current" / "bin" / "nspawn"
+    entry.write_text(
+        f'#!/bin/sh\nprintf "%s\\n" "$*" >>"{record}"\n'
+        f'exec {sys.executable} -P -m nspawn.cli "$@"\n',
+        encoding="utf-8",
+    )
+    # The word compact in the cwd and the transcript path pins the check to the
+    # source key.
+    loose = tmp_path / "compact-project"
+    loose.mkdir()
+    project = os.path.realpath(loose)
+    fields = {
+        "session_id": "main-session",
+        "transcript_path": str(tmp_path / "compact.jsonl"),
+        "cwd": str(loose),
+        "hook_event_name": "SessionStart",
+    }
+
+    def start(source: str, separators: tuple[str, str] = (",", ":")) -> str:
+        result = subprocess.run(
+            ["bash", str(PLUGIN_HOOK)],
+            cwd=loose,
+            env=_hook_env(apps),
+            input=json.dumps({**fields, "source": source}, separators=separators),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout
+
+    def failed_run(name: str) -> str:
+        run_id = _rid(name)
+        _admit(registry, run_id, _dead_caller(project))
+        _move(registry, run_id, RunPhase.RUNNING, RunPhase.FAILED)
+        return run_id
+
+    held = failed_run("compact-held")
+    for separators in ((",", ":"), (", ", ": ")):
+        assert start("compact", separators) == "", f"compaction printed {separators}"
+        assert not record.exists(), "a compaction ran the nspawn entry"
+        notice = _notice(registry, held)
+        assert notice is not None, held
+        assert notice["delivered_at"] is None, f"compaction took the row {separators}"
+    for source in ("startup", "resume", "clear", "fork"):
+        run_id = held if source == "startup" else failed_run(f"compact-{source}")
+        assert f"{run_id} is failed" in start(source), source
+        notice = _notice(registry, run_id)
+        assert notice is not None and notice["delivered_at"] is not None, source
+    calls = record.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 4, calls
+    assert all(call.startswith("notice drain --project ") for call in calls), calls

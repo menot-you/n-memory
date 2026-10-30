@@ -137,7 +137,7 @@ def _compose(
         "runtime_paths": (layout["peer"],),
     }
     arguments.update(overrides)
-    return module.compose_restricted_launch(**arguments)
+    return module.compose_node_launch(**arguments)
 
 
 def _turn(
@@ -323,7 +323,6 @@ def test_real_agy_runtime_loads_ca_bundle(
 ) -> None:
     """The host CA bundle remains readable in both native process modes."""
     import subprocess
-    import sys
 
     from nspawn import native
     from nspawn.owner_roster import NativeAccount
@@ -331,6 +330,12 @@ def test_real_agy_runtime_loads_ca_bundle(
 
     if not Path("/etc/ca-certificates").is_dir():
         pytest.skip("This host has no extracted CA bundle directory")
+    # The real AGY runtime is one ELF that loads its libraries from /usr. The
+    # sandbox shows argv[0] and /usr only, so the stand-in must be a /usr
+    # interpreter: a uv-managed one keeps its standard library outside both.
+    interpreter = Path("/usr/bin/python3")
+    if not interpreter.is_file():
+        pytest.skip("This host has no Python interpreter under /usr")
     program = r"""
 import json, os, ssl
 from pathlib import Path
@@ -344,7 +349,7 @@ except (OSError, ssl.SSLError) as error:
 print(json.dumps(observed))
 """
     launch = native.NativeLaunch(
-        argv=(str(Path(sys.executable).resolve()), "-c", program),
+        argv=(str(interpreter.resolve()), "-c", program),
         env={"HOME": str(layout["home"]), "PATH": "/usr/bin:/bin"},
         needles=SecretNeedles.none(),
         context=NativeSessionContext(str(layout["home"])),

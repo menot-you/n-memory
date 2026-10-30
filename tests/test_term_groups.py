@@ -41,6 +41,16 @@ def fresh_server() -> MemoryServer:
     return MemoryServer(store=Store.open(url))
 
 
+def teach(server: MemoryServer, term: str, alias: str) -> None:
+    """A row of the synonyms table. No product code writes it (retrieve only reads
+    it to expand a term), so the row is seeded here."""
+    with server.store.db.writing() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO synonyms (term, alias, at) VALUES (?, ?, ?)",
+            (term, alias, "2026-08-31T00:00:00Z"),
+        )
+
+
 def ok(res: dict[str, Any]) -> dict[str, Any]:
     assert "result" in res and res["result"]["isError"] is False, res
     payload: dict[str, Any] = json.loads(res["result"]["content"][0]["text"])
@@ -124,7 +134,7 @@ def test_an_alias_hit_is_explained_as_alias_of_the_queried_term() -> None:
     """Tool description promises `alias:<term>`; the port served the word."""
     server = fresh_server()
     ingest(server, "O postgres do store, com statement_timeout explicito.")
-    ok(server.call_tool("nmemory_synonym_add", {"term": "pg", "alias": "postgres"}))
+    teach(server, "pg", "postgres")
 
     payload = retrieve(server, "pg")
 
@@ -144,11 +154,7 @@ def test_a_taught_word_alias_reaches_inside_a_multi_word_term() -> None:
         server, "Owner decision on Mac app shortcuts: Command-plus zooms the canvas."
     )
     ingest(server, "The terminal keeps its own shortcuts.")
-    ok(
-        server.call_tool(
-            "nmemory_synonym_add", {"term": "keyboard", "alias": "shortcuts"}
-        )
-    )
+    teach(server, "keyboard", "shortcuts")
 
     payload = retrieve(server, "canvas keyboard")
 
@@ -167,11 +173,7 @@ def test_a_taught_word_alias_reaches_a_word_joined_by_punctuation() -> None:
     hit = ingest(
         server, "Owner decision on Mac app shortcuts: Command-plus zooms the canvas."
     )
-    ok(
-        server.call_tool(
-            "nmemory_synonym_add", {"term": "keyboard", "alias": "shortcuts"}
-        )
-    )
+    teach(server, "keyboard", "shortcuts")
 
     payload = retrieve(server, "canvas-keyboard")
 
@@ -184,11 +186,7 @@ def test_a_taught_word_alias_is_one_way_inside_a_multi_word_term() -> None:
     """keyboard -> shortcuts does not make "canvas shortcuts" reach "canvas keyboard"."""
     server = fresh_server()
     ingest(server, "The canvas keyboard map stays fixed.")
-    ok(
-        server.call_tool(
-            "nmemory_synonym_add", {"term": "keyboard", "alias": "shortcuts"}
-        )
-    )
+    teach(server, "keyboard", "shortcuts")
 
     payload = retrieve(server, "canvas shortcuts")
 
@@ -247,7 +245,7 @@ def test_a_term_that_matches_nothing_still_abstains() -> None:
 def _teach_and_retrieve(term: str, alias: str, content: str, query: str) -> None:
     server = fresh_server()
     hit = ingest(server, content)
-    ok(server.call_tool("nmemory_synonym_add", {"term": term, "alias": alias}))
+    teach(server, term, alias)
 
     payload = retrieve(server, query)
 

@@ -61,7 +61,7 @@ Never point a test or check at a live user store under `~/.nott/state/database`.
 | Service and trust boundaries | [Architecture](docs/ARCHITECTURE.md) |
 | Setup, operation, backup, and restoration | [Runbook](docs/RUNBOOK.md) |
 | Complete MCP tool and CLI command reference | [Reference](docs/REFERENCE.md) |
-| Developer toolkit and Context7/RTK setup | [Setup](docs/SETUP.md) and [setup-catalog.json](docs/setup-catalog.json) |
+| Developer toolkit and Context7/RTK setup | [Setup](docs/SETUP.md) |
 | Quality gates and security review | [Quality](docs/QUALITY.md) |
 | Source installation and prerequisites | [Installation](docs/INSTALLATION.md) |
 | Data boundaries and external processing choices | [Privacy](docs/PRIVACY.md) |

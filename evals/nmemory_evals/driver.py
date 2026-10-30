@@ -9,8 +9,6 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -64,8 +62,9 @@ class DriverError(Exception):
 def validate_disposable_store_dir(store_dir: Path) -> Path:
     """The benchmark store lives in a disposable directory under /var/tmp, never the live one.
 
-    The evals write and delete. A store directory outside /var/tmp, or the
-    account's own store directory, is refused before any child starts.
+    The evals write and delete. A store directory outside /var/tmp, the
+    account's own store directory, or a directory under an ancestor that another
+    account can change, is refused before any child starts.
     """
     path = Path(store_dir)
     parts = path.parts
@@ -89,6 +88,10 @@ def validate_disposable_store_dir(store_dir: Path) -> Path:
         )
     if resolved == nott_database.live_directory().resolve():
         raise DriverError(f"refusing store directory {path}: it is the live store")
+    try:
+        nott_database.check_ancestors(path)
+    except nott_database.RefusedError as err:
+        raise DriverError(f"refusing store directory {path}: {err}") from err
     return path
 
 
@@ -126,14 +129,13 @@ def store_command(
     return cmd, env
 
 
-@contextmanager
-def store_directory(store_dir: Path, env: dict[str, str]) -> Iterator[int]:
-    """Keep the admitted directory open until the child inherits its descriptor."""
+def store_directory(store_dir: Path) -> None:
+    """Create the private store directory and admit it before a child uses it."""
     validate_disposable_store_dir(store_dir)
     try:
-        with directory_open(store_dir, create=True) as descriptor:
-            env["NOTT_DATABASE_DIR"] = str(nott_database.directory_bind(descriptor))
-            yield descriptor
+        with directory_open(store_dir, create=True):
+            pass
+        nott_database.admit_directory(store_dir)
     except (OSError, nott_database.RefusedError) as err:
         raise DriverError(f"benchmark store directory refused: {err}") from err
 
@@ -162,21 +164,17 @@ def prepare_database(
     cmd, env = store_command(binary, store_dir)
     cmd.extend(["database", "create"])
     try:
-        with store_directory(store_dir, env) as descriptor:
-            if (
-                mode == EvaluationMode.REUSE
-                and (Path(env["NOTT_DATABASE_DIR"]) / STORE_FILE).exists()
-            ):
-                return
-            res = subprocess.run(
-                cmd,
-                env=env,
-                pass_fds=(descriptor,),
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
+        store_directory(store_dir)
+        if mode == EvaluationMode.REUSE and (Path(store_dir) / STORE_FILE).exists():
+            return
+        res = subprocess.run(
+            cmd,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
         if res.returncode != 0:
             raise DriverError(
                 f"benchmark store preparation failed: exit status: {res.returncode}"
@@ -190,16 +188,15 @@ def embedding_status(binary: Path | str, store_dir: Path) -> dict[str, Any]:
     cmd, env = store_command(binary, store_dir)
     cmd.extend(["embedding", "show", "--json"])
     try:
-        with store_directory(store_dir, env) as descriptor:
-            res = subprocess.run(
-                cmd,
-                env=env,
-                pass_fds=(descriptor,),
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
+        store_directory(store_dir)
+        res = subprocess.run(
+            cmd,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
         if res.returncode != 0:
             raise DriverError(f"semantic status failed: exit status: {res.returncode}")
         return json.loads(res.stdout)  # type: ignore[no-any-return]
@@ -339,8 +336,8 @@ class Driver:
         xdg_dir = Path(run_dir) / "xdg"
         xdg_dir.mkdir(parents=True, exist_ok=True)
         env["XDG_STATE_HOME"] = str(xdg_dir)
-        with store_directory(store_dir, env) as descriptor:
-            return cls.spawn_command(cmd, env, RESPONSE_TIMEOUT, pass_fds=(descriptor,))
+        store_directory(store_dir)
+        return cls.spawn_command(cmd, env, RESPONSE_TIMEOUT)
 
     @classmethod
     def spawn_command(
@@ -348,15 +345,12 @@ class Driver:
         cmd: list[str],
         env: dict[str, str] | None = None,
         response_timeout: float = RESPONSE_TIMEOUT,
-        *,
-        pass_fds: tuple[int, ...] = (),
     ) -> Driver:
         """Spawn child command with piped stdin/stdout and inherited stderr."""
         try:
             child = subprocess.Popen(
                 cmd,
                 env=env,
-                pass_fds=pass_fds,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=sys.stderr,

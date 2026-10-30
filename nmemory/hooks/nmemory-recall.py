@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -B
 """UserPromptSubmit: the capsules nMEMORY recall finds for the owner's prompt, as headlines.
 
 Measured 2026-10-16: without this hook, 0 of 45 rules that were not pinned reached the

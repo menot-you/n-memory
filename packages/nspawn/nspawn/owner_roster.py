@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import errno
 import fcntl
+import io
 import json
 import os
 import re
@@ -25,14 +27,24 @@ import stat
 import sys
 import time
 import tomllib
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from secrets import token_hex
-from typing import Any, Final, Literal
+from typing import Any, Final, Literal, assert_never
 
 from . import claude_catalog, config
-from .errors import NERR_1104, NERR_1105, NERR_1124, NSpawnError
+from .errors import (
+    NERR_1103,
+    NERR_1104,
+    NERR_1105,
+    NERR_1124,
+    ErrorEntry,
+    NSpawnError,
+    nerr_of,
+)
+from .rows import MAX_ACCOUNT_ALIAS_BYTES, is_account_alias
+from .vendor_home import AUTH_MAX_BYTES
 
 KINDS = ("claude", "codex", "agy")
 
@@ -124,20 +136,15 @@ def model_env_build(
 
 
 #: What nSPAWN has IMPLEMENTED for each kind, never what a roster claims: `custody`
-#: is a native launch under process custody and its sandbox, `write` a native write
-#: run, `resume` a recorded session continued, `review` a read-only review. A
-#: capability enters here with the code and proof that serve it. `write` is a caged
-#: native writer in its own slice (codex: its sandbox profile; claude: the client's
-#: Bash sandbox, `claude_restricted`), so it carries its own custody; `custody`
-#: names a caged READ-ONLY run. `review` without
-#: `custody` is read-only by POLICY only (the child is told, not caged): never read
-#: it as a sandbox promise. A claude route that reaches its model through another
-#: endpoint cannot be caged, and `provider_report` lists it without `custody` or
-#: `write`.
+#: is a native launch under process custody (a run slice of its own), `write` a
+#: native write run, `resume` a recorded session continued, `review` a read-only
+#: review. A capability enters here with the code and proof that serve it. A
+#: read-only Claude run takes the tools of its agent file and no other tool; the
+#: route's endpoint does not change that.
 CAPABILITIES: dict[str, tuple[str, ...]] = {
     "claude": ("custody", "resume", "review", "write"),
     "codex": ("custody", "resume", "review", "write"),
-    "agy": ("resume", "review"),
+    "agy": ("custody", "resume", "review", "write"),
 }
 
 #: The workflow roles `[roles]` may bind to a declared provider.
@@ -145,9 +152,8 @@ ROLES = ("writer", "reviewer")
 
 #: The roles `[role_profile]` may give a model and effort, each checked against
 #: the class its runs take: the writer works as `judgment`, the reviewer as
-#: `review`. Parsing a writer profile does not deliver it: a workflow writer
-#: still carries the provider line's model and effort until the harness
-#: forwards the profile.
+#: `review`. nSPAWN applies a profile on the route of its role, below an agent's model
+#: or effort that the route serves (`picker.pick_execution`).
 PROFILED_ROLES = ("writer", "reviewer")
 
 #: The class whose ceiling bounds each profiled role's effort.
@@ -331,6 +337,285 @@ def claude_config_dir(
     return Path(directory)
 
 
+class TokenFileRefused(Exception):
+    """A Claude token file that the fence refuses. The message names the file
+    (``<alias>.token``, never a host path) and the fix."""
+
+    def __init__(self, message: str) -> None:
+        self.message = message
+        super().__init__(message)
+
+
+def _token_problem(info: os.stat_result, *, mode: bool = True) -> str | None:
+    """Why a token file with this `lstat`/`fstat` is outside the fence, with the
+    fix, or None. The fence: your regular file, one link, 1 to `AUTH_MAX_BYTES`
+    bytes, and, with ``mode``, no group or other bits (owner-only)."""
+    if not stat.S_ISREG(info.st_mode):
+        return "is not a regular file: put the token file itself there"
+    if info.st_uid != os.getuid():
+        return "is not yours: give it to the user that runs nSPAWN"
+    if info.st_nlink != 1:
+        return "has more than one link: copy it to a file of its own"
+    if not 0 < info.st_size <= AUTH_MAX_BYTES:
+        return f"must hold 1 to {AUTH_MAX_BYTES} bytes: put the account's token in it"
+    if mode and stat.S_IMODE(info.st_mode) & 0o077:
+        return (
+            f"is open to other users (mode {stat.S_IMODE(info.st_mode):04o}): run "
+            "chmod 600 on it"
+        )
+    return None
+
+
+def _unreadable(error: OSError) -> str:
+    """Why the token file itself cannot be opened or read, with the fix, after
+    its name."""
+    if error.errno in (errno.EACCES, errno.EPERM):
+        return (
+            f"cannot be read ({_errno_name(error)}): make it yours, then run "
+            "chmod 600 on it"
+        )
+    return (
+        f"cannot be read ({_errno_name(error)}): check the file system that holds "
+        "it, then try again"
+    )
+
+
+def _unsearchable(error: OSError) -> str:
+    """Why the directory of a link's target cannot be read or searched, with the
+    fix, after the link's name."""
+    return (
+        f"links into a directory that you cannot read and search "
+        f"({_errno_name(error)}): run chmod u+rx on the directory of the link's "
+        "target"
+    )
+
+
+def _unreachable(error: OSError) -> str:
+    """Why `lstat` or `readlink` of a token file failed, with the fix, after its
+    name. EACCES or EPERM there comes from a directory on the path, never from
+    the file's own mode."""
+    if error.errno in (errno.EACCES, errno.EPERM):
+        return (
+            f"cannot be reached ({_errno_name(error)}): run chmod 700 on its "
+            "secrets directory"
+        )
+    return (
+        f"cannot be read ({_errno_name(error)}): check the file system that holds "
+        "it, then try again"
+    )
+
+
+class _LinkRefused(Exception):
+    """Why a token link is refused, with the fix, as the text after its name.
+    `read_token_file` turns it into `TokenFileRefused`; `_linked_state` into a
+    note."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
+def _link_target(path: Path, link: os.stat_result) -> tuple[int, str]:
+    """A descriptor of the directory of the token link's target, and the target's
+    name in it. The caller releases the descriptor.
+
+    The link is yours, in a directory of yours alone (0700), and its target is
+    an absolute path. The target's directory is opened once (O_DIRECTORY,
+    following links in its path) and checked by `fstat`: yours, not writable by
+    group or other, and readable and searchable by you (u+rx), which the next
+    calls need. The caller opens the target file relative to that descriptor
+    with O_NOFOLLOW, so the file itself is never followed through a link.
+
+    Raises:
+        _LinkRefused: naming the fix.
+    """
+    if link.st_uid != os.getuid() or not _owner_only_directory(path.parent):
+        raise _LinkRefused(
+            "is a link that is not yours, or not in a directory of yours alone "
+            "(0700): put the token file itself there"
+        )
+    try:
+        target = Path(os.readlink(path))
+    except OSError as error:
+        raise _LinkRefused(_unreachable(error)) from error
+    if not target.is_absolute():
+        raise _LinkRefused(
+            "is a link to a relative path: point it to the absolute path of the "
+            "key file"
+        )
+    try:
+        directory = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    except FileNotFoundError as error:
+        raise _LinkRefused(
+            f"links into a directory that is not there ({_errno_name(error)}): "
+            "point it to the key file itself"
+        ) from error
+    except OSError as error:
+        if error.errno in (errno.EACCES, errno.EPERM):
+            raise _LinkRefused(_unsearchable(error)) from error
+        raise _LinkRefused(
+            f"links into a path that nSPAWN cannot open as a directory "
+            f"({_errno_name(error)}): check the link's target path"
+        ) from error
+    try:
+        home = os.fstat(directory)
+    except OSError as error:
+        _release(directory)
+        raise _LinkRefused(
+            f"links into a directory that nSPAWN cannot check ({_errno_name(error)}): "
+            "check the link's target path"
+        ) from error
+    mode = stat.S_IMODE(home.st_mode)
+    if home.st_uid != os.getuid() or mode & 0o022:
+        _release(directory)
+        raise _LinkRefused(
+            "links to a file in a directory that is not yours or that others can "
+            "write: make it yours and run chmod go-w on that directory"
+        )
+    if mode & 0o500 != 0o500:
+        _release(directory)
+        raise _LinkRefused(
+            "links into a directory that you cannot read and search: run chmod u+rx "
+            "on the directory of the link's target"
+        )
+    return directory, target.name
+
+
+def _open_token(path: Path) -> tuple[int, bool]:
+    """A descriptor of the token file at ``path`` and whether a link led to it.
+
+    The file itself is opened with O_NOFOLLOW. A link is followed one hop by
+    `_link_target`, and its target is opened relative to the checked directory
+    with O_NOFOLLOW, so a second link is refused.
+
+    Raises:
+        TokenFileRefused: naming the file and the fix.
+    """
+    name = path.name
+    try:
+        entry = os.lstat(path)
+    except FileNotFoundError as error:
+        raise TokenFileRefused(
+            f"{name} is not there: put the account's token in it"
+        ) from error
+    except OSError as error:
+        raise TokenFileRefused(f"{name} {_unreachable(error)}") from error
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+    if not stat.S_ISLNK(entry.st_mode):
+        try:
+            return os.open(path, flags), False
+        except OSError as error:
+            if error.errno == errno.ELOOP:
+                raise TokenFileRefused(
+                    f"{name} became a link while nSPAWN read it: put the token "
+                    "file itself there"
+                ) from error
+            if error.errno == errno.ENOENT:
+                raise TokenFileRefused(
+                    f"{name} is not there: put the account's token in it"
+                ) from error
+            raise TokenFileRefused(f"{name} {_unreadable(error)}") from error
+    try:
+        directory, leaf = _link_target(path, entry)
+    except _LinkRefused as refused:
+        raise TokenFileRefused(f"{name} {refused.reason}") from refused
+    try:
+        return os.open(leaf, flags, dir_fd=directory), True
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            raise TokenFileRefused(
+                f"{name} links to another link: point it to the key file itself"
+            ) from error
+        if error.errno == errno.ENOENT:
+            raise TokenFileRefused(
+                f"{name} links to a file that is not there: put the account's "
+                "token in it"
+            ) from error
+        raise TokenFileRefused(
+            f"{name} links to a file that {_unreadable(error)}"
+        ) from error
+    finally:
+        _release(directory)
+
+
+def read_token_file(path: Path) -> bytes:
+    """The bytes of the Claude token file at ``path``, read through the fence that
+    both readers of one share: the child's credential and the route's token. The
+    secrets directory listing applies the same rules without reading the file
+    (`_token_aliases`, `_tighten`).
+
+    `_open_token` opens the file, or a link's target one hop away. The opened
+    file must be your regular file, one link, 1 to `AUTH_MAX_BYTES` bytes, and
+    owner-only (mode & 0o077 == 0), by `fstat` on the descriptor. A refusal names
+    only ``<alias>.token``, never a host path, and it names the fix. Nothing
+    here changes a mode.
+
+    Raises:
+        TokenFileRefused: naming the file and the fix.
+    """
+    name = path.name
+    descriptor, linked = _open_token(path)
+    try:
+        try:
+            problem = _token_problem(os.fstat(descriptor))
+            if problem is not None:
+                raise TokenFileRefused(
+                    f"{name} links to a file that {problem}"
+                    if linked
+                    else f"{name} {problem}"
+                )
+            data = os.read(descriptor, AUTH_MAX_BYTES + 1)
+        except OSError as error:
+            raise TokenFileRefused(f"{name} {_unreadable(error)}") from error
+    finally:
+        _release(descriptor)
+    if not 0 < len(data) <= AUTH_MAX_BYTES:
+        raise TokenFileRefused(
+            f"{name} must hold 1 to {AUTH_MAX_BYTES} bytes: put the account's "
+            "token in it"
+        )
+    return data
+
+
+def _owner_only_directory(directory: Path) -> bool:
+    """Whether ``directory`` is a directory of yours alone (0700), not a link."""
+    try:
+        found = os.lstat(directory)
+    except OSError:
+        return False
+    return (
+        stat.S_ISDIR(found.st_mode)
+        and stat.S_IMODE(found.st_mode) == 0o700
+        and found.st_uid == os.getuid()
+    )
+
+
+def _errno_name(error: OSError) -> str:
+    """The symbolic name of ``error``'s errno, such as EPERM."""
+    return errno.errorcode.get(error.errno or 0, f"errno {error.errno}")
+
+
+def _token_aliases(directory: Path | None) -> list[str]:
+    """The sorted aliases of the token files that a provider with no accounts
+    table has: as `_safe_token_files` reads them, in a directory of yours alone
+    (0700), with a name in the run-row grammar, and each in the fence with an
+    owner-only mode (`_tighten` without the change). An empty list when the
+    directory cannot be read."""
+    if directory is None or not _owner_only_directory(directory):
+        return []
+    try:
+        with os.scandir(directory) as entries:
+            names = sorted(e.name for e in entries if Path(e.name).suffix == ".token")
+    except OSError:
+        return []
+    return [
+        Path(name).stem
+        for name in names
+        if is_account_alias(Path(name).stem)
+        and _tighten(directory / name, change=False)[0] == "ok"
+    ]
+
+
 @dataclass
 class Provider:
     """One provider the owner declared. Every field except the name is optional."""
@@ -365,10 +650,15 @@ class Provider:
     design: int | None = None
     accounts: dict[str, NativeAccount] = field(default_factory=dict)
     excluded_accounts: list[str] = field(default_factory=list)
-    #: The roster spells `accounts`, even empty: an explicit list, never a
-    #: secrets directory's discovery, says which accounts there are and in
-    #: which order.
+    #: The roster spells `accounts`, even empty: its tables say which accounts
+    #: there are, with their settings and order. A token provider's files it
+    #: does not declare join them (`_follow_token_files`).
     declared: bool = False
+    #: The accounts that are a token file only, in `accounts` after the
+    #: declared ones. The account writers declare one only when it moves.
+    followed: list[str] = field(default_factory=list)
+    #: What the owner fixes: each token file the read skipped, and why.
+    notes: list[str] = field(default_factory=list)
     #: The vendor's own error codes that mean the provider's balance or
     #: package is spent, as the CLI renders them in `[<code>]`. Declared, never
     #: guessed: a 429 carrying one of them walls the provider for the hour.
@@ -391,6 +681,11 @@ class Provider:
             and not any(a.base_url for a in self.accounts.values())
         )
 
+    def follows_token_files(self) -> bool:
+        """Whether the accounts are the `<alias>.token` files of the secrets
+        directory: a token provider with no endpoint account."""
+        return self.kind not in DIRECT_KINDS and self.adds_by_login()
+
     def secrets_dir(self) -> Path | None:
         if self.secrets is None:
             return None
@@ -404,19 +699,7 @@ class Provider:
         """
         if self.accounts or self.declared:
             return sorted(self.accounts)
-        directory = self.secrets_dir()
-        if directory is None:
-            return []
-        try:
-            entries = list(os.scandir(directory))
-        except OSError:
-            return []
-        accounts = [
-            Path(entry.name).stem
-            for entry in entries
-            if entry.is_file() and Path(entry.name).suffix == ".token"
-        ]
-        return sorted(accounts)
+        return _token_aliases(self.secrets_dir())
 
     def serves(self, model: str, *, declared: Sequence[str] | None = None) -> bool:
         """Check the declared model list. An absent list permits any model.
@@ -456,8 +739,8 @@ class Provider:
         """The accounts in the order the picker breaks ties on; the first is the default.
 
         DECLARED order when the roster declares accounts, because that is the order
-        the owner wrote; a secrets directory's names sorted, since a filename has no
-        order of its own.
+        the owner wrote, then the token files it does not declare; a secrets
+        directory's names sorted, since a filename has no order of its own.
         """
         if self.accounts or self.declared:
             return list(self.accounts)
@@ -521,7 +804,13 @@ class Provider:
             accounts = self.discovered_accounts()
             if accounts:
                 return directory / f"{accounts[0]}.token"
-            raise ValueError(f"no .token files found in secrets directory {directory}")
+            # Unusable is not absent: `_token_aliases` takes only an owner-only
+            # file in a directory of yours alone.
+            raise ValueError(
+                f"no usable .token file in secrets directory {directory}: put the "
+                "account's token in <alias>.token there, then run chmod 600 on it "
+                "and chmod 700 on the directory"
+            )
         explicit = (
             self.oauth_token_file
             if self.oauth_token_file is not None
@@ -662,20 +951,35 @@ class Roster:
         An ABSENT file is an empty roster, never an error: a host that
         declared nothing keeps the behaviour it had before this module.
 
+        This read serves a file that its caller names: an account edit and the
+        check of a staged edit. It reads the path one time, and the parse and
+        the `[store]` check use those bytes. It opens the path in blocking mode.
+        The runtime readers of nSPAWN use `read_roster`, which does not wait on
+        a path that is not a regular file.
+
         Raises:
             RosterError: when the file exists but cannot be read, does not
                 parse, repeats a name, or marks two defaults of one kind.
+            ConfigError: when the `[store]` table of the file is wrong.
         """
         try:
-            text = path.read_text(encoding="utf-8")
+            raw = path.read_bytes()
         except FileNotFoundError:
             return Roster()
         except OSError as source:
             raise RosterError.unreadable(path, source) from source
+        return Roster._parse(path, raw)
+
+    @staticmethod
+    def _parse(path: Path, raw: bytes) -> Roster:
+        """The roster in the bytes already read from `path`; `path` is not read again."""
+        try:
+            # The text mode of `Path.read_text`: UTF-8 and universal newlines.
+            text = io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8").read()
         except UnicodeDecodeError as error:
             raise RosterError.malformed(path, "the file is not UTF-8") from error
         roster = _parse_roster(path, text)
-        config._store_table_strict(path)
+        config._store_table_of(path, raw)
         roster._validate(path)
         roster.path = path
         return roster
@@ -686,7 +990,25 @@ class Roster:
 
         cwd never selects a file. An absent config permits the legacy env path.
         """
-        declared = config.resolve_roster_path()
+        source = Roster._source(cwd)
+        return None if source is None else source[0]
+
+    @staticmethod
+    def _source(cwd: Path | None = None) -> tuple[Path, bytes | None] | None:
+        """The source that the file-wins rule selects, or None when nothing declares one.
+
+        `cwd` never selects a file, as in `default_path`.
+
+        The single config file wins: it gives its path and the bytes of its one
+        read (`config.read_store_config`). Only an absent config permits
+        `NOTT_NSPAWN_ROSTER`, which gives its path and no bytes.
+
+        Raises:
+            ConfigError: the config path is not a readable regular file, or its
+                `[store]` table is wrong.
+            NSpawnError: NERR_1104, `NOTT_NSPAWN_ROSTER` holds a template.
+        """
+        declared = config.read_store_config()
         if declared is not None:
             return declared
         named = (os.environ.get("NOTT_NSPAWN_ROSTER") or "").strip()
@@ -701,7 +1023,7 @@ class Roster:
                 f"single file at {config.store_config_path()}, "
                 "which does not depend on the launcher's environment.",
             )
-        return Path(named) if named else None
+        return (Path(named), None) if named else None
 
     def _validate(self, path: Path) -> None:
         """Both invariants a selector depends on, checked at read time."""
@@ -908,6 +1230,93 @@ class Roster:
             )
 
 
+class RosterAbsent(NSpawnError):
+    """NERR_1104: no roster source is declared, or nothing exists at the named path.
+
+    A path that exists and is not a readable regular file (a directory, a FIFO,
+    a socket, a device, a permission refusal) is not this class. At the single
+    config file it is a `ConfigError`. At `NOTT_NSPAWN_ROSTER` it is a
+    `RosterError`. The callers of `read_roster` catch these classes:
+
+    - The supervisor catches none of them. Each one is its refusal.
+    - The journal writer (`journal/serve.py`, `main`) catches only this class
+      and runs without a roster. Each other refusal of `read_roster` pauses
+      the writer (`Daemon._roster`).
+    - System1 (`system1.roster_do_host`) catches this class, `RosterError` and
+      `OSError`, and serves with no roster for each. A `ConfigError` and the
+      template refusal (an `NSpawnError` with NERR_1104) propagate.
+    - The node (`route.node_roster`) and the AGY shim (`agy_acp.roster_provider`)
+      catch each `NSpawnError`. They give a refusal that names no host path,
+      and they keep the full refusal as its cause.
+    """
+
+
+def read_roster(cwd: str | None = None) -> Roster:
+    """The one reader of the provider roster: source selection, then one parse.
+
+    The single config file wins, and `NOTT_NSPAWN_ROSTER` is compatibility only
+    (owner ruling 2026-08-29). `cwd` never selects a file: the supervisor's call
+    sites keep it only for their signature. A missing source is the typed refusal
+    `RosterAbsent` (NERR_1104), which names the source that won. A refusal of this
+    reader names a host path, so a caller that shows it to a node or the app
+    translates it (`route.node_roster`).
+
+    The read opens the selected source file one time, through
+    `config.read_regular_file`. Source selection, the parse and the `[store]`
+    check use the bytes of that read, and nothing reads the path again by name.
+
+    Raises:
+        RosterAbsent: nothing declares a source, or nothing exists at
+            `NOTT_NSPAWN_ROSTER`.
+        ConfigError: the single config file is not a readable regular file,
+            or its `[store]` table is wrong.
+        RosterError: `NOTT_NSPAWN_ROSTER` is not a readable regular file, or
+            the selected roster does not parse or fails its checks.
+        NSpawnError: NERR_1104, `NOTT_NSPAWN_ROSTER` holds a template.
+    """
+    source = Roster._source(Path(cwd) if cwd is not None else None)
+    if source is None:
+        raise RosterAbsent(
+            NERR_1104,
+            "cannot resolve the provider roster: single config file "
+            f"{config.store_config_path()} is absent and NOTT_NSPAWN_ROSTER is unset",
+        )
+    path, raw = source
+    if raw is None:
+        # A named roster that is absent is a refusal: the operator named a
+        # file, and silence would serve a roster that the operator did not
+        # choose. Only a roster that exists and declares no provider is an
+        # empty page. Only `FileNotFoundError` is absence. A path that exists
+        # and is not a readable regular file is a `RosterError`, so a reader
+        # that serves without a roster still stops on it.
+        try:
+            raw = config.read_regular_file(path)
+        except FileNotFoundError as error:
+            raise RosterAbsent(
+                NERR_1104,
+                f"cannot resolve the provider roster: NOTT_NSPAWN_ROSTER points at "
+                f"{path} which does not exist",
+            ) from error
+        except OSError as error:
+            raise RosterError.unreadable(path, error) from error
+    return Roster._parse(path, raw)
+
+
+def roster_refusal(error: NSpawnError) -> tuple[str, ErrorEntry]:
+    """The words and entry that show a refusal of `read_roster` with no host path.
+
+    A route verb, a node, the app and the AGY shim show these words. The caller
+    keeps the full refusal as the cause.
+    """
+    # `RosterError` and `ConfigError` are `NSpawnError`s that carry no entry.
+    if nerr_of(error) == NERR_1104.code:
+        return (
+            "the provider roster is not declared or its file does not exist",
+            NERR_1104,
+        )
+    return "the provider roster could not be read", NERR_1103
+
+
 @dataclass
 class Resolved:
     """Everything one spawn needs from the roster, resolved once."""
@@ -918,6 +1327,299 @@ class Resolved:
     #: ``Some`` only when the provider declares environment; ``None`` keeps
     #: the caller on the plain minted-home path.
     env: dict[str, str] | None = None
+
+
+def _follow_token_files(providers: list[Provider]) -> None:
+    """Add each token file that a token provider's roster entry does not declare
+    to its accounts: the owner adds an account by its file, with no roster edit
+    (owner, 2026-10-21).
+
+    The file joins after the declared accounts, in name order, with the table
+    `register_account` writes, and leaves with its file. A declared account keeps
+    its table and its place, with or without its file. A file that cannot be an
+    account is skipped with a note (`account_notes`), and never stops the roster:
+    a name that is a provider's (a selector takes the provider), a name that
+    another provider has (a bare alias names one account), and each file
+    `_safe_token_files` refuses.
+    """
+    names = {provider.name for provider in providers}
+    found: dict[str, list[str]] = {}
+    for provider in providers:
+        if provider.follows_token_files():
+            aliases, provider.notes = _safe_token_files(
+                provider, declared=provider.accounts
+            )
+            if provider.declared:
+                found[provider.name] = aliases
+    taken = {
+        provider.name: {
+            *provider.accounts,
+            *found.get(provider.name, ()),
+            *(() if provider.declared else provider.discovered_accounts()),
+        }
+        for provider in providers
+    }
+    for provider in providers:
+        if not found.get(provider.name):
+            continue
+        variable = token_variable(provider)
+        for alias in found[provider.name]:
+            others = sorted(
+                other for other in names - {provider.name} if alias in taken[other]
+            )
+            if alias in names:
+                provider.notes.append(
+                    f"{alias}.token is not an account: {alias} is a provider"
+                )
+            elif others:
+                provider.notes.append(
+                    f"{alias}.token is not an account: {' and '.join(others)} "
+                    f"also has an account {alias}"
+                )
+            else:
+                provider.accounts[alias] = NativeAccount(home=None, auth_env=variable)
+                provider.followed.append(alias)
+
+
+def _safe_token_files(
+    provider: Provider, declared: Collection[str] = ()
+) -> tuple[list[str], list[str]]:
+    """The sorted aliases of the token files that ``provider`` may follow, and
+    the notes of this read. A declared account's own file (in ``declared``) is
+    never followed, and it is noted only when its mode changes or must change.
+
+    The fence keeps out a file that another user put there: the secrets directory
+    is yours alone (0700) and not a link, and each file passes `_token_problem`
+    but for its mode. The readers take only an owner-only file (`read_token_file`),
+    so a file with group or other bits, as a file made by hand under umask 022
+    has, loses them (`_tighten`) and the note says so. A file that keeps them
+    does not join; its note names the errno, and says to run chmod 600 on it only
+    when that can help. A name outside the run-row grammar is no account that
+    admission takes, and its note does not repeat it: such a name may be a
+    pasted token, or not UTF-8. A directory that is not there, or holds no file
+    to follow, gives no note.
+    """
+    directory = provider.secrets_dir()
+    if directory is None:
+        return [], []
+    closed = (
+        f"nSPAWN follows no token file of {provider.name}: its secrets directory "
+        "must be yours alone (0700)"
+    )
+    try:
+        with os.scandir(directory) as entries:
+            names = sorted(e.name for e in entries if Path(e.name).suffix == ".token")
+        found = os.lstat(directory)
+    except FileNotFoundError:
+        return [], []
+    except OSError:
+        return [], [closed]
+    if (
+        not stat.S_ISDIR(found.st_mode)
+        or stat.S_IMODE(found.st_mode) != 0o700
+        or found.st_uid != os.getuid()
+    ):
+        followable = any(Path(name).stem not in declared for name in names)
+        return [], [closed] if followable else []
+    aliases: list[str] = []
+    notes: list[str] = []
+    for name in names:
+        alias = Path(name).stem
+        own = alias in declared
+        if not is_account_alias(alias):
+            if not own:
+                notes.append(
+                    f"a token file of {provider.name} has a name that is not an "
+                    "account name (lowercase letters and digits, joined by - or _, "
+                    f"at most {MAX_ACCOUNT_ALIAS_BYTES} bytes), and nSPAWN skips it"
+                )
+            continue
+        state, detail = _tighten(directory / name)
+        note = _token_note(name, state, detail, own=own)
+        if note is not None:
+            notes.append(note)
+        if not own and state in ("ok", "tightened"):
+            aliases.append(alias)
+    return aliases, notes
+
+
+#: The errno names for which `chmod 600` by the owner can help where nSPAWN failed.
+_CHMOD_HELPS: Final = frozenset(
+    errno.errorcode[number] for number in (errno.EPERM, errno.EACCES, errno.EROFS)
+)
+
+#: How a tightened note starts. It goes first among a run's notes, and the tail
+#: that points to `nspawn provider list` never counts it: that list shows it once.
+TIGHTENED: Final = "tightened "
+
+#: The state of one token file (`_tighten`), with the detail each one carries:
+#: "ok" (owner-only already); "tightened" (the new mode); "open" (its mode, when
+#: nothing may change); "failed" (the errno name); "kept" (the mode read back,
+#: unchanged, as on vfat); "open-target" (the mode of a link's target, which
+#: nothing changes); "unsafe" (the fence's reason and fix); "gone"; "link" (it
+#: became a link); "changed" (the descriptor is not the file `lstat` saw);
+#: "unreadable" (the errno name).
+TokenState = Literal[
+    "ok",
+    "tightened",
+    "open",
+    "failed",
+    "kept",
+    "open-target",
+    "unsafe",
+    "gone",
+    "link",
+    "changed",
+    "unreadable",
+]
+
+
+def _token_note(name: str, state: TokenState, detail: str, *, own: bool) -> str | None:
+    """The owner's note for the token file ``name`` in ``state`` (`_tighten`), or
+    None, with its fix. A declared account's own file (``own``) is noted only
+    for its mode."""
+    lead = f"{name}: " if own else f"{name} is not an account: "
+    match state:
+        case "ok":
+            return None
+        case "tightened":
+            return f"{TIGHTENED}{name} to {detail}"
+        case "open":
+            return f"{lead}it is open to other users (mode {detail}), so run chmod 600 on it"
+        case "failed":
+            fix = (
+                "so run chmod 600 on it"
+                if detail in _CHMOD_HELPS
+                else "so check the file system that holds it"
+            )
+            return f"{lead}nSPAWN could not clear its group and other bits ({detail}), {fix}"
+        case "kept":
+            return (
+                f"{lead}its file system kept the mode {detail} after nSPAWN cleared "
+                "the group and other bits, so keep the key on a file system with modes"
+            )
+        case "open-target":
+            return (
+                f"{lead}it links to a file open to other users (mode {detail}), so "
+                "run chmod 600 on that file"
+            )
+        case "unsafe" | "gone" | "link" | "changed" | "unreadable" if own:
+            return None
+        case "unsafe":
+            return f"{lead}it {detail}"
+        case "gone":
+            return f"{lead}it went away while nSPAWN read it; put it back to use it"
+        case "link":
+            return f"{lead}it became a link while nSPAWN read it; read the roster again"
+        case "changed":
+            return f"{lead}it changed while nSPAWN read it; read the roster again"
+        case "unreadable" if detail in ("EACCES", "EPERM"):
+            # From a directory on the path, never from the file's own mode.
+            return (
+                f"{lead}nSPAWN cannot reach it ({detail}), so run chmod 700 on the "
+                "directory that holds it"
+            )
+        case "unreadable":
+            return (
+                f"{lead}nSPAWN cannot read it ({detail}), so check the file system "
+                "that holds it"
+            )
+        case _:
+            assert_never(state)
+
+
+def _tighten(path: Path, *, change: bool = True) -> tuple[TokenState, str]:
+    """The state of the token file at ``path`` (`TokenState`) and its detail.
+
+    A regular file in the fence (`_token_problem` but for the mode) with group or
+    other bits loses them through a descriptor that follows no link and is the
+    file that `lstat` saw (0644 becomes 0600, 0444 becomes 0400), and the mode is
+    read back; with ``change`` False it is "open". A link is never followed to a
+    change (`_linked_state`).
+    """
+    try:
+        seen = os.lstat(path)
+    except FileNotFoundError:
+        return "gone", ""
+    except OSError as error:
+        return "unreadable", _errno_name(error)
+    if stat.S_ISLNK(seen.st_mode):
+        return _linked_state(path, seen)
+    problem = _token_problem(seen, mode=False)
+    if problem is not None:
+        return "unsafe", problem
+    mode = stat.S_IMODE(seen.st_mode)
+    if not mode & 0o077:
+        return "ok", ""
+    if not change:
+        return "open", f"{mode:04o}"
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        if error.errno == errno.ENOENT:
+            return "gone", ""
+        if error.errno == errno.ELOOP:
+            return "link", ""
+        return "failed", _errno_name(error)
+    try:
+        held = os.fstat(descriptor)
+        if (held.st_dev, held.st_ino) != (seen.st_dev, seen.st_ino):
+            return "changed", ""
+        os.fchmod(descriptor, stat.S_IMODE(held.st_mode) & 0o700)
+        after = stat.S_IMODE(os.fstat(descriptor).st_mode)
+    except OSError as error:
+        return "failed", _errno_name(error)
+    finally:
+        _release(descriptor)
+    if after & 0o077:
+        return "kept", f"{after:04o}"
+    return "tightened", f"{after:04o}"
+
+
+def _linked_state(path: Path, link: os.stat_result) -> tuple[TokenState, str]:
+    """`_tighten` for a link: one hop by `_link_target`, the target read by `lstat`
+    relative to its checked directory (a second link is "unsafe"), and never a
+    change to the target, which may be outside the fenced directory."""
+    try:
+        directory, leaf = _link_target(path, link)
+    except _LinkRefused as refused:
+        return "unsafe", refused.reason
+    try:
+        found = os.stat(leaf, dir_fd=directory, follow_symlinks=False)
+    except FileNotFoundError:
+        return "unsafe", "links to a file that is not there: put the token in it"
+    except OSError as error:
+        if error.errno in (errno.EACCES, errno.EPERM):
+            return "unsafe", _unsearchable(error)
+        return "unsafe", (
+            f"links to a file that nSPAWN cannot check ({_errno_name(error)}): "
+            "check the link's target path"
+        )
+    finally:
+        _release(directory)
+    if stat.S_ISLNK(found.st_mode):
+        return "unsafe", "links to another link: point it to the key file itself"
+    problem = _token_problem(found, mode=False)
+    if problem is not None:
+        return "unsafe", f"links to a file that {problem}"
+    if stat.S_IMODE(found.st_mode) & 0o077:
+        return "open-target", f"{stat.S_IMODE(found.st_mode):04o}"
+    return "ok", ""
+
+
+def account_notes(provider: Provider) -> list[str]:
+    """What the owner fixes about ``provider``'s accounts: each token file the read
+    skipped, and the `excluded_accounts` names that are no account. Such a name
+    excludes nothing; it refused every dispatch to the provider until 2026-10-21."""
+    unknown = sorted(set(provider.excluded_accounts) - set(provider.ordered_accounts()))
+    if not unknown:
+        return list(provider.notes)
+    unknown_note = (
+        f"excluded_accounts of {provider.name} names {', '.join(unknown)}, which "
+        "is not an account, so it excludes nothing"
+    )
+    return [*provider.notes, unknown_note]
 
 
 def _parse_roster(path: Path, text: str) -> Roster:
@@ -972,6 +1674,8 @@ def _parse_roster(path: Path, text: str) -> Roster:
                 f"a direct executable is declared, never guessed; declare "
                 f"[bins].{provider.kind}",
             )
+    # Before `[preference]` is read, which may name a followed account.
+    _follow_token_files(providers)
     # The table's name before System1 replaced the external Jev service. Unknown tables
     # are ignored here, so a roster that still carries it would lose its endpoint in
     # silence; it is refused by that name instead.
@@ -1037,24 +1741,13 @@ def _parse_roster(path: Path, text: str) -> Roster:
             raise RosterError.malformed(
                 path, f"classes.{class_name}: {error}"
             ) from error
-    # A roster that governs classes at all must declare the fail-closed one: it
-    # is what a DECLARED class falls back to when the System1 cannot observe it.
-    # Absent, an outage would ESCALATE.
-    #
-    # It does NOT say the same on both axes, and the message must not pretend
-    # it does. A dispatch with no class at all — `nspawn_batch_start`, `nspawn_route_ping`,
-    # the credential repick — takes this policy for EFFORT (`_class_effort`
-    # reads `execution_class or UNCLASSIFIED`) and takes NO strength cap
-    # (`_class_strength_policy` returns `None` for a classless dispatch, by the
-    # decision that those three are probes across every provider). An owner who
-    # read "every unobserved dispatch" here would write `unclassified.max_
-    # strength` believing it caps the batch, and it does not.
+    # Classless dispatches use unclassified for effort, but not for strength.
+    # A classifier failure keeps the declared class and its policy.
     if classes and UNCLASSIFIED not in classes:
         raise RosterError.malformed(
             path,
             f"classes declares {', '.join(sorted(classes))} but not "
-            f"{UNCLASSIFIED}, the class a declared one falls back to when the "
-            "System1 cannot observe it",
+            f"{UNCLASSIFIED}, the classless effort policy",
         )
     if classes:
         classes.setdefault("implementation", _implementation_fallback(classes))
@@ -1138,13 +1831,12 @@ def _preferences(
 
 
 def _implementation_fallback(classes: dict[str, ClassPolicy]) -> ClassPolicy:
-    """The policy `implementation` takes from a table written before it existed.
+    """The policy `implementation` takes from an older table.
 
-    Left out, the class would be governed by nothing: no ceiling on a pinned
-    effort, no strength cap, and no cost the System1 or the `unclassified` fall
-    can be compared against. So it takes `review`, else `judgment` — settled
-    work needs no more than either — else the most restrictive strength-ranked
-    class declared, else the fail-closed `unclassified` every governed table has.
+    Inherit `review`, then `judgment`, then the most restrictive declared
+    strength-ranked policy, else `unclassified`.
+    The inherited policy supplies effort and strength limits for class comparisons.
+    A failed System1 observation keeps `implementation` and this inherited policy.
     """
     for name in ("review", "judgment"):
         if name in classes:
@@ -1714,14 +2406,17 @@ def write_accounts(
     comments and any key this loader does not read. Accounts discovered in the
     secrets directory become such tables, reading the same `<secrets>/<alias>.token`
     under the same variable. Any other spelling (inline, a list of homes, dotted
-    keys) is refused rather than rewritten. The result must parse to the same TOML
+    keys) is refused rather than rewritten. An account that leaves also leaves
+    `excluded_accounts`, and an account whose token file stays never leaves: the
+    next read would find it again. The result must parse to the same TOML
     document with only those accounts changed, and pass the owning reader, before
     it replaces the file; writers of this function take turns on a lock beside it.
 
     Raises:
         RosterEditRefused: an unknown provider, a list that is not some of its own
-            accounts each once, a spelling the writer cannot keep, a rewrite that
-            would change anything else, or a file that changed while it was edited.
+            accounts each once, an account its token file keeps, a spelling the
+            writer cannot keep, a rewrite that would change anything else, or a
+            file that changed while it was edited.
         RosterError: the file could not be read, parsed or written.
     """
     target = path.resolve()
@@ -1761,14 +2456,39 @@ def _write_order(
     index: int,
     wanted: list[str],
 ) -> Path:
-    """`write_accounts` once ``wanted`` is settled, under its lock."""
+    """`write_accounts` once ``wanted`` is settled, under its lock.
+
+    A followed account stays its token file only while it keeps its place, after
+    the declared accounts in name order; one that moves before them is declared.
+    """
+    dropped = set(provider.ordered_accounts()) - set(wanted)
+    if provider.follows_token_files():
+        kept = sorted(dropped & set(_safe_token_files(provider)[0]))
+        if kept:
+            raise RosterEditRefused(
+                f"the token file of {kept[0]} is in the secrets directory of "
+                f"{provider.name}, and the file keeps the account. To remove the "
+                "account, move its token file out of that directory"
+            )
     document = tomllib.loads(text)
     table = document["provider"][index]
     expected = copy.deepcopy(document)
     edited = expected["provider"][index]
+    written = wanted
     if "accounts" in table:
-        rewritten = _moved_tables(text, index, table["accounts"], wanted)
-        edited["accounts"] = {alias: table["accounts"][alias] for alias in wanted}
+        declared: dict[str, Any] = table["accounts"]
+        end = len(wanted)
+        while (
+            end > 0
+            and wanted[end - 1] not in declared
+            and (end == len(wanted) or wanted[end - 1] < wanted[end])
+        ):
+            end -= 1
+        written = wanted[:end]
+        variable = token_variable(provider)
+        new = {a: {"auth_env": variable} for a in written if a not in declared}
+        rewritten = _moved_tables(text, index, declared, written, new)
+        edited["accounts"] = {a: declared.get(a, new.get(a)) for a in written}
     else:
         if provider.kind in DIRECT_KINDS:
             raise RosterEditRefused(
@@ -1780,8 +2500,44 @@ def _write_order(
         rewritten = _declared_tables(text, index, wanted, variable, provider)
         edited["accounts"] = {alias: {"auth_env": variable} for alias in wanted}
         edited.pop("auth_env", None)
-    _refuse_other_changes(provider.name, rewritten, expected, index, wanted)
+    excluded = [alias for alias in provider.excluded_accounts if alias not in dropped]
+    if excluded != provider.excluded_accounts:
+        # A name that stays refused every dispatch to the provider (2026-10-21).
+        rewritten = _excluded_line(rewritten, index, excluded)
+        edited["excluded_accounts"] = excluded
+    _refuse_other_changes(provider.name, rewritten, expected, index, written)
     return _replace_keeping_backup(path, target, raw, rewritten.encode("utf-8"))
+
+
+#: One `excluded_accounts` line that holds its whole list, and its comment.
+_EXCLUDED_LINE: Final = re.compile(
+    r"(?P<key>\s*excluded_accounts\s*=\s*)\[[^\]#]*\](?P<rest>\s*(?:#.*)?)"
+)
+
+
+def _excluded_line(text: str, index: int, names: list[str]) -> str:
+    """``text`` with the provider's `excluded_accounts` line naming ``names``.
+
+    Only a line that holds the whole list changes, and it keeps its comment. The
+    writer refuses any other spelling, because it cannot keep it.
+    """
+    lines, block = _provider_block(text, index)
+    start, end, _ = block[0]
+    found = [
+        (n, match)
+        for n in range(start, end + 1)
+        if (match := _EXCLUDED_LINE.fullmatch(lines[n].rstrip("\r\n")))
+    ]
+    if len(found) != 1:
+        raise RosterEditRefused(
+            "the excluded_accounts of this provider is not one line that the "
+            "writer can change; nothing was written"
+        )
+    n, match = found[0]
+    ending = lines[n][len(lines[n].rstrip("\r\n")) :]
+    listed = ", ".join(_toml_string(name) for name in names)
+    lines[n] = f"{match['key']}[{listed}]{match['rest']}{ending}"
+    return "".join(lines)
 
 
 def _refuse_other_changes(
@@ -1916,8 +2672,9 @@ def register_account(path: Path, provider_name: str, alias: str) -> Path:
 
     The provider's accounts are an explicit list: opening Add declares a secrets
     directory's discovered accounts as they stand (`make_default_account` on the
-    default), so a token file that appears later orders nothing. The new account
-    joins the end of that list and the default never changes. A codex or agy
+    default), so a token file that appears later joins after them and is never
+    the default. The new account joins the end of that list and the default never
+    changes. A codex or agy
     account must have logged in on its proposed home (`login_home`), which no
     account may already name; a token provider's must have its
     `<secrets>/<alias>.token`. Returns the backup of the roster.
@@ -1933,7 +2690,7 @@ def register_account(path: Path, provider_name: str, alias: str) -> Path:
         raw, text, roster, index = _read_for_edit(path, target, provider_name)
         provider = roster.providers[index]
         _refuse_new_account(roster, provider, alias)
-        declared = list(provider.accounts)
+        declared = [a for a in provider.accounts if a not in provider.followed]
         if provider.kind in DIRECT_KINDS:
             home = login_home(provider.kind, alias)
             found = expand_home(Path(home))
@@ -2186,7 +2943,8 @@ def _refuse_new_account(roster: Roster, provider: Provider, alias: str) -> None:
         raise RosterEditRefused(f"{alias} names a provider; choose another name")
     others = (p for p in roster.providers if p is not provider)
     holder = next((p for p in others if alias in p.ordered_accounts()), None)
-    if holder is None and provider.declared and alias in provider.accounts:
+    # A followed account is a token file only: the Add flow declares it.
+    if holder is None and alias in set(provider.accounts) - set(provider.followed):
         holder = provider
     if holder is not None:
         raise RosterEditRefused(f"{holder.name} already has an account {alias!r}")
@@ -2305,9 +3063,14 @@ def _writer_lock(target: Path) -> Iterator[None]:
 
 
 def _moved_tables(
-    text: str, index: int, accounts: Mapping[str, object], wanted: list[str]
+    text: str,
+    index: int,
+    accounts: Mapping[str, object],
+    wanted: list[str],
+    new: Mapping[str, Mapping[str, str]],
 ) -> str:
-    """``text`` with the provider's own account tables in ``wanted`` order.
+    """``text`` with the provider's own account tables in ``wanted`` order, and a
+    table for each account in ``new``, a followed one that is declared now.
 
     Each table moves whole, from the comments right above its header to its last
     key, at the place of the first one. Nothing else moves. Accounts that are not
@@ -2328,6 +3091,11 @@ def _moved_tables(
     for start, end, keys in segments:
         groups.setdefault(keys[2], []).extend(lines[start : end + 1])
     blank = _newline(text)
+    for alias, table in new.items():
+        groups[alias] = [
+            f"[provider.accounts.{_toml_key(alias)}]{blank}",
+            *(f"{_toml_key(k)} = {_toml_string(v)}{blank}" for k, v in table.items()),
+        ]
     moved: list[str] = []
     for alias in wanted:
         moved += ([blank] if moved else []) + groups[alias]

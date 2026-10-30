@@ -4,12 +4,18 @@ The selected ACP executable is a local peer. Registry, driver, process, stdio
 and controller close are real; no vendor or shared store is used.
 """
 
+import contextlib
 import json
 import os
 import socket
 import sys
+import textwrap
+import threading
+import time
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from supervisor_support import _drain_worker_threads, registry
@@ -29,7 +35,7 @@ from nspawn.rows import (
     RunRow,
     SessionActivation,
 )
-from nspawn.supervisor import InvalidRunRequest, Supervisor
+from nspawn.supervisor import InvalidRunRequest, Supervisor, SupervisorError
 
 __all__ = ["_drain_worker_threads", "registry"]
 
@@ -84,7 +90,7 @@ def test_the_managed_codex_session_preserves_its_configured_adapter(
             )
         ]
     )
-    monkeypatch.setattr(route, "read_roster", lambda: roster)
+    monkeypatch.setattr(route, "node_roster", lambda: roster)
     monkeypatch.setenv("PATH", os.pathsep.join((str(binaries), "/usr/bin", "/bin")))
     monkeypatch.setenv("CODEX_PATH", str(tmp_path / "installed-native-codex"))
     if selection == "default":
@@ -198,7 +204,7 @@ def test_the_run_custodian_enforces_the_agy_native_child_boundary(
     )
     picked = picker.PickerResult(None, provider, "fixture", "fixture", None, None)
     monkeypatch.setattr(
-        supervisor_module, "_read_roster", lambda cwd: Roster(providers=[provider])
+        supervisor_module, "read_roster", lambda cwd: Roster(providers=[provider])
     )
     monkeypatch.setattr(picker, "pick_execution", lambda *args, **kwargs: picked)
     # Isolate the former blanket admission condition; no product input can lift it.
@@ -539,3 +545,392 @@ def test_a_native_request_key_binds_the_exact_constructor_or_owner_operation(
     assert driver.request_fingerprint(
         "nspawn_run_start", original, group=None
     ) != driver.request_fingerprint("nspawn_run_start", changed, group=None)
+
+
+@contextlib.contextmanager
+def _held_activation(
+    registry: Registry, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[tuple[Supervisor, McpServer, str, socket.socket, Any]]:
+    """A passive activation that answered initialize and session/new, observed
+    the way the node host observes it. Its peer answers `session/prompt` only
+    when the file `answer-prompts` exists; else the turn stays in flight. It
+    exits by itself on `session/set_mode`. When the file `chatter` exists, it
+    writes a notification each 5 ms after `session/new`."""
+    peer = tmp_path / "acp-peer.py"
+    native_session = str(uuid.uuid4())
+    gate = tmp_path / "answer-prompts"
+    chatter = tmp_path / "chatter"
+    peer.write_text(
+        textwrap.dedent(
+            f"""
+            import json, os, sys, threading, time
+            lock = threading.Lock()
+            def write(frame):
+                with lock:
+                    print(json.dumps(frame), flush=True)
+            def chat():
+                update = {{"sessionUpdate": "available_commands_update",
+                          "availableCommands": []}}
+                while True:
+                    write({{"jsonrpc": "2.0", "method": "session/update",
+                           "params": {{"sessionId": {native_session!r},
+                                      "update": update}}}})
+                    time.sleep(0.005)
+            for line in sys.stdin:
+                frame = json.loads(line)
+                if "id" not in frame:
+                    continue
+                method = frame["method"]
+                if method == "initialize":
+                    result = {{"protocolVersion": 1}}
+                elif method == "session/new":
+                    result = {{"sessionId": {native_session!r}}}
+                elif method == "session/set_mode":
+                    sys.exit(3)
+                elif method == "session/prompt":
+                    if not os.path.exists({str(gate)!r}):
+                        continue
+                    result = {{"stopReason": "end_turn"}}
+                else:
+                    result = {{}}
+                write({{"jsonrpc": "2.0", "id": frame["id"], "result": result}})
+                if method == "session/new" and os.path.exists({str(chatter)!r}):
+                    threading.Thread(target=chat, daemon=True).start()
+            """
+        )
+    )
+    monkeypatch.setattr(
+        route,
+        "route_launch",
+        lambda *args, **kwargs: ([sys.executable, "-u", str(peer)], dict(os.environ)),
+    )
+    with contextlib.ExitStack() as stack:
+        sv = Supervisor(registry, tmp_path / "runs", host_control=True)
+        stack.callback(sv.shutdown)
+        server = McpServer(supervisor=sv, host_control=True)
+        stack.callback(server.close)
+        run_id = _payload(
+            _call(
+                server,
+                "nspawn_run_start",
+                {
+                    "cwd": str(tmp_path),
+                    "activation": {
+                        "provider": "claude",
+                        "account_route": "claude:fixture@subscription",
+                        "model": "opus",
+                        "effort": "high",
+                    },
+                },
+            )
+        )["run_id"]
+        stack.callback(sv.close, run_id)
+        shown = _payload(_call(server, "nspawn_run_show", {"run_id": run_id}))
+        attached = stack.enter_context(socket.socket(socket.AF_UNIX))
+        attached.settimeout(3)
+        attached.connect(shown["transport"]["path"])
+        reader = stack.enter_context(attached.makefile("rb"))
+        for ident, method, params in (
+            (1, "initialize", {"protocolVersion": 1}),
+            (2, "session/new", {"cwd": str(tmp_path), "mcpServers": []}),
+        ):
+            _operation(server, tmp_path, run_id, ident, method, params)
+            while json.loads(reader.readline()).get("id") != ident:
+                pass
+        yield sv, server, run_id, attached, reader
+
+
+def _start(tmp_path: Path, run_id: str, ident: int, method: str, params: Any) -> Any:
+    return {
+        "cwd": str(tmp_path),
+        "original_run": run_id,
+        "session_operation": {"id": ident, "method": method, "params": params},
+    }
+
+
+def _operation(
+    server: McpServer,
+    tmp_path: Path,
+    run_id: str,
+    ident: int,
+    method: str,
+    params: dict[str, Any],
+) -> None:
+    _payload(
+        _call(
+            server, "nspawn_run_start", _start(tmp_path, run_id, ident, method, params)
+        )
+    )
+
+
+def _thread(registry: Registry, run_id: str) -> str:
+    row = registry.get_run(run_id)
+    assert row is not None and isinstance(row.thread_id, str)
+    return row.thread_id
+
+
+def _turn(registry: Registry, run_id: str) -> dict[str, Any]:
+    return {
+        "sessionId": _thread(registry, run_id),
+        "prompt": [{"type": "text", "text": "an owner turn"}],
+    }
+
+
+def _prompt(
+    server: McpServer, registry: Registry, tmp_path: Path, run_id: str, ident: int
+) -> None:
+    _operation(
+        server, tmp_path, run_id, ident, "session/prompt", _turn(registry, run_id)
+    )
+
+
+def _reach(sv: Supervisor, run_id: str, phase: RunPhase) -> None:
+    deadline = time.monotonic() + 10
+    while sv.status(run_id).phase is not phase:
+        assert time.monotonic() < deadline, f"run never reached {phase.value}"
+        time.sleep(0.05)
+
+
+def _ended(sv: Supervisor, run_id: str) -> RunPhase:
+    deadline = time.monotonic() + 15
+    while not (phase := sv.status(run_id).phase).is_terminal():
+        assert time.monotonic() < deadline, f"run still {phase.value}"
+        time.sleep(0.05)
+    return phase
+
+
+@pytest.mark.needs("systemd_user", "cgroup")
+@pytest.mark.parametrize(
+    ("turns", "reason"), [(0, "closed while pending"), (1, "closed while idle")]
+)
+def test_an_activation_whose_host_detaches_with_no_turn_in_flight_is_closed(
+    registry: Registry,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    turns: int,
+    reason: str,
+) -> None:
+    """The node host's exit at a restart detaches the observer of each
+    activation (`session.NativeSession.attach`). With no owner turn in flight,
+    the activation holds no work. It ends as the host's own close ends it
+    (CLOSED, `closed while <phase>`), not as a worker death."""
+    (tmp_path / "answer-prompts").write_text("answer")
+    with _held_activation(registry, tmp_path, monkeypatch) as held:
+        sv, server, run_id, attached, reader = held
+        for ident in range(turns):
+            _prompt(server, registry, tmp_path, run_id, 10 + ident)
+            _reach(sv, run_id, RunPhase.IDLE)
+        reader.close()
+        attached.close()  # the node host process ended
+        ended = _ended(sv, run_id)
+        shown = _payload(_call(server, "nspawn_run_show", {"run_id": run_id}))
+        assert ended is RunPhase.CLOSED, shown["failure_reason"]
+        assert shown["failure_reason"] == reason
+        assert shown["turn_count"] == turns
+
+
+@pytest.mark.needs("systemd_user", "cgroup")
+def test_an_activation_whose_host_detaches_while_its_process_writes_is_closed(
+    registry: Registry,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The native process writes while the host detaches, so the send to the
+    observer fails before or after the observer reads EOF. With no owner turn
+    in flight, that is the same detach: the run closes, it does not die."""
+    (tmp_path / "chatter").write_text("chat")
+    with _held_activation(registry, tmp_path, monkeypatch) as held:
+        sv, server, run_id, attached, reader = held
+        reader.close()
+        attached.close()  # the node host process ended
+        ended = _ended(sv, run_id)
+        shown = _payload(_call(server, "nspawn_run_show", {"run_id": run_id}))
+        assert ended is RunPhase.CLOSED, shown["failure_reason"]
+        assert shown["failure_reason"] == "closed while pending"
+
+
+@pytest.mark.needs("systemd_user", "cgroup")
+def test_a_protocol_error_on_the_observer_is_not_a_detach(
+    registry: Registry,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The host sends a byte on the observation socket of a PENDING activation
+    that writes notifications. `attach` refuses it and closes its own socket.
+    A send that then fails on that closed socket is not a peer close: the run
+    ends FAILED with the protocol error, never CLOSED."""
+    guarded = session.NativeSession.guarded
+
+    def slow_guarded(self: session.NativeSession, action: Any) -> None:
+        def slowed() -> None:
+            try:
+                action()
+            except ValueError:
+                time.sleep(0.2)  # the stdout pump sends on the closed socket
+                raise
+
+        guarded(self, slowed)
+
+    monkeypatch.setattr(session.NativeSession, "guarded", slow_guarded)
+    (tmp_path / "chatter").write_text("chat")
+    with _held_activation(registry, tmp_path, monkeypatch) as held:
+        sv, _, run_id, attached, _ = held
+        attached.sendall(b"x")  # an unowned request on the observation socket
+        ended = _ended(sv, run_id)
+        reason = sv.status(run_id).failure_reason
+        assert ended is RunPhase.FAILED, reason
+        assert reason == "WorkerDied: ValueError"
+
+
+def test_an_owner_turn_admitted_during_the_detach_never_reads_closed(
+    registry: Registry,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A prompt waits between its control accept and its admission while the
+    host detaches. The detach check reads the phase, and then the prompt
+    continues. A turn that the run acknowledged must never end CLOSED."""
+    paused = threading.Event()
+    checked = threading.Event()
+    answered = threading.Event()
+    accept = session.operation
+    read = Supervisor._read
+
+    def held_operation(value: object) -> dict[str, Any]:
+        frame = accept(value)
+        control = threading.current_thread().name == "nspawn-session-control"
+        if control and frame.get("method") == "session/prompt":
+            paused.set()
+            checked.wait(5)
+        return frame
+
+    def held_read(self: Supervisor, run_id: str) -> Any:
+        row = read(self, run_id)
+        managed = self._sessions.get(run_id)
+        worker = "_guarded_worker" in threading.current_thread().name
+        detached = managed is not None and managed.detached
+        if worker and detached and not checked.is_set():
+            checked.set()
+            answered.wait(2)
+        return row
+
+    monkeypatch.setattr(session, "operation", held_operation)
+    monkeypatch.setattr(Supervisor, "_read", held_read)
+    with _held_activation(registry, tmp_path, monkeypatch) as held:
+        sv, server, run_id, attached, reader = held
+        answers: list[dict[str, Any]] = []
+        turn = _start(tmp_path, run_id, 10, "session/prompt", _turn(registry, run_id))
+
+        def prompt() -> None:
+            try:
+                answers.append(_call(server, "nspawn_run_start", turn))
+            finally:
+                answered.set()
+
+        worker = threading.Thread(target=prompt)
+        worker.start()
+        try:
+            assert paused.wait(5)
+            reader.close()
+            attached.close()  # the node host process ended
+            ended = _ended(sv, run_id)
+        finally:
+            worker.join(30)
+        acknowledged = "error" not in answers[0]
+        shown = _payload(_call(server, "nspawn_run_show", {"run_id": run_id}))
+        assert not (acknowledged and ended is RunPhase.CLOSED), shown["failure_reason"]
+
+
+@pytest.mark.needs("systemd_user", "cgroup")
+def test_an_activation_whose_host_detaches_during_an_owner_turn_stays_failed(
+    registry: Registry,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A detach that cuts an owner turn loses that turn. The run stays FAILED,
+    and its record says why."""
+    with _held_activation(registry, tmp_path, monkeypatch) as held:
+        sv, server, run_id, attached, reader = held
+        _prompt(server, registry, tmp_path, run_id, 10)
+        _reach(sv, run_id, RunPhase.RUNNING)
+        reader.close()
+        attached.close()
+        assert _ended(sv, run_id) is RunPhase.FAILED
+        shown = _payload(_call(server, "nspawn_run_show", {"run_id": run_id}))
+        assert shown["failure_reason"] == "native session ended during its owner turn"
+
+
+def _exit_by_itself(
+    registry: Registry, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[RunPhase, str | None]:
+    with _held_activation(registry, tmp_path, monkeypatch) as held:
+        sv, server, run_id, _, _ = held
+        _operation(
+            server,
+            tmp_path,
+            run_id,
+            9,
+            "session/set_mode",
+            {"sessionId": _thread(registry, run_id)},
+        )
+        return _ended(sv, run_id), sv.status(run_id).failure_reason
+
+
+def test_an_activation_whose_native_process_exits_before_any_turn_stays_failed(
+    registry: Registry,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A native process that exits by itself while its host still observes it
+    is a real failure, not a host detach."""
+    phase, _ = _exit_by_itself(registry, tmp_path, monkeypatch)
+    assert phase is RunPhase.FAILED
+
+
+def test_an_activation_whose_native_process_exits_keeps_the_reason_in_its_record(
+    registry: Registry,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The failure record of a native session end keeps nSPAWN's own reason
+    text, not only the exception type name."""
+    _, reason = _exit_by_itself(registry, tmp_path, monkeypatch)
+    assert reason == "native session ended before its owner turn"
+
+
+def test_a_delegated_run_worker_failure_keeps_the_type_only_record(
+    registry: Registry, tmp_path: Path
+) -> None:
+    """A delegated run is not an activation. Its worker failure still records
+    the exception type only, because the text can hold vendor bytes."""
+    registry.admit_run(
+        RunRow(
+            run_id="delegated",
+            worktree=str(tmp_path),
+            phase=RunPhase.PENDING,
+            sandbox="read-only",
+            model="fixture",
+            owner_instance=registry.instance_id,
+            created_at=1000,
+            updated_at=1000,
+            backend=Backend.CODEX,
+            executed_provider="codex",
+            executed_account="fixture",
+        ),
+        False,
+        1000,
+        1000,
+        native_context=NativeSessionContext(str(tmp_path)),
+    )
+
+    def broken() -> None:
+        raise SupervisorError("vendor stream text")
+
+    sv = Supervisor(registry, tmp_path / "runs")
+    try:
+        sv._guarded_worker("delegated", broken)
+        status = sv.status("delegated")
+    finally:
+        sv.shutdown()
+    assert status.phase is RunPhase.FAILED
+    assert status.failure_reason == "WorkerDied: SupervisorError"

@@ -377,7 +377,7 @@ def test_real_supervisor_maps_store_refusal_and_driver_acks_without_a_run(
     )
     # Only preparation/routing is doubled. The supervisor and the enforcing
     # SQLite admission remain real, and no vendor can be launched by this test.
-    monkeypatch.setattr(supervisor_module, "_read_roster", lambda _: roster)
+    monkeypatch.setattr(supervisor_module, "read_roster", lambda _: roster)
     monkeypatch.setattr(picker, "pick_execution", lambda *args, **kwargs: picked)
     launch = native.NativeLaunch(
         (),

@@ -38,6 +38,7 @@ from ..repositories.base import StoreError
 from ..repositories.capsules import EventTimeRange
 from .common import (
     HandlerState,
+    capture_outcome_row,
     taint_summary,
     verb_result,
 )
@@ -383,7 +384,7 @@ def gate_refusal(
     runs before `supersedes` so no query is wasted on a rejected item, and
     judges the singular item by the same yardstick. The language gate: capsule content is English; the owner's own words
     go verbatim in `source_quote`, which is not judged. NOT in `ingest()`:
-    `nmemory_capsule_import` carries external files.
+    the curator, hygiene and the evals call it with text that no agent wrote.
     """
     if locator is not None:
         shape_err = validate_ingest_item(item)
@@ -526,31 +527,8 @@ def outcome_row(
     are what observe it. Fail-visible, never silence — the fence lives in
     ingest.py (TAINT INHERITANCE FROM ORIGIN BYTES).
     """
-    reason = "captured"
-    if outcome.deduped:
-        row: dict[str, Any] = {
-            "status": "deduplicated",
-            "id": outcome.id,
-            "dedup_hint": None,
-        }
-        reason = "deduplicated"
-    else:
-        row = {
-            "status": "captured",
-            "id": outcome.id,
-            "dedup_hint": (
-                {
-                    "similar_id": outcome.dedup_hint.similar_id,
-                    "score": outcome.dedup_hint.score,
-                }
-                if outcome.dedup_hint
-                else None
-            ),
-        }
-        if outcome.siblings:
-            row["siblings"] = [{"id": s.id, "score": s.score} for s in outcome.siblings]
-    if outcome.superseded:
-        row["superseded"] = outcome.superseded
+    row = capture_outcome_row(outcome)
+    reason = "deduplicated" if outcome.deduped else "captured"
     if outcome.project_canon is not None:
         was, became = outcome.project_canon
         row["project_id"] = {"was": was, "now": became}

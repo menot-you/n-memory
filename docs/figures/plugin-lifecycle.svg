@@ -164,10 +164,8 @@
         <text x="0" y="11" font-family="monospace" font-size="8.5" font-weight="bold" fill="#8FB3B0">system1-suggest.py</text>
         <text x="0" y="23" font-family="Arial, sans-serif" font-size="8" fill="#B5AEA3">Route and prompt upscale suggestions</text>
 
-        <text x="0" y="41" font-family="monospace" font-size="8.5" font-weight="bold" fill="#C4523A">red-first.sh</text>
-        <text x="70" y="41" font-family="monospace" font-size="8" fill="#B5AEA3">|</text>
-        <text x="78" y="41" font-family="monospace" font-size="8.5" font-weight="bold" fill="#C4523A">law-contract.sh</text>
-        <text x="0" y="53" font-family="Arial, sans-serif" font-size="8" fill="#B5AEA3">Guards test RED before implementation edit allowed</text>
+        <text x="0" y="41" font-family="monospace" font-size="8.5" font-weight="bold" fill="#C4523A">law-contract.sh</text>
+        <text x="0" y="53" font-family="Arial, sans-serif" font-size="8" fill="#B5AEA3">Runs the law contract after a law edit</text>
 
         <text x="0" y="71" font-family="monospace" font-size="8.5" font-weight="bold" fill="#E4733A">nmemory-capture-gate.py</text>
         <text x="135" y="71" font-family="monospace" font-size="8" fill="#B5AEA3">|</text>

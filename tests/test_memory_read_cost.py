@@ -124,14 +124,14 @@ def test_write_read_census_does_not_rescan_expanded_traffic_for_each_capsule(
 
     populate(40, 0)
     monkeypatch.setattr(store.db, "_open", opened)
-    first = write_read_census(store.db, NOW - timedelta(days=1), rewrites=False)
+    first = write_read_census(store.db, NOW - timedelta(days=1))
     small = operations
     assert first == {"fact": (20, 0), "unclassified": (20, 0)}
     monkeypatch.setattr(store.db, "_open", original)
     populate(40, 40)
     monkeypatch.setattr(store.db, "_open", opened)
     operations = 0
-    second = write_read_census(store.db, NOW - timedelta(days=1), rewrites=False)
+    second = write_read_census(store.db, NOW - timedelta(days=1))
     large = operations
     assert second == {"fact": (40, 0), "unclassified": (40, 0)}
     print(f"Measured census: {small} SQLite operations at 40 capsules; {large} at 80")

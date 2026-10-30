@@ -57,8 +57,10 @@ def _failover_roster(
 
     secrets = tmp_path / "secrets" / "claude"
     secrets.mkdir(parents=True, exist_ok=True)
+    secrets.chmod(0o700)  # whatever the umask
     for alias in accounts:
         (secrets / f"{alias}.token").write_text("x", encoding="utf-8")
+        (secrets / f"{alias}.token").chmod(0o600)  # whatever the umask
     provider = Provider(name="claude", secrets=secrets, models=["m"], model="m")
     roster = Roster(providers=[provider], defaults=Defaults(plugin_root=tmp_path))
     return roster, provider
@@ -443,40 +445,21 @@ def _env_roster(home: Path, tmp_path: Path, *, proxied: bool = False) -> None:
     )
 
 
-def test_a_caged_review_is_not_judged_by_env_the_cage_never_passes_on(
-    registry: Registry,
-    tmp_path: Path,
-    roster_home: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The cage builds a closed env: `[defaults.env]` never reaches it, so an
-    explicit effort there runs as requested and is admitted."""
-    _env_roster(roster_home, tmp_path)
-    started: list[object] = []
-    monkeypatch.setattr(
-        Supervisor, "_drive_claude_caged", lambda self, *a, **k: started.append(a)
-    )
-    sv = _sv(registry, tmp_path)
-    try:
-        sv.review("feature-x", str(tmp_path), provider="a", effort="high")
-    finally:
-        sv.shutdown()
-    assert len(started) == 1
-
-
-@pytest.mark.parametrize("run", ["read-only-execute", "proxied-review"])
-def test_an_uncaged_run_is_judged_by_the_env_its_child_receives(
+@pytest.mark.parametrize(
+    "run", ["read-only-execute", "direct-review", "proxied-review"]
+)
+def test_a_run_is_judged_by_the_env_its_child_receives(
     registry: Registry,
     tmp_path: Path,
     roster_home: Path,
     run: str,
 ) -> None:
-    """A review on a route proxied elsewhere runs uncaged, with the roster's env."""
+    """A review runs on any route with the roster's env."""
     _env_roster(roster_home, tmp_path, proxied=run == "proxied-review")
     sv = _sv(registry, tmp_path)
     try:
         with pytest.raises(picker.PickerError, match="CLAUDE_CODE_EFFORT_LEVEL"):
-            if run == "proxied-review":
+            if run != "read-only-execute":
                 sv.review("feature-x", str(tmp_path), provider="a", effort="high")
             else:
                 sv.execute(
@@ -939,6 +922,11 @@ def _pump_like_factory(paths_written: list[Path]) -> object:
         def close_stdin(self) -> None:
             pass
 
+        def poll(self) -> int | None:
+            # The steer loop ends when the child has exited. This stand-in
+            # has given its answer, so wait() below only joins the pumps.
+            return 0
+
         def wait(self, timeout: float | None = None) -> int:
             for path in paths_written:
                 fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -1303,7 +1291,9 @@ def _wire_session_collisions(
         needles: object,
         **spawn_kwargs: object,
     ) -> FakeSpawnedChild:
-        assert spawn_kwargs == {"stdin_pipe": True}  # the prompt travels on stdin
+        # The prompt travels on stdin, and the run's slice holds the child.
+        assert spawn_kwargs["stdin_pipe"] is True
+        assert set(spawn_kwargs) <= {"stdin_pipe", "scope"}
         spawns.append(run_root)
         if len(spawns) <= collisions:
             (run_root / "stderr").write_bytes(_SESSION_COLLISION_STDERR)
@@ -1587,6 +1577,41 @@ def test_a_rate_limit_429_moves_to_the_next_account_and_walls_for_minutes(
         assert walls["acct-a"] <= int(time.time()) + Supervisor.RATE_LIMIT_WALL_S
 
 
+def test_a_run_that_dies_on_its_next_account_keeps_the_accounts_it_left(
+    registry: Registry,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The run moved off acct-a and then died before the next account answered.
+    `_fail_run` is the other terminal seam, and it recorded only the failure: the
+    FAILED row read as if acct-a had served it, so the caller had no way to know
+    that acct-a was already walled and the run had left it."""
+    roster, provider = _failover_roster(tmp_path)
+    spawned: list[int] = []
+
+    def spawned_factory(*a: object, **k: object) -> FakeSpawnedChild:
+        spawned.append(1)
+        if len(spawned) > 1:
+            raise claude_child.ClaudeChildError("the child could not be started")
+        return FakeSpawnedChild(_spawn_real("true"))
+
+    _wire_l8_and_l3(monkeypatch, spawned_factory)
+    monkeypatch.setattr(
+        supervisor.terminal, "classify_terminal_run", lambda *a, **k: _verdict_401()
+    )
+    sv = _sv(registry, tmp_path)
+
+    run_id = _drive_failover_run(
+        sv, registry, tmp_path, roster, _failover_picked(provider)
+    )
+
+    row = registry.get_run(run_id)
+    assert row is not None
+    assert (row.phase, row.executed_account) == (RunPhase.FAILED, "acct-b")
+    assert (row.blocked_reason or "").startswith("ClaudeChildError")
+    assert "moved off claude/acct-a (HTTP 401)" in (row.warning or ""), row.warning
+
+
 # U-substitute — when all accounts of the requested provider are dead, the
 # run row names the routes that SERVE at that instant. Without this, the agent
 # that dispatched receives raw vendor text and has no way forward; that is what
@@ -1599,10 +1624,14 @@ def _roster_with_a_substitute(tmp_path: Path) -> tuple[object, object]:
 
     secrets = tmp_path / "secrets" / "claude"
     secrets.mkdir(parents=True, exist_ok=True)
+    secrets.chmod(0o700)  # whatever the umask
     (secrets / "acct-a.token").write_text("x", encoding="utf-8")
+    (secrets / "acct-a.token").chmod(0o600)  # whatever the umask
     spare_secrets = tmp_path / "secrets" / "spare"
     spare_secrets.mkdir(parents=True, exist_ok=True)
+    spare_secrets.chmod(0o700)  # whatever the umask
     (spare_secrets / "spare-a.token").write_text("x", encoding="utf-8")
+    (spare_secrets / "spare-a.token").chmod(0o600)  # whatever the umask
     provider = Provider(name="claude", secrets=secrets, models=["m"], model="m")
     spare = Provider(name="spare", secrets=spare_secrets, models=["m"], model="m")
     roster = Roster(
@@ -1793,4 +1822,158 @@ def test_exhausted_accounts_keep_the_warning_when_another_route_has_a_typo(
     assert row is not None and row.phase is RunPhase.FAILED
     assert len(spawned) == 2
     assert row.warning is not None
-    assert all(alias in row.warning for alias in ("acct-a", "acct-b", "other-typo"))
+    # The typo is a stderr note now (2026-10-21): it refuses no route.
+    assert all(alias in row.warning for alias in ("acct-a", "acct-b"))
+
+
+def _drive_one_child(
+    registry: Registry,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    frames: list[dict[str, object]],
+    code: int,
+) -> tuple[str, Path]:
+    """Drive one run whose only child writes `frames` and exits with `code`."""
+    roster, provider = _failover_roster(tmp_path)
+
+    def spawned_factory(*a: object, **k: object) -> FakeSpawnedChild:
+        run_dir_path = a[3]
+        assert isinstance(run_dir_path, Path)
+        out = "".join(json.dumps(f) + "\n" for f in frames)
+        (run_dir_path / "stdout").write_text(out, encoding="utf-8")
+        (run_dir_path / "stderr").write_text("", encoding="utf-8")
+        proc = _spawn_real("sleep", "0.01")
+        fake = FakeSpawnedChild(proc)
+        fake.wait = lambda timeout=None: (proc.wait(timeout=timeout), code)[1]  # type: ignore[assignment]
+        return fake
+
+    _wire_l8_and_l3(monkeypatch, spawned_factory)
+    sv = _sv(registry, tmp_path)
+    run_id = _drive_failover_run(
+        sv, registry, tmp_path, roster, _failover_picked(provider)
+    )
+    return run_id, sv._run_root_path / run_id
+
+
+def _success(**fields: object) -> dict[str, object]:
+    frame: dict[str, object] = {
+        "type": "result",
+        "is_error": False,
+        "terminal_reason": "completed",
+        "result": "PONG",
+        "usage": {"input_tokens": 5, "output_tokens": 2},
+    }
+    frame.update(fields)
+    return frame
+
+
+def test_a_lone_surrogate_in_the_fallback_answer_completes_the_run(
+    registry: Registry, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`result: null` takes the last assistant text, which can hold `\\ud83d`."""
+    assistant = {
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "PO\ud83dNG"}],
+        },
+    }
+
+    run_id, _ = _drive_one_child(
+        registry, tmp_path, monkeypatch, [assistant, _success(result=None)], 0
+    )
+
+    row = registry.get_run(run_id)
+    assert row is not None
+    assert row.phase is RunPhase.COMPLETED
+    assert row.final_text == "PO�NG"
+    assert row.warning is not None
+    assert "lone surrogate" in row.warning
+
+
+def test_an_overflowing_cost_completes_the_run_and_every_reader_reads_it(
+    registry: Registry, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id, run_dir = _drive_one_child(
+        registry, tmp_path, monkeypatch, [_success(total_cost_usd=10**310)], 0
+    )
+
+    row = registry.get_run(run_id)
+    assert row is not None
+    assert row.phase is RunPhase.COMPLETED
+    assert row.final_text == "PONG"
+    assert row.warning is not None
+    assert "result.total_cost_usd" in row.warning
+    observed = supervisor._observe_streams(run_dir)
+    assert observed.has_valid_result
+    assert observed.final_text == "PONG"
+
+
+def test_a_signal_death_keeps_the_note_that_names_a_malformed_field(
+    registry: Registry, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    frame = _success(is_error=True, terminal_reason="error", num_turns="many")
+
+    run_id, _ = _drive_one_child(registry, tmp_path, monkeypatch, [frame], -9)
+
+    row = registry.get_run(run_id)
+    assert row is not None
+    assert row.phase is RunPhase.FAILED
+    assert row.warning is not None
+    assert row.warning.startswith("child terminated by signal 9")
+    assert "result.num_turns" in row.warning
+
+
+@pytest.mark.parametrize("answer", ["PONG", "x" * (20 * 1024)], ids=["short", "long"])
+def test_a_null_result_serves_the_kept_assistant_answer_on_every_read(
+    registry: Registry,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    answer: str,
+) -> None:
+    """`result: null` completes from the last assistant text, and the stream's
+    valid result carries no text: `nspawn_result_show` serves the kept answer."""
+    assistant = {
+        "type": "assistant",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": answer}]},
+    }
+
+    run_id, _ = _drive_one_child(
+        registry, tmp_path, monkeypatch, [assistant, _success(result=None)], 0
+    )
+
+    sv = _sv(registry, tmp_path)
+    shown = sv.result(run_id)
+    assert shown.phase is RunPhase.COMPLETED
+    assert shown.final_text == answer
+    assert sv.status(run_id).phase is RunPhase.COMPLETED
+
+
+def test_an_overflowing_utilization_is_a_typed_refusal_every_reader_reads(
+    registry: Registry, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rate limits drive a decision, so the classifier stays strict. The row
+    records the typed refusal (its identity only, as `_fail_run` keeps every
+    refusal), never a bare `OverflowError`. The re-read drops the frame."""
+    limit = {
+        "type": "rate_limit_event",
+        "rate_limit_info": {
+            "status": "allowed",
+            "unifiedWindows": {"five_hour": {"utilization": 10**310, "resetsAt": 1}},
+        },
+    }
+
+    run_id, run_dir = _drive_one_child(
+        registry, tmp_path, monkeypatch, [limit, _success()], 0
+    )
+
+    row = registry.get_run(run_id)
+    assert row is not None
+    assert row.phase is RunPhase.FAILED
+    assert row.blocked_reason == "TerminalClassificationError (nERR-1117)"
+    observed = supervisor._observe_streams(run_dir)
+    assert observed.has_valid_result
+    assert observed.final_text == "PONG"
+    sv = _sv(registry, tmp_path)
+    assert sv.status(run_id).phase is row.phase
+    assert sv.result(run_id).phase is row.phase

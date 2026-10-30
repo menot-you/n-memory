@@ -124,8 +124,10 @@ def test_discovered_accounts_become_declared_and_keep_their_credentials(
 ) -> None:
     secrets = tmp_path / "secrets"
     secrets.mkdir()
+    secrets.chmod(0o700)  # yours alone whatever the umask: its files are followed
     for alias in ("alpha", "beta", "gamma"):
         (secrets / f"{alias}.token").write_text(f"fixture-{alias}\n")
+        (secrets / f"{alias}.token").chmod(0o600)  # whatever the umask
     path = _copy(
         tmp_path,
         "# the owner's note\n"
@@ -134,17 +136,24 @@ def test_discovered_accounts_become_declared_and_keep_their_credentials(
         'auth_env = "ANTHROPIC_AUTH_TOKEN"\n\n[provider.env]\nANTHROPIC_BASE_URL = "https://fugu.invalid"\n',
     )
     (tmp_path / "secrets-fugu").mkdir()
+    (tmp_path / "secrets-fugu").chmod(0o700)  # whatever the umask
     for alias in ("max", "pro"):
         (tmp_path / f"secrets-fugu/{alias}.token").write_text(f"fixture-{alias}\n")
-    write_accounts(path, "claude", ["gamma", "alpha"])
+        (tmp_path / f"secrets-fugu/{alias}.token").chmod(0o600)  # whatever the umask
+    before = path.read_bytes()
+    # beta.token stays, and the next read would find beta again.
+    with pytest.raises(RosterEditRefused, match="token file of beta"):
+        write_accounts(path, "claude", ["gamma", "alpha"])
+    assert path.read_bytes() == before
+    write_accounts(path, "claude", ["gamma", "alpha", "beta"])
     write_accounts(path, "fugu", ["pro", "max"])
     roster = Roster.read(path)
     claude, fugu = roster.select("claude"), roster.select("fugu")
     assert claude is not None and fugu is not None
     # The variable each account was already delivered under (`_deliver_credential`).
     oauth = NativeAccount(home=None, auth_env="CLAUDE_CODE_OAUTH_TOKEN")
-    assert claude.accounts == {"gamma": oauth, "alpha": oauth}
-    assert list(claude.accounts) == ["gamma", "alpha"]
+    assert claude.accounts == {"gamma": oauth, "alpha": oauth, "beta": oauth}
+    assert list(claude.accounts) == ["gamma", "alpha", "beta"]
     gateway = NativeAccount(home=None, auth_env="ANTHROPIC_AUTH_TOKEN")
     assert fugu.accounts == {"pro": gateway, "max": gateway}
     assert list(fugu.accounts) == ["pro", "max"] and fugu.auth_env is None
@@ -215,8 +224,10 @@ def test_a_provider_auth_env_with_a_comment_is_refused_unwritten(
 ) -> None:
     secrets = tmp_path / "secrets"
     secrets.mkdir()
+    secrets.chmod(0o700)  # whatever the umask
     for alias in ("max", "pro"):
         (secrets / f"{alias}.token").write_text("fixture\n")
+        (secrets / f"{alias}.token").chmod(0o600)  # whatever the umask
     text = (
         f'[[provider]]\nname = "fugu"\nsecrets = "{secrets}"\n'
         'auth_env = "ANTHROPIC_AUTH_TOKEN"  # the gateway reads this one\n'
@@ -270,8 +281,10 @@ def test_a_rewrite_its_own_reader_refuses_is_not_written(tmp_path: Path) -> None
     # Declaring discovered accounts grows the file past the reader's ceiling.
     secrets = tmp_path / "secrets"
     secrets.mkdir()
+    secrets.chmod(0o700)  # whatever the umask
     for n in range(40):
         (secrets / f"account-{n:02}.token").write_text("fixture\n")
+        (secrets / f"account-{n:02}.token").chmod(0o600)  # whatever the umask
     head = f'[[provider]]\nname = "claude"\nsecrets = "{secrets}"\n'
     text = "# " + "x" * (MAX_STORE_CONFIG_BYTES - len(head) - 100) + "\n" + head
     path = _copy(tmp_path, text)
@@ -326,14 +339,19 @@ def test_a_file_that_changed_while_edited_is_not_overwritten(
 def test_two_writers_take_turns_and_neither_edit_is_lost(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    secrets = tmp_path / "secrets"
-    secrets.mkdir()
-    for alias in ("alpha", "beta", "gamma"):
-        (secrets / f"{alias}.token").write_text("fixture\n")
-    path = _copy(tmp_path, f'[[provider]]\nname = "claude"\nsecrets = "{secrets}"\n')
+    # Native homes: a token file would keep a removed token account (owner, 2026-10-21).
+    tables = "".join(
+        f'\n[provider.accounts.{alias}]\nhome = "/{alias}"\n'
+        for alias in ("alpha", "beta", "gamma")
+    )
+    path = _copy(
+        tmp_path,
+        '[bins]\ncodex = "/usr/bin/codex"\n\n'
+        '[[provider]]\nname = "codex"\nkind = "codex"\nmodel = "m"\n' + tables,
+    )
     first = path.read_bytes()
     replace = os.replace
-    second = threading.Thread(target=remove_account, args=(path, "claude", "gamma"))
+    second = threading.Thread(target=remove_account, args=(path, "codex", "gamma"))
 
     def late(source: Path, target: Path) -> None:
         # The first writer has compared and is about to replace: the second runs
@@ -344,10 +362,10 @@ def test_two_writers_take_turns_and_neither_edit_is_lost(
         replace(source, target)
 
     monkeypatch.setattr(os, "replace", late)
-    remove_account(path, "claude", "beta")
+    remove_account(path, "codex", "beta")
     second.join(timeout=10)
     assert not second.is_alive()
-    assert list(_accounts(path, "claude")) == ["alpha"]
+    assert list(_accounts(path, "codex")) == ["alpha"]
     backups = _backups(path)
     assert len(backups) == 2 and first in [b.read_bytes() for b in backups]
 

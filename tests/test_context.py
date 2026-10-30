@@ -24,6 +24,7 @@ from nmemory.context import (
     ALL_INDEX_SOURCES,
     GroupedCandidate,
     execute_context,
+    index_context,
     prepare_files,
     prepare_git,
     rustdoc_chunks,
@@ -45,7 +46,6 @@ from nmemory.project import DEFAULT_PROJECT_ID
 from nmemory.server import MemoryServer
 from nmemory.store import Store
 from nmemory.tools import context as context_tool
-from nmemory.tools import index as index_tool
 from nmemory.tools import ingest as ingest_tool
 from nmemory.tools import purge as purge_tool
 from nmemory.tools import retrieve as retrieve_tool
@@ -394,14 +394,7 @@ def test_index_then_context_is_idempotent_grouped_read_only_and_staleness_explic
     server = MemoryServer(store=store, anchor_root=str(repo))
 
     # 1. Index
-    res = index_tool.handle(
-        server.handler_state(),
-        {"root": str(repo), "project_id": "projetodeteste"},
-        None,
-        NOW,
-        "test",
-    )
-    index = json.loads(res["content"][0]["text"])
+    index = index_context(store, repo, "projetodeteste", None, NOW, "test")
     assert len(index["sources"]) == 4
     assert all(
         row["status"] == "ready" and row["changed"] is True for row in index["sources"]
@@ -413,14 +406,7 @@ def test_index_then_context_is_idempotent_grouped_read_only_and_staleness_explic
     assert md_row["occurrences"] == 3
 
     # 2. Idempotent re-index
-    res_noop = index_tool.handle(
-        server.handler_state(),
-        {"root": str(repo), "project_id": "projetodeteste"},
-        None,
-        NOW,
-        "test",
-    )
-    noop = json.loads(res_noop["content"][0]["text"])
+    noop = index_context(store, repo, "projetodeteste", None, NOW, "test")
     assert all(row["changed"] is False for row in noop["sources"])
 
     # 3. Context query
@@ -1065,13 +1051,7 @@ def test_a_registered_source_with_zero_chunks_reads_as_an_empty_index(
 
     store = Store.open_disposable_test_store()
     server = MemoryServer(store=store, anchor_root=str(repo))
-    index_tool.handle(
-        server.handler_state(),
-        {"root": str(repo), "project_id": "projetodeteste"},
-        None,
-        NOW,
-        "t",
-    )
+    index_context(store, repo, "projetodeteste", None, NOW, "t")
 
     res = context_tool.handle(
         server.handler_state(),
@@ -1107,13 +1087,7 @@ def test_a_source_that_actually_holds_chunks_is_not_called_empty(
 
     store = Store.open_disposable_test_store()
     server = MemoryServer(store=store, anchor_root=str(repo))
-    index_tool.handle(
-        server.handler_state(),
-        {"root": str(repo), "project_id": "projetodeteste"},
-        None,
-        NOW,
-        "t",
-    )
+    index_context(store, repo, "projetodeteste", None, NOW, "t")
 
     res = context_tool.handle(
         server.handler_state(),
@@ -1152,23 +1126,10 @@ def test_a_dead_source_does_not_shadow_the_live_one_of_the_same_kind(
     git(live, ["commit", "-qm", "repositorio vivo"])
 
     store = Store.open_disposable_test_store()
-    dead_server = MemoryServer(store=store, anchor_root=str(dead))
-    index_tool.handle(
-        dead_server.handler_state(),
-        {"root": str(dead), "project_id": "projetodeteste"},
-        None,
-        NOW,
-        "t",
-    )
+    index_context(store, dead, "projetodeteste", None, NOW, "t")
 
     server = MemoryServer(store=store, anchor_root=str(live))
-    index_tool.handle(
-        server.handler_state(),
-        {"root": str(live), "project_id": "projetodeteste"},
-        None,
-        NOW,
-        "t",
-    )
+    index_context(store, live, "projetodeteste", None, NOW, "t")
 
     res = context_tool.handle(
         server.handler_state(),

@@ -1,21 +1,21 @@
-"""Deterministic consolidation planner (w2-consolidate, u-r11, q6).
+"""Deterministic consolidation rules (w2-consolidate, u-r11, q6).
 
-Pure offline consolidation planning: exact-dupe detection, token-containment
-merge clustering, and rule-based tier promotions/demotions.
+Pure offline rules: the lifecycle tiers, token-containment merge clustering
+(the curator's near-duplicate proposals), and the protective tier moves that
+the store applies.
 """
 
 from __future__ import annotations
 
 import re
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
 from . import taint
 from .capsule import AuthorityClass
-from .capsule_ref import fold_diacritic
 
 # Measured 2026-09-12: 96.3% of last recalls occurred within 30 days.
 # Only superseded capsules qualify: never archive unsuperseded records by
@@ -23,8 +23,6 @@ from .capsule_ref import fold_diacritic
 ARCHIVE_AFTER_DAYS = 30
 DEDUP_HINT_MIN_SCORE = 0.5
 DEDUP_HINT_MIN_TOKENS = 4
-ALIAS_PREFIX_MIN = 4
-ALIAS_PROPOSALS_CAP = 20
 
 
 class Tier(StrEnum):
@@ -66,20 +64,6 @@ class ConsolidationRecord:
 
 
 @dataclass(frozen=True)
-class ExactDupe:
-    keep: str
-    drop: str
-    source_hash: str
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "keep": self.keep,
-            "drop": self.drop,
-            "source_hash": self.source_hash,
-        }
-
-
-@dataclass(frozen=True)
 class MergeProposal:
     ids: list[str]
     containment_score: float
@@ -104,40 +88,6 @@ class TierMove:
             "id": self.id,
             "to": self.to.value,
             "reason": self.reason,
-        }
-
-
-@dataclass(frozen=True)
-class AliasProposal:
-    term: str
-    candidate: str | None
-    miss_count: int
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "term": self.term,
-            "candidate": self.candidate,
-            "miss_count": self.miss_count,
-        }
-
-
-@dataclass
-class ConsolidationPlan:
-    exact_dupes: list[ExactDupe]
-    merge_proposals: list[MergeProposal]
-    tier_moves: list[TierMove]
-    alias_proposals: list[AliasProposal] = field(default_factory=list)
-
-    @property
-    def has_store_invariant_breach(self) -> bool:
-        return len(self.exact_dupes) > 0
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "exact_dupes": [d.to_dict() for d in self.exact_dupes],
-            "merge_proposals": [m.to_dict() for m in self.merge_proposals],
-            "tier_moves": [t.to_dict() for t in self.tier_moves],
-            "alias_proposals": [a.to_dict() for a in self.alias_proposals],
         }
 
 
@@ -205,41 +155,10 @@ def canonical_order(
     return out
 
 
-def exact_dupes_by_source_hash(
-    ordered: list[ConsolidationRecord],
-) -> tuple[list[ExactDupe], set[str]]:
-    by_hash: dict[str, list[ConsolidationRecord]] = defaultdict(list)
-    for r in ordered:
-        by_hash[r.source_hash].append(r)
-
-    groups = [g for g in by_hash.values() if len(g) >= 2]
-    groups.sort(key=lambda g: (g[0].seq, g[0].id))
-
-    exact_dupes: list[ExactDupe] = []
-    dropped: set[str] = set()
-    for group in groups:
-        keep = group[0]
-        for anomaly in group[1:]:
-            exact_dupes.append(
-                ExactDupe(
-                    keep=keep.id,
-                    drop=anomaly.id,
-                    source_hash=keep.source_hash,
-                )
-            )
-            dropped.add(anomaly.id)
-    return exact_dupes, dropped
-
-
 def near_duplicate_proposals(
     ordered: list[ConsolidationRecord],
-    dropped: set[str],
 ) -> list[MergeProposal]:
-    pool = [
-        r
-        for r in ordered
-        if r.tier == Tier.ACTIVE and not r.is_superseded and r.id not in dropped
-    ]
+    pool = [r for r in ordered if r.tier == Tier.ACTIVE and not r.is_superseded]
 
     significant_lens = [len(significant_tokens(r.content)) for r in pool]
     full_sets = [full_tokens(r.content) for r in pool]
@@ -363,84 +282,9 @@ def protective_tier_moves(
     return moves
 
 
-def plan_consolidation(
-    records: list[ConsolidationRecord],
-    now: datetime,
-) -> ConsolidationPlan:
-    """Derive deterministic consolidation plan over live capsule records."""
-    ordered = canonical_order(records)
-    exact_dupes, dropped = exact_dupes_by_source_hash(ordered)
-    merge_proposals = near_duplicate_proposals(ordered, dropped)
-    tier_moves = protective_tier_moves(ordered, now)
-    return ConsolidationPlan(
-        exact_dupes=exact_dupes,
-        merge_proposals=merge_proposals,
-        tier_moves=tier_moves,
-        alias_proposals=[],
-    )
-
-
 def archive_candidates(records: list[ConsolidationRecord], now: datetime) -> int:
     return sum(
         1
         for m in protective_tier_moves(canonical_order(records), now)
         if m.to == Tier.ARCHIVED
     )
-
-
-def shared_prefix_len(a: str, b: str) -> int:
-    count = 0
-    for x, y in zip(a, b):
-        if x == y:
-            count += 1
-        else:
-            break
-    return count
-
-
-def folded_vocabulary(records: list[ConsolidationRecord]) -> set[str]:
-    vocab: set[str] = set()
-    for r in records:
-        for token in full_tokens(r.content):
-            vocab.add("".join(fold_diacritic(c) for c in token))
-    return vocab
-
-
-def alias_proposals(
-    misses: list[tuple[str, int]],
-    vocabulary: set[str],
-    taught: set[str],
-) -> list[AliasProposal]:
-    out: list[AliasProposal] = []
-    for term, miss_count in misses:
-        if term in taught:
-            continue
-        had_candidate = False
-        for candidate in sorted(vocabulary):
-            if candidate == term:
-                continue
-            if shared_prefix_len(term, candidate) >= ALIAS_PREFIX_MIN:
-                out.append(
-                    AliasProposal(
-                        term=term,
-                        candidate=candidate,
-                        miss_count=miss_count,
-                    )
-                )
-                had_candidate = True
-        if not had_candidate:
-            out.append(
-                AliasProposal(
-                    term=term,
-                    candidate=None,
-                    miss_count=miss_count,
-                )
-            )
-    out.sort(
-        key=lambda a: (
-            -a.miss_count,
-            a.term,
-            a.candidate if a.candidate is not None else "",
-        )
-    )
-    return out[:ALIAS_PROPOSALS_CAP]

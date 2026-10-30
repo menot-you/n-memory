@@ -210,7 +210,7 @@ def test_all_tools_stdio() -> None:
 
         tools_list_resp = client.send("tools/list")
         tools = tools_list_resp["result"]["tools"]
-        assert len(tools) == 27, f"expected 27 tools in tools/list, got {len(tools)}"
+        assert len(tools) == 18, f"expected 18 tools in tools/list, got {len(tools)}"
         assert "nmemory_work_list" in {tool["name"] for tool in tools}
         assert "nmemory_board_show" in {tool["name"] for tool in tools}
         print(f"✓ tools/list verified ({len(tools)} tools)")
@@ -222,10 +222,8 @@ def test_all_tools_stdio() -> None:
         data1 = json.loads(res1["result"]["content"][0]["text"])
         session_id = data1["session_id"]
         assert session_id.startswith("sess-"), f"expected sess-*, got {session_id}"
-        assert data1["store_health"] in ("empty_store", "healthy")
-        print(
-            f"✓ nmemory_session_start OK: session_id={session_id}, health={data1['store_health']}"
-        )
+        assert set(data1) == {"session_id", "started_at"}
+        print(f"✓ nmemory_session_start OK: session_id={session_id}")
 
         # Tool 2: nmemory_capsule_ingest
         print("\n--- Tool 2: nmemory_capsule_ingest ---")
@@ -329,23 +327,6 @@ def test_all_tools_stdio() -> None:
         assert data4["kind"] == "decision"
         print(f"✓ nmemory_kind_classify OK: kind={data4['kind']}")
 
-        # Tool 5: nmemory_turn_extract
-        print("\n--- Tool 5: nmemory_turn_extract ---")
-        res5 = client.call_tool(
-            "nmemory_turn_extract",
-            {
-                "content": "todo: create release package; [ ] write documentation for v2.0; what if we use mold linker?"
-            },
-        )
-        assert "result" in res5
-        data5 = json.loads(res5["result"]["content"][0]["text"])
-        cands = data5["candidates"]
-        assert len(cands) >= 3
-        kinds = [c["kind"] for c in cands]
-        assert "task" in kinds
-        assert "brainstorm" in kinds
-        print(f"✓ nmemory_turn_extract OK: extracted {len(cands)} candidates ({kinds})")
-
         # Tool 6: nmemory_capsule_retrieve
         print("\n--- Tool 6: nmemory_capsule_retrieve ---")
         res6 = client.call_tool(
@@ -411,46 +392,6 @@ def test_all_tools_stdio() -> None:
         assert data8["id"] == cap1_id
         print("✓ nmemory_capsule_pin OK: capsule pinned")
 
-        # Tool 9: nmemory_capsule_reanchor
-        print("\n--- Tool 9: nmemory_capsule_reanchor ---")
-        res9 = client.call_tool(
-            "nmemory_capsule_reanchor",
-            {
-                "capsule_id": cap1_id,
-                "anchor": "docs/architecture.md:45",
-                "reason": "documentation relocated to docs/",
-            },
-        )
-        assert "result" in res9
-        data9 = json.loads(res9["result"]["content"][0]["text"])
-        assert data9["now"] == "docs/architecture.md:45"
-        print("✓ nmemory_capsule_reanchor OK: anchor updated")
-
-        # Tool 10: nmemory_synonym_add
-        print("\n--- Tool 10: nmemory_synonym_add ---")
-        res10 = client.call_tool(
-            "nmemory_synonym_add", {"term": "pg", "alias": "postgres"}
-        )
-        assert "result" in res10
-        data10 = json.loads(res10["result"]["content"][0]["text"])
-        assert data10["recorded"] is True
-        assert "postgres" in data10["aliases_for_term"]
-        # Also test list mode
-        res10_list = client.call_tool("nmemory_synonym_add")
-        data10_list = json.loads(res10_list["result"]["content"][0]["text"])
-        assert data10_list["total"] >= 1
-        print(
-            f"✓ nmemory_synonym_add OK: taught pg->postgres, total aliases={data10_list['total']}"
-        )
-
-        # Tool 11: nmemory_capsule_consolidate
-        print("\n--- Tool 11: nmemory_capsule_consolidate ---")
-        res11 = client.call_tool("nmemory_capsule_consolidate", {"apply_tiers": False})
-        assert "result" in res11
-        data11 = json.loads(res11["result"]["content"][0]["text"])
-        assert data11["considered"] >= 5
-        print(f"✓ nmemory_capsule_consolidate OK: considered={data11['considered']}")
-
         # Tool 12: nmemory_outcome_record
         print("\n--- Tool 12: nmemory_outcome_record ---")
         res12 = client.call_tool(
@@ -489,26 +430,6 @@ def test_all_tools_stdio() -> None:
             f"✓ nmemory_digest_show OK: live={data15['total']}, journal_chain={data15['journal']['chain']}"
         )
 
-        # Tool 16: nmemory_capsule_export
-        print("\n--- Tool 16: nmemory_capsule_export ---")
-        res16 = client.call_tool("nmemory_capsule_export", {"stamp": True})
-        assert "result" in res16
-        data16 = json.loads(res16["result"]["content"][0]["text"])
-        md = data16["markdown"]
-        assert "# nMEMORY store — generated view" in md
-        assert "body sha256:" in md
-        assert cap1_id in md
-        print("✓ nmemory_capsule_export OK: verified generated view markdown")
-
-        # Tool 18: nmemory_project_bootstrap
-        print("\n--- Tool 18: nmemory_project_bootstrap ---")
-        res18 = client.call_tool("nmemory_project_bootstrap", {"project_id": "nmemory"})
-        assert "result" in res18
-        data18 = json.loads(res18["result"]["content"][0]["text"])
-        assert "constraints_total" in data18
-        assert "budget" in data18
-        print("✓ nmemory_project_bootstrap OK: constraints, budget returned")
-
         # Tool 19: nmemory_context_show
         print("\n--- Tool 19: nmemory_context_show ---")
         res19 = client.call_tool(
@@ -518,29 +439,6 @@ def test_all_tools_stdio() -> None:
         data19 = json.loads(res19["result"]["content"][0]["text"])
         assert "results" in data19
         print(f"✓ nmemory_context_show OK: results count={len(data19['results'])}")
-
-        # Tool 20: nmemory_index_build
-        print("\n--- Tool 20: nmemory_index_build ---")
-        res20 = client.call_tool("nmemory_index_build", {"project_id": "nmemory"})
-        assert "result" in res20
-        data20 = json.loads(res20["result"]["content"][0]["text"])
-        assert "unique_chunks" in data20
-        print("✓ nmemory_index_build OK: context index verified")
-
-        # Tool 21: nmemory_capsule_import
-        print("\n--- Tool 21: nmemory_capsule_import ---")
-        res21 = client.call_tool(
-            "nmemory_capsule_import",
-            {
-                "source": "project-claude-md",
-            },
-        )
-        assert "result" in res21
-        data21 = json.loads(res21["result"]["content"][0]["text"])
-        assert data21["outcome"] in ("imported", "absent")
-        print(
-            f"✓ nmemory_capsule_import OK: outcome={data21['outcome']}, source={data21['source']}"
-        )
 
         # Tool 23: nmemory_capsule_purge
         print("\n--- Tool 23: nmemory_capsule_purge ---")
@@ -629,7 +527,7 @@ def test_all_tools_stdio() -> None:
         err25 = res25["error"]
         assert err25["code"] == -32602, f"expected -32602, got {err25['code']}"
         assert 'unknown tool "memory_lst"' in err25["message"]
-        assert "tools/list names the 27 valid tools" in err25["message"]
+        assert "tools/list names the 18 valid tools" in err25["message"]
         print(f"✓ memory_lst teaching error verified: {err25['message']}")
 
         # Tool 26: memory_ratify (Negative test: Unexposed tool check)
@@ -1165,8 +1063,9 @@ def test_batch_item_validation_zero_mutation() -> None:
 
 
 def test_context_index_file_not_found_arm() -> None:
-    """r3p-6/r3p-7 unit proof: nmemory_index_build emits 'No such file or directory (os error 2)',
-    the observed Git revision, and audits unavailable sources when a tracked file is missing.
+    """r3p-6/r3p-7 unit proof: `index_context` (`nmemory index build`) emits 'No such file
+    or directory (os error 2)', the observed Git revision, and audits unavailable sources
+    when a tracked file is missing.
     """
     db_url = default_store_path()
     from pathlib import Path
@@ -1177,9 +1076,6 @@ def test_context_index_file_not_found_arm() -> None:
     pg = Database(db_url)
     store = Store(pg)
 
-    # The member root, not the repo root: the served child runs with its cwd here, and
-    # `nmemory_index_build` refuses a root outside the anchor. A fixture that indexes a tree ABOVE
-    # the anchor was indistinguishable from the attack the fence exists to stop.
     repo_root = Path(__file__).parents[1]
     tmpdir = repo_root / ".tmp_missing_unit_repo"
     import shutil
@@ -1220,52 +1116,44 @@ def test_context_index_file_not_found_arm() -> None:
         ).stdout.strip()
         test_file.unlink()
 
-        client = StdioClient(env={"NOTT_DATABASE_DIR": str(Path(db_url).parent)})
-        try:
-            res = client.call_tool(
-                "nmemory_index_build",
-                {
-                    "root": str(tmpdir),
-                    "sources": ["markdown", "rustdoc", "git"],
-                },
-            )
-            assert "error" not in res
-            data = json.loads(res["result"]["content"][0]["text"])
-            md_src = next(s for s in data["sources"] if s["source"] == "markdown")
-            rd_src = next(s for s in data["sources"] if s["source"] == "rustdoc")
-            git_src = next(s for s in data["sources"] if s["source"] == "git")
+        from datetime import UTC, datetime
 
-            assert md_src["status"] == "unavailable"
-            assert md_src["revision"] == expected_head
-            assert (
-                "context file missing.md could not be read: No such file or directory (os error 2)"
-                in md_src["detail"]
-            )
+        from nmemory.context import index_context
 
-            assert rd_src["status"] == "unavailable"
-            assert rd_src["revision"] == expected_head
-            assert (
-                "context file missing.md could not be read: No such file or directory (os error 2)"
-                in rd_src["detail"]
-            )
+        data = index_context(
+            store, tmpdir, None, ["markdown", "rustdoc", "git"], datetime.now(UTC)
+        )
+        md_src = next(s for s in data["sources"] if s["source"] == "markdown")
+        rd_src = next(s for s in data["sources"] if s["source"] == "rustdoc")
+        git_src = next(s for s in data["sources"] if s["source"] == "git")
 
-            assert git_src["status"] == "ready"
-            assert git_src["chunks"] == 1
+        assert md_src["status"] == "unavailable"
+        assert md_src["revision"] == expected_head
+        assert (
+            "context file missing.md could not be read: No such file or directory (os error 2)"
+            in md_src["detail"]
+        )
 
-            audit_rows = store.audit.list_audit()
-            # 1 for git refresh, 1 for markdown unavailable, 1 for rustdoc unavailable
-            assert len(audit_rows) == 3
-            unavail_audits = [
-                a
-                for a in audit_rows
-                if a.reason == "durable context source unavailable"
-            ]
-            assert len(unavail_audits) == 2
-            assert all(a.action == audit_actions.INDEX for a in unavail_audits)
+        assert rd_src["status"] == "unavailable"
+        assert rd_src["revision"] == expected_head
+        assert (
+            "context file missing.md could not be read: No such file or directory (os error 2)"
+            in rd_src["detail"]
+        )
 
-            print("✓ Context index missing file arm and audit proof passed!")
-        finally:
-            client.close()
+        assert git_src["status"] == "ready"
+        assert git_src["chunks"] == 1
+
+        audit_rows = store.audit.list_audit()
+        # 1 for git refresh, 1 for markdown unavailable, 1 for rustdoc unavailable
+        assert len(audit_rows) == 3
+        unavail_audits = [
+            a for a in audit_rows if a.reason == "durable context source unavailable"
+        ]
+        assert len(unavail_audits) == 2
+        assert all(a.action == audit_actions.INDEX for a in unavail_audits)
+
+        print("✓ Context index missing file arm and audit proof passed!")
     finally:
         if tmpdir.exists():
             shutil.rmtree(tmpdir)

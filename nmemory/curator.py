@@ -96,7 +96,7 @@ from .queries.curator import (
     curator_daily_candidates,
     unclassified_capsules,
 )
-from .queries.sidecars import digest_sidecars
+from .queries.sidecars import consolidation_record, digest_sidecars
 from .queries.staged import REVIEW_REASON_EVIDENCE, staged_proposals, standing_proposal
 from .relation import RelationKind
 from .repositories.capsules import ListFilter, StoredCapsule
@@ -305,13 +305,7 @@ class DigestDraft:
     covers: tuple[str, ...]
 
 
-def parse_digest(stdout: str) -> DigestDraft:
-    """Same envelope discipline as `parse_envelope`, different schema.
-
-    `statement` and `covers` are the TWO required fields and both are checked
-    here: an envelope without `covers` yielded a capsule with empty `derived_from`,
-    which is erased provenance masquerading as synthesis.
-    """
+def _transport_output(stdout: str) -> dict[str, Any]:
     try:
         data = json.loads(stdout)
     except ValueError as err:
@@ -323,6 +317,17 @@ def parse_digest(stdout: str) -> DigestDraft:
     out = data.get("structured_output")
     if not isinstance(out, dict):
         raise CuratorError("claude output carries no structured_output")
+    return out
+
+
+def parse_digest(stdout: str) -> DigestDraft:
+    """Same envelope discipline as `parse_envelope`, different schema.
+
+    `statement` and `covers` are the TWO required fields and both are checked
+    here: an envelope without `covers` yielded a capsule with empty `derived_from`,
+    which is erased provenance masquerading as synthesis.
+    """
+    out = _transport_output(stdout)
     statement = out.get("statement")
     if not isinstance(statement, str):
         # `null` or a number passed the schema's required key and became
@@ -368,17 +373,7 @@ def curator_root(cwd: Path | None = None) -> Path | None:
 def parse_envelope(stdout: str) -> CuratorVerdict:
     """Same reading as `llm_proposer._envelope`: JSON, object, without `is_error`,
     `structured_output` in schema."""
-    try:
-        data = json.loads(stdout)
-    except ValueError as err:
-        raise CuratorError(f"claude output is not JSON: {err}") from err
-    if not isinstance(data, dict):
-        raise CuratorError("claude output is not an object")
-    if data.get("is_error"):
-        raise CuratorError(f"claude reported an error: {str(data.get('result'))[:200]}")
-    out = data.get("structured_output")
-    if not isinstance(out, dict):
-        raise CuratorError("claude output carries no structured_output")
+    out = _transport_output(stdout)
     verdict = str(out.get("verdict", ""))
     if verdict not in VERDICTS:
         raise CuratorError(f"verdict outside the schema: {verdict!r}")
@@ -1458,7 +1453,7 @@ class CuratorWorker:
         records = self._consolidation_records()
         if not records:
             return []
-        clusters = near_duplicate_proposals(canonical_order(records), set())
+        clusters = near_duplicate_proposals(canonical_order(records))
         by_id = {r.id: r for r in records}
         feitas: list[str] = []
         # The budget counts model CALLS, not created digests: an `error`,
@@ -1632,20 +1627,7 @@ class CuratorWorker:
             if sidecar is None or stored.id in fenced:
                 continue
             records.append(
-                ConsolidationRecord(
-                    id=stored.id,
-                    seq=stored.seq,
-                    source_hash=stored.capsule.provenance.source_hash,
-                    content=stored.capsule.content,
-                    instruction_taint=stored.capsule.instruction_taint,
-                    authority_class=stored.capsule.authority_class,
-                    valid_to=stored.capsule.freshness.valid_to,
-                    created_at=stored.created_at,
-                    recall_count=sidecar.recall_count,
-                    is_superseded=stored.id in superseded,
-                    tier=sidecar.tier,
-                    pinned=sidecar.pinned,
-                )
+                consolidation_record(stored, sidecar, stored.id in superseded)
             )
         return records
 

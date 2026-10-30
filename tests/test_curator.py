@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,7 @@ from nmemory.curator import (
     CuratorWorker,
     _excerpt,
     curator_root,
+    parse_digest,
     parse_envelope,
     provider_refusal,
 )
@@ -104,7 +106,7 @@ def _ingest_sem_kind(store: Store, content: str, projeto: str = "cur") -> str:
     Since the `kind` gate closed, `nmemory_capsule_ingest` rejects an item without
     `kind`. A capsule without class only reaches the store via internal writers,
     and their path is `ingest()` — curator.py:966, curator.py:1121,
-    github.py:1775, server.py:5360 — not `store.append`. Seeding via `append`
+    server.py:5360 — not `store.append`. Seeding via `append`
     would bypass the taint scan, hash dedup, and audit row, and with
     `context=None` would record the REAL host and cwd of this machine instead of the
     test context. These are the capsules that the `kind` proposal serves.
@@ -2301,7 +2303,9 @@ def test_an_error_without_an_account_code_reaches_the_next_capsule(
 ) -> None:
     """A rate limit, an overload, a server error, a bad request or a lost
     connection is transient: it fails its own capsule, retryable, as before, and
-    the pass goes on. Its record names it, read from stdout."""
+    the pass goes on. Its record names it, read from stdout. After the first
+    HTTP 429 nSPAWN walls the provider: the later capsules make no
+    call and their records name the wall."""
     _, store, server = _fresh()
     ids = [
         _ingest(server, f"capsule {n} says a returns one", "src/a.py:1")
@@ -2312,11 +2316,15 @@ def test_an_error_without_an_account_code_reaches_the_next_capsule(
     worker = CuratorWorker(store, CuratorClient(), root=_repo(tmp_path), project="cur")
     with pytest.raises(CuratorError, match="daily review failed for 3 capsule"):
         worker.daily_cycle(now=T0)
-    assert _calls(log) == ["2", "2", "2"]
-    for cid in ids:
+    walled = status == 429
+    assert _calls(log) == (["2"] if walled else ["2", "2", "2"])
+    for position, cid in enumerate(ids):
         record = store.anchors.list_verifications(cid)[-1]
         assert record.result == "error"
-        assert result[:60] in record.detail, record.detail
+        if walled and position > 0:
+            assert "is cooling down" in record.detail, record.detail
+        else:
+            assert result[:60] in record.detail, record.detail
 
 
 def test_a_refusal_on_a_staged_proposal_stops_the_pass(
@@ -2454,3 +2462,34 @@ def test_an_unjudged_pass_still_proposes_kinds_and_gives_up_the_election(
         worker.stop()
         thread.join(timeout=10)
     assert len(elections) == 2, "the owner kept the election after an unjudged pass"
+
+
+@pytest.mark.parametrize("parse", [parse_envelope, parse_digest])
+@pytest.mark.parametrize(
+    "stdout,message",
+    [
+        (
+            "not json",
+            "claude output is not JSON: Expecting value: line 1 column 1 (char 0)",
+        ),
+        ("[]", "claude output is not an object"),
+        ("null", "claude output is not an object"),
+        (
+            '{"is_error": true, "result": "Not logged in"}',
+            "claude reported an error: Not logged in",
+        ),
+        (
+            json.dumps({"is_error": True, "result": "x" * 201}),
+            "claude reported an error: " + "x" * 200,
+        ),
+        ("{}", "claude output carries no structured_output"),
+        ('{"structured_output": null}', "claude output carries no structured_output"),
+        ('{"structured_output": []}', "claude output carries no structured_output"),
+    ],
+)
+def test_transport_envelope_keeps_exact_errors(
+    parse: Callable[[str], object], stdout: str, message: str
+) -> None:
+    with pytest.raises(CuratorError) as error:
+        parse(stdout)
+    assert str(error.value) == message

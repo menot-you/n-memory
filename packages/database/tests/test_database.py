@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import os
 import sqlite3
@@ -205,6 +206,41 @@ def test_extension_sql_function_stays_off_while_vec_loads(store: Path) -> None:
         db.query(conn, "SELECT load_extension('/nonexistent/evil')")
 
 
+def test_import_does_not_import_numpy() -> None:
+    # The sqlite_vec package body imports numpy, whose BLAS threads cost each process ~2 s CPU.
+    out = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys, nott_database; print('numpy' in sys.modules)",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert out.stdout.strip() == "False"
+
+
+def test_vec_path_is_the_one_the_package_gives() -> None:
+    import sqlite_vec  # type: ignore[import-untyped]
+
+    assert db.vec_path() == sqlite_vec.loadable_path()
+
+
+def test_vec_load_without_the_extension_file_is_refused_by_name(
+    store: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import importlib.machinery
+    import importlib.util
+
+    package = tmp_path / "sqlite_vec" / "__init__.py"
+    spec = importlib.machinery.ModuleSpec("sqlite_vec", None, origin=str(package))
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: spec)
+    conn = db.connect(store)
+    with pytest.raises(db.DatabaseError, match="sqlite-vec"):
+        db.load_vec(conn)
+
+
 def test_defensive_mode_blocks_writable_schema(store: Path) -> None:
     conn = db.connect(store)
     with db.write(conn):
@@ -260,18 +296,14 @@ def test_readonly_open_refuses_writes(store: Path) -> None:
 # -- live store -------------------------------------------------------------
 
 
-_MEMORY = Path("/dev/shm")
-_ON_MEMORY = _MEMORY.is_dir() and os.access(_MEMORY, os.W_OK)
-
-
 def test_pytest_plugin_points_the_directory_at_the_test(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
     """Per test, and not under the basetemp: `journal.sock` in it must fit AF_UNIX's
-    104-byte path (108 on Linux) however deep pytest nests its temporary tree. On a
-    host with a writable `/dev/shm` it is there, so commits skip the disk fsync."""
+    104-byte path (108 on Linux) however deep pytest nests its temporary tree.
+    The host and the writer see the same shared temporary directory."""
     configured = db.directory()
-    assert configured.is_relative_to(_MEMORY if _ON_MEMORY else Path("/var/tmp"))
+    assert configured.is_relative_to(Path("/var/tmp"))
     assert configured != db.live_directory()
     assert not configured.is_relative_to(tmp_path_factory.getbasetemp())
     assert len(os.fsencode(configured.resolve() / "journal.sock")) < 104
@@ -340,12 +372,10 @@ def _production(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(marker, raising=False)
 
 
-@pytest.mark.skipif(not _ON_MEMORY, reason="no writable /dev/shm on this host")
-def test_pytest_plugin_removes_the_memory_directory_after_the_test(
+def test_pytest_plugin_removes_the_shared_directory_after_the_test(
     pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Every commit is an fsync on disk (synchronous = FULL): 200 inserts took 2.0 s
-    on btrfs and 0.03 s on tmpfs. The store lives in memory, and leaves nothing there."""
+    """A child pytest cleans up its shared, private store after the test."""
     pytester.makepyfile(
         """
         import os
@@ -362,7 +392,7 @@ def test_pytest_plugin_removes_the_memory_directory_after_the_test(
     monkeypatch.setenv("PROBE", str(probe))
     pytester.runpytest_subprocess("-p", "no:cacheprovider").assert_outcomes(passed=1)
     folder = Path(probe.read_text())
-    assert folder.is_relative_to(_MEMORY)
+    assert folder.is_relative_to(Path("/var/tmp"))
     assert not folder.parent.exists()
 
 
@@ -1140,6 +1170,159 @@ def test_a_write_finished_from_another_thread_releases_the_claim(
     assert rows(other) == ["after"]
 
 
+def _collect_in_thread(lock: contextlib.AbstractContextManager[object]) -> None:
+    """Run the collector in a worker thread that holds `lock`, as the collector does
+    when it fires inside that lock's region, and fail if the worker does not return."""
+    returned = threading.Event()
+
+    def collect() -> None:
+        with lock:
+            gc.collect()
+            returned.set()
+
+    worker = threading.Thread(target=collect, daemon=True)
+    worker.start()
+    worker.join(5)
+    assert returned.is_set(), "the finalizer waits on a lock its own thread holds"
+
+
+def test_a_holder_collected_inside_the_claims_lock_releases_its_claim(
+    store: Path,
+) -> None:
+    """The collector can run a dropped holder's finalizer inside `begin`, while that
+    thread holds the claims lock. The finalizer must return, and the claim must go."""
+    gc.disable()
+    try:
+        dropped = db.connect(store)
+        db.begin(dropped)
+        dropped.cycle = dropped  # type: ignore[attr-defined]
+        finalizer = dropped._drop
+        assert finalizer.alive
+        del dropped
+        _collect_in_thread(db._claims_lock)
+        assert not finalizer.alive
+    finally:
+        gc.enable()
+    # The same thread writes again through a new connection: no stale claim refuses it.
+    other = db.connect(store)
+    try:
+        other.execute("PRAGMA busy_timeout = 500")
+        with db.write(other):
+            other.execute("INSERT INTO t(v) VALUES ('after')")
+        assert rows(other) == ["after"]
+    finally:
+        other.close()
+
+
+class _CollectingLock:
+    """The claims lock, with the collector run each time it is taken: a collection that
+    fires inside a region the lock guards, in the thread that holds it."""
+
+    def __init__(self, lock: threading.Lock) -> None:
+        self.lock = lock
+
+    def __enter__(self) -> None:
+        self.lock.acquire()
+        gc.collect()
+
+    def __exit__(self, *exc: object) -> None:
+        self.lock.release()
+
+
+def test_a_holder_collected_inside_begin_keeps_the_claim_begin_takes(
+    store: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The collector runs a dropped holder's finalizer inside `begin`'s own claims
+    region, in its thread. `begin` must return, the dropped claim must go, and the
+    claim `begin` takes must hold until its write ends."""
+    refused: list[str] = []
+    done = threading.Event()
+
+    def writer() -> None:
+        dropped = db.connect(store)
+        db.begin(dropped)
+        dropped.cycle = dropped  # type: ignore[attr-defined]
+        del dropped
+        kept, second = db.connect(store), db.connect(store)
+        try:
+            db.begin(kept)
+            with pytest.raises(
+                db.BusyError, match="same thread already holds"
+            ) as error:
+                db.begin(second)
+            refused.append(str(error.value))
+            db.finish(kept, True)
+            with db.write(second):
+                second.execute("INSERT INTO t(v) VALUES ('after')")
+        finally:
+            kept.close()
+            second.close()
+        done.set()
+
+    monkeypatch.setattr(db, "_claims_lock", _CollectingLock(db._claims_lock))
+    gc.disable()
+    try:
+        thread = threading.Thread(target=writer, daemon=True)
+        thread.start()
+        thread.join(10)
+    finally:
+        gc.enable()
+    assert done.is_set(), "the finalizer waits on the claims lock `begin` holds"
+    assert len(refused) == 1
+    reader = db.connect(store)
+    try:
+        assert rows(reader) == ["after"]
+    finally:
+        reader.close()
+
+
+def test_a_queued_waiter_collected_inside_its_own_guard_lets_the_lock_go(
+    store: Path,
+) -> None:
+    """The flock thread holds its wait's guard while it sets the grant. The collector
+    can run the dropped connection's finalizer there; it must return, and the grant
+    must be let go."""
+    holding, release = threading.Event(), threading.Event()
+
+    def hold() -> None:
+        holder = db.connect(store)
+        try:
+            with db.write(holder):
+                holding.set()
+                release.wait(10)
+        finally:
+            holder.close()
+
+    thread = threading.Thread(target=hold)
+    thread.start()
+    gc.disable()
+    try:
+        assert holding.wait(5)
+        dropped = db.connect(store)
+        dropped.execute("PRAGMA busy_timeout = 20")
+        with pytest.raises(db.BusyError):
+            db.begin(dropped)
+        waiting = dropped.gate.waiting
+        assert waiting is not None
+        dropped.cycle = dropped  # type: ignore[attr-defined]
+        finalizer = dropped._drop
+        del dropped
+        _collect_in_thread(waiting.guard)
+        assert not finalizer.alive
+    finally:
+        gc.enable()
+        release.set()
+        thread.join(5)
+    other = db.connect(store)
+    try:
+        other.execute("PRAGMA busy_timeout = 2000")
+        with db.write(other):
+            other.execute("INSERT INTO t(v) VALUES ('after')")
+        assert rows(other) == ["after"]
+    finally:
+        other.close()
+
+
 def _open_fds() -> int:
     return len(os.listdir("/proc/self/fd"))
 
@@ -1276,3 +1459,124 @@ def test_raw_errors_are_the_sqlite3_classes() -> None:
 
 def test_row_type_is_the_sqlite3_class() -> None:
     assert db.Row is sqlite3.Row
+
+
+def test_admit_directory_refuses_a_wide_mode_a_link_and_the_live_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = tmp_path / "store"
+    folder.mkdir(mode=0o700)
+    assert db.admit_directory(folder) == folder
+    folder.chmod(0o750)
+    with pytest.raises(db.RefusedError, match="wider than private"):
+        db.admit_directory(folder)
+    folder.chmod(0o700)
+    link = tmp_path / "link"
+    link.symlink_to(folder, target_is_directory=True)
+    with pytest.raises(db.RefusedError, match="is a symlink"):
+        db.admit_directory(link)
+    with pytest.raises(db.RefusedError, match="is missing"):
+        db.admit_directory(tmp_path / "absent")
+    monkeypatch.setattr(db, "live_directory", lambda: folder)
+    with pytest.raises(db.RefusedError, match="live store"):
+        db.admit_directory(folder)
+
+
+def test_admit_directory_refuses_an_ancestor_that_another_account_can_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Another account that can rename an ancestor can swap the store directory for
+    # a link to the live store after admission (PR 1928 review, F1).
+    shared = tmp_path / "shared"
+    folder = shared / "job" / "database"
+    folder.mkdir(mode=0o700, parents=True)
+    shared.chmod(0o777)
+    with pytest.raises(db.RefusedError) as refused:
+        db.admit_directory(folder)
+    assert str(shared) in str(refused.value)
+    assert "0o777" in str(refused.value)
+    assert "sticky" in str(refused.value)
+    assert "chmod go-w" in str(refused.value)
+    shared.chmod(0o1777)
+    assert db.admit_directory(folder) == folder
+    shared.chmod(0o770)
+    with pytest.raises(db.RefusedError, match="writable by group or other"):
+        db.admit_directory(folder)
+    shared.chmod(0o755)
+    assert db.admit_directory(folder) == folder
+    # The account is the trust boundary: an ancestor that root or this account
+    # does not own is refused, whatever its mode. Without a second account the
+    # test makes the running account foreign to the directories it owns.
+    owner = os.geteuid()
+    monkeypatch.setattr(db.os, "geteuid", lambda: owner + 4242)
+    with pytest.raises(db.RefusedError) as foreign:
+        db.check_ancestors(folder)
+    assert f"owned by uid {owner}" in str(foreign.value)
+    assert "root" in str(foreign.value)
+
+
+def test_check_ancestors_admits_var_tmp_and_stops_at_a_missing_component() -> None:
+    db.check_ancestors(Path("/var/tmp/nott-absent-ancestor/a/b/database"))
+
+
+def _show_as_foreign(monkeypatch: pytest.MonkeyPatch, target: Path) -> None:
+    """Show `target` as owned by another account from the moment it exists.
+
+    A test cannot make a file that another uid owns. The replacement of `os.lstat`
+    matches the identity of `target`, not its spelling. A target that does not
+    exist yet matches nothing."""
+    real = os.lstat
+    foreign = os.geteuid() + 4242
+
+    def lstat(
+        path: str | os.PathLike[str], *, dir_fd: int | None = None
+    ) -> os.stat_result:
+        st = real(path, dir_fd=dir_fd)
+        try:
+            mark = real(target)
+        except FileNotFoundError:
+            return st
+        if (st.st_dev, st.st_ino) != (mark.st_dev, mark.st_ino):
+            return st
+        fields = list(st)
+        fields[4] = foreign
+        return os.stat_result(fields)
+
+    monkeypatch.setattr(db.os, "lstat", lstat)
+
+
+@pytest.mark.parametrize("foreign", ["link", "directory"])
+def test_admit_directory_refuses_a_foreign_component_met_while_a_link_expands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, foreign: str
+) -> None:
+    # Only the expansion of `alias` goes through `foreign` and its `bridge` link.
+    # The path as given and its resolved path do not name them (PR 1928, FM2).
+    real = Path(os.path.realpath(tmp_path))
+    safe = tmp_path / "safe"
+    for folder in (safe, safe / "state", safe / "state" / "database"):
+        folder.mkdir(mode=0o700)
+    (tmp_path / "foreign").mkdir()
+    (tmp_path / "foreign").chmod(0o755)
+    bridge = tmp_path / "foreign" / "bridge"
+    bridge.symlink_to(safe, target_is_directory=True)
+    alias = tmp_path / "alias"
+    alias.symlink_to(bridge, target_is_directory=True)
+    folder = alias / "state" / "database"
+    assert db.admit_directory(folder) == folder
+    shown = bridge if foreign == "link" else tmp_path / "foreign"
+    _show_as_foreign(monkeypatch, shown)
+    with pytest.raises(db.RefusedError) as refused:
+        db.admit_directory(folder)
+    assert f"ancestor {real / shown.relative_to(tmp_path)} (" in str(refused.value)
+
+
+def test_check_ancestors_refuses_a_link_chain_past_the_kernel_bound(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "a").symlink_to("b")
+    (tmp_path / "b").symlink_to("a")
+    path = tmp_path / "a" / "database"
+    with pytest.raises(db.RefusedError) as refused:
+        db.check_ancestors(path)
+    assert str(path) in str(refused.value)
+    assert "more than 40 links" in str(refused.value)

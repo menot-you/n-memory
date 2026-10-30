@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import selectors
@@ -27,14 +28,49 @@ class RpcTimeout(RuntimeError):
 
 
 class McpStdio:
-    """Real JSON-RPC client for a ``python -m nspawn.main`` process."""
+    """Real JSON-RPC client for source or an explicitly pinned executable."""
 
     def __init__(
-        self, environment: dict[str, str], prefix: tuple[str, ...] = ()
+        self,
+        environment: dict[str, str],
+        prefix: tuple[str, ...] = (),
+        *,
+        executable: Path | None = None,
+        cwd: Path | None = None,
+        expected_sha256: str | None = None,
     ) -> None:
+        argv = [*prefix, sys.executable, "-m", "nspawn.main"]
+        directory = MEMBER_ROOT
+        if executable is not None:
+            if (
+                not executable.is_absolute()
+                or not executable.is_file()
+                or not os.access(executable, os.X_OK)
+                or cwd is None
+                or not cwd.is_absolute()
+                or not cwd.is_dir()
+                or cwd == MEMBER_ROOT
+                or expected_sha256 is None
+            ):
+                raise ValueError(
+                    "explicit nSPAWN target or neutral directory is invalid"
+                )
+            with executable.open("rb") as stream:
+                actual = hashlib.file_digest(stream, "sha256").hexdigest()
+            if actual != expected_sha256:
+                raise ValueError("explicit nSPAWN target digest differs")
+            argv = [*prefix, str(executable), "mcp", "serve"]
+            directory = cwd
+            environment = {
+                name: value
+                for name, value in environment.items()
+                if name not in ("PYTHONPATH", "PYTHONHOME")
+            }
+        elif cwd is not None or expected_sha256 is not None:
+            raise ValueError("explicit nSPAWN target is missing")
         self.process = subprocess.Popen(
-            [*prefix, sys.executable, "-m", "nspawn.main"],
-            cwd=MEMBER_ROOT,
+            argv,
+            cwd=directory,
             env=environment,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -163,7 +199,9 @@ def live_environment(tmp_path: Path) -> dict[str, str]:
     home = tmp_path / "home"
     home.mkdir()
     plugin = tmp_path / "plugin"
-    plugin.mkdir()
+    # A child runs as `worker` when its start names no agent.
+    (plugin / "agents").mkdir(parents=True)
+    (plugin / "agents" / "worker.md").write_text("Do the brief.\n")
     secrets = tmp_path / "secrets"
     secrets.mkdir(mode=0o700)
     credential = secrets / "fixture.token"

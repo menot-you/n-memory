@@ -163,7 +163,7 @@ def test_profile_check_returns_bound_composition_without_launching_legacy_adapte
         "route_launch",
         lambda *args, **kwargs: calls.append(args) or (["/bin/true"], {}),
     )
-    monkeypatch.setattr(route, "read_roster", lambda: None)
+    monkeypatch.setattr(route, "node_roster", lambda: None)
     monkeypatch.setattr(
         route,
         "route_start",
@@ -421,7 +421,7 @@ def large_profile(tmp_path: Path, monkeypatch):
     staged = tmp_path / "run" / "prelaunch.json"
     staged.write_bytes(prepared.encoded)
     staged.chmod(0o600)
-    monkeypatch.setattr(route, "read_roster", lambda: None)
+    monkeypatch.setattr(route, "node_roster", lambda: None)
     monkeypatch.setattr(
         route,
         "route_start",
@@ -932,3 +932,61 @@ def test_private_egress_admits_exact_destination_and_refuses_another(
         worker.join(5)
         assert not worker.is_alive()
         assert not path.exists()
+
+
+@pytest.mark.parametrize(
+    ("refusal", "reason"),
+    [
+        (
+            AdmissionRefusal("staged profile digest differs"),
+            "staged profile digest differs",
+        ),
+        (route.RouteRefused("selected runtime input is unavailable"), "nERR-1116"),
+        (
+            AdmissionRefusal("profile bytes /home/private/token secret-profile-data"),
+            "private admission refused",
+        ),
+        (
+            route.RouteRefused("profile bytes /home/private/token secret-profile-data"),
+            "nERR-1116",
+        ),
+    ],
+    ids=["admission-reason", "route-code", "private-admission", "private-route"],
+)
+def test_profile_check_reports_a_safe_refusal_discriminator(
+    monkeypatch, capsys, refusal, reason
+) -> None:
+    def refused(*args, **kwargs):
+        raise refusal
+
+    monkeypatch.setattr(route, "profile_prepare", refused)
+    result = cli.cmd_route_start(
+        [
+            "claude",
+            "--route",
+            "fixture-account",
+            "--profile",
+            "/private/profile.json",
+            "--profile-digest",
+            "sha256:" + "a" * 64,
+            "--grant-root",
+            "/private",
+            "--check",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert result == 2, "PRELAUNCH refusal must keep exit code 2"
+    assert type(refusal).__name__ in captured.err, (
+        "PRELAUNCH stderr must identify the refusal class"
+    )
+    assert reason in captured.err, (
+        "PRELAUNCH stderr must identify a safe fixed reason or code"
+    )
+    assert "Claude PRELAUNCH was refused before consumer execution" in captured.err
+    assert captured.out == "", "refused PRELAUNCH must not emit profile bytes"
+    assert "secret-profile-data" not in captured.err, (
+        "refusal diagnostics must not expose profile bytes"
+    )
+    assert "/home/" not in captured.err, (
+        "refusal diagnostics must not expose home paths"
+    )

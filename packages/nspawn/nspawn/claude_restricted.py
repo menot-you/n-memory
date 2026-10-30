@@ -1,34 +1,15 @@
-"""The fail-closed launch of a Claude native writer under the client's own sandbox.
+"""Compose fail-closed Claude node cages.
 
-`claude -p --restricted` with `--settings` runs every Bash call inside Claude
-Code's bubblewrap sandbox. Measured on 2.1.284 (P-C E0, 2026-09-29), four
-boundaries hold only if the launcher closes them, so this module does:
-
-1. A garbled `--settings` file runs the tools UNCAGED with rc=0 and no warning.
-   The settings are written here, 0600, re-read, hash-pinned and validated;
-   `verify_pinned_settings` is the check to repeat right before exec.
-2. A linked worktree's common gitdir stays readable whatever denyRead says.
-   Only a standalone clone, whose `.git` is a real directory, may be the cwd.
-3. Tools inherit the launch environment. The environment is a closed allowlist
-   plus an explicit deny for every credential and host-only name. It never
-   carries `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`: measured on 2.1.284, that
-   variable switches off `denyRead: ["/"]`, and the tools read $HOME and every
-   path outside the checkout; only explicitly named denies stayed masked.
-4. The default per-user temp is shared across sessions. TMPDIR is private to
-   the run.
-5. The client's sandbox setup creates .claude/.cc-writes under its initial
-   working directory (2.1.296). Both writers and reviewers start in private
-   scratch; project work names the separately admitted checkout.
-
-A boundary this composition cannot establish refuses the launch; it never
-degrades to an uncaged child.
+Native writers and readers use the ordinary client launch instead of these
+settings.
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
+import ipaddress
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -40,21 +21,9 @@ from typing import Any, Final
 from .admission import AdmissionRefusal, PrelaunchProfileV1, runtime_files
 from .child import CREDENTIAL_ENV_NAMES
 from .errors import NERR_1116, NSpawnError
-from .owner_roster import model_env_build
 
-SETTINGS_FILE: Final = "claude-settings.json"
-#: Where each run's TMPDIR is made: short, because the client binds its sandbox
-#: bridge sockets under TMPDIR and AF_UNIX paths stop at 108 bytes. Measured on
-#: 2.1.284: a 30-character TMPDIR worked; a 93-character one, an installed run's
-#: `~/.nott/state/nspawn/runs/<uuid>/tmp`, failed "to create bridge sockets".
+#: The shared temp the node host makes its per-run scratch in.
 SCRATCH_ROOT: Final = Path("/var/tmp")
-#: No settings layer but the pinned `--settings`: the read-only child's
-#: `claude_child.SETTING_SOURCES` keeps the user's; this writer keeps none.
-SETTING_SOURCES: Final = ""
-#: The client's own config directory (credentials, transcripts): in the run, so
-#: the pinned token is the only credential it can find and nothing lands in the
-#: operator's `~/.claude`. Measured on 2.1.284: without it the transcript did.
-CONFIG_DIR: Final[str] = "claude"
 #: The PATH the client and its tools resolve `bwrap` and the shell from.
 RUNTIME_PATH: Final = "/usr/local/bin:/usr/bin:/bin"
 #: The system trees a tool needs to execute anything at all (E0 settings-2).
@@ -66,101 +35,35 @@ RUNTIME_READ: Final[tuple[str, ...]] = (
     "/etc",
     "/dev",
 )
-#: Account homes under $HOME, expanded at compose time: the sandbox takes paths.
-#: Directories only, plus `.claude.json`: the vendor churns `.claude.json.tmp.*`
-#: files, and a denied path gone by exec time fails bwrap ("Can't get type of
-#: source"). `denyRead: ["/"]` already hides them.
-HOME_GUARDS: Final[tuple[str, ...]] = (".claude*", ".codex*", ".nott")
-HOME_GUARD_FILES: Final[tuple[str, ...]] = (".claude.json",)
 #: Host-only names the E0 scrub left visible to tools.
 HOST_ONLY_ENV: Final[tuple[str, ...]] = ("DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR")
-MAX_SETTINGS_BYTES: Final = 64 * 1024
-
-#: (key path under "sandbox", required value): the cage itself.
-_REQUIRED_VALUES: Final[tuple[tuple[tuple[str, ...], object], ...]] = (
-    (("enabled",), True),
-    (("failIfUnavailable",), True),
-    (("allowUnsandboxedCommands",), False),
-    (("autoAllowBashIfSandboxed",), True),
-    (("network", "allowedDomains"), []),
-    (("network", "strictAllowlist"), True),
+#: Where a route's own endpoint may be to count as private: this host, and the private
+#: networks (RFC 1918, the tailnet's 100.64.0.0/10, IPv6 unique local).
+PRIVATE_NETWORKS: Final = tuple(
+    ipaddress.ip_network(network)
+    for network in (
+        "127.0.0.0/8",
+        "::1/128",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "100.64.0.0/10",
+        "fc00::/7",
+    )
 )
-_REQUIRED_LISTS: Final[tuple[tuple[str, ...], ...]] = (
-    ("filesystem", "denyRead"),
-    ("filesystem", "allowRead"),
-    ("filesystem", "denyWrite"),
-    ("filesystem", "allowWrite"),
-    ("credentials", "envVars"),
+#: The one shape a private endpoint may have: `scheme://host[:port]`, and
+#: an optional final `/`. No userinfo, `\`, path, query, fragment or space, so
+#: the client's WHATWG URL parser cannot read another host in it.
+_ENDPOINT: Final = re.compile(
+    r"(https?)://(localhost|[0-9.]+|\[[0-9A-Fa-f:.]+\])(?::([0-9]{1,5}))?/?"
 )
 
 
 class RestrictedLaunchRefused(NSpawnError):
-    """A required boundary of the restricted writer cannot be established."""
+    """A required boundary of the node cage cannot be established."""
 
     def __init__(self, detail: str) -> None:
         super().__init__(NERR_1116, f"claude restricted launch: {detail}")
-
-
-@dataclass(frozen=True, slots=True)
-class RestrictedLaunch:
-    """What the supervisor execs: argv, the closed env, and the pinned settings.
-
-    The prompt is not on argv; the caller writes it to stdin. The cwd is the
-    checkout the composition was given.
-    """
-
-    argv: tuple[str, ...]
-    env: dict[str, str]
-    settings_path: Path
-    settings_sha256: str
-    #: Where the child starts: private scratch, because the client's sandbox
-    #: setup writes its masks and staging directories in its initial cwd.
-    #: Those administrative writes must never enter the admitted project.
-    cwd: Path
-    #: Where the child must perform project work, with its admitted access.
-    preface: str | None
-
-
-def _at(document: object, keys: tuple[str, ...]) -> object:
-    for key in keys:
-        if not isinstance(document, dict) or key not in document:
-            return _MISSING
-        document = document[key]
-    return document
-
-
-_MISSING: Final = object()
-
-
-def verify_pinned_settings(path: Path, sha256: str) -> None:
-    """Refuse unless `path` holds exactly the pinned, well-formed cage."""
-    try:
-        metadata = os.lstat(path)
-        if not stat.S_ISREG(metadata.st_mode):
-            raise RestrictedLaunchRefused(f"settings {path} is not a regular file")
-        if stat.S_IMODE(metadata.st_mode) != 0o600 or metadata.st_uid != os.getuid():
-            raise RestrictedLaunchRefused(f"settings {path} is not 0600 and ours")
-        with open(path, "rb") as handle:
-            raw = handle.read(MAX_SETTINGS_BYTES + 1)
-    except OSError as error:
-        raise RestrictedLaunchRefused(f"settings {path}: {error}") from error
-    if hashlib.sha256(raw).hexdigest() != sha256:
-        raise RestrictedLaunchRefused(f"settings {path} do not match their pin")
-    try:
-        sandbox = _at(json.loads(raw), ("sandbox",))
-    except (ValueError, RecursionError) as error:
-        raise RestrictedLaunchRefused(f"settings {path} are not JSON") from error
-    for keys, expected in _REQUIRED_VALUES:
-        value = _at(sandbox, keys)
-        # `type` first: JSON 1 must not pass for true.
-        if type(value) is not type(expected) or value != expected:
-            raise RestrictedLaunchRefused(f"settings lack sandbox.{'.'.join(keys)}")
-    for keys in _REQUIRED_LISTS:
-        if not isinstance(_at(sandbox, keys), list):
-            raise RestrictedLaunchRefused(f"settings lack sandbox.{'.'.join(keys)}")
-    deny_read = _at(sandbox, ("filesystem", "denyRead"))
-    if not isinstance(deny_read, list) or deny_read[:1] != ["/"]:
-        raise RestrictedLaunchRefused("settings do not deny reading by default")
 
 
 def make_scratch(root: Path = SCRATCH_ROOT) -> Path:
@@ -173,319 +76,29 @@ def make_scratch(root: Path = SCRATCH_ROOT) -> Path:
         raise RestrictedLaunchRefused(f"scratch root {root}: {error}") from error
 
 
-def _require_private_directory(directory: Path) -> None:
-    try:
-        info = os.lstat(directory)
-    except OSError as error:
-        raise RestrictedLaunchRefused(f"scratch {directory}: {error}") from error
-    if (
-        not stat.S_ISDIR(info.st_mode)
-        or stat.S_IMODE(info.st_mode) != 0o700
-        or info.st_uid != os.getuid()
-    ):
-        raise RestrictedLaunchRefused(
-            f"scratch {directory} is not a private directory of this account"
-        )
+def private_endpoint(url: str) -> str | None:
+    """`url` rebuilt from its scheme, host and port when it is an endpoint on this
+    host or a private network, else None. The client gets the rebuilt URL, so it
+    reaches exactly the host that this check read.
 
-
-def _require_standalone_checkout(checkout: Path) -> None:
-    if os.path.realpath(checkout) != os.fspath(checkout):
-        raise RestrictedLaunchRefused(f"checkout {checkout} is not a canonical path")
-    git = checkout / ".git"
-    try:
-        mode = os.lstat(git).st_mode
-    except OSError as error:
-        raise RestrictedLaunchRefused(f"{git}: {error}") from error
-    # A `.git` FILE is a linked worktree: its common gitdir stays readable
-    # under any denyRead (E0 3a). A symlink points the same way.
-    if not stat.S_ISDIR(mode):
-        raise RestrictedLaunchRefused(f"{git} is not a standalone clone's directory")
-
-
-def _review_gitdirs(checkout: Path) -> tuple[Path, ...]:
-    """What a reviewer reads its history from, beyond the checkout itself.
-
-    None for a snapshot (no `.git`) or a clone (`.git` inside the checkout); a
-    linked worktree's own gitdir and the common gitdir it names otherwise.
+    The host must be `localhost` or an address in `PRIVATE_NETWORKS`. Any other
+    name never counts, because it can resolve to any address.
     """
-    if os.path.realpath(checkout) != os.fspath(checkout):
-        raise RestrictedLaunchRefused(f"checkout {checkout} is not a canonical path")
-    git = checkout / ".git"
-    try:
-        mode = os.lstat(git).st_mode
-    except FileNotFoundError:
-        return ()
-    except OSError as error:
-        raise RestrictedLaunchRefused(f"{git}: {error}") from error
-    if stat.S_ISDIR(mode):
-        return ()
-    if not stat.S_ISREG(mode):
-        raise RestrictedLaunchRefused(f"{git} is neither a gitdir nor a gitdir file")
-    try:
-        pointer = git.read_text().strip()
-        own = Path(pointer.removeprefix("gitdir: ")).resolve(strict=True)
-        common = (own / (own / "commondir").read_text().strip()).resolve(strict=True)
-    except (OSError, ValueError) as error:
-        raise RestrictedLaunchRefused(f"{git}: {error}") from error
-    return (own, common)
-
-
-def _settings_document(
-    checkout: Path,
-    tmpdir: Path,
-    home: Path,
-    host_auth: Mapping[str, str],
-    *,
-    writable: bool,
-    extra_read: tuple[Path, ...],
-) -> dict[str, object]:
-    # A writer's `.git` is denied read and write on purpose: its Bash runs no
-    # git, so it can neither plant a hook nor rewrite history; the workflow
-    # reads the diff from outside the cage. A reviewer reads history and
-    # writes nothing of the candidate.
-    guarded = [
-        *([str(checkout / ".git")] if writable else []),
-        *sorted(
-            str(p)
-            for pattern in HOME_GUARDS
-            for p in home.glob(pattern)
-            if p.is_dir() or p.name in HOME_GUARD_FILES
-        ),
-        "/run/user",
-    ]
-    denied_env = sorted(set(host_auth) | CREDENTIAL_ENV_NAMES | set(HOST_ONLY_ENV))
-    if writable:
-        deny_write, allow_write = guarded, [str(checkout), str(tmpdir)]
-    else:
-        candidate = [str(checkout)]
-        if (checkout / ".git").is_dir():
-            candidate.append(str(checkout / ".git"))
-        deny_write = [*guarded, *candidate, *(str(p) for p in extra_read)]
-        allow_write = [str(tmpdir)]
-    return {
-        "sandbox": {
-            "enabled": True,
-            "failIfUnavailable": True,
-            "allowUnsandboxedCommands": False,
-            "autoAllowBashIfSandboxed": True,
-            "filesystem": {
-                "denyRead": ["/", *guarded],
-                "allowRead": [
-                    *RUNTIME_READ,
-                    str(checkout),
-                    str(tmpdir),
-                    *(str(p) for p in extra_read),
-                ],
-                "denyWrite": deny_write,
-                "allowWrite": allow_write,
-            },
-            "network": {"allowedDomains": [], "strictAllowlist": True},
-            "credentials": {
-                "envVars": [{"name": name, "mode": "deny"} for name in denied_env]
-            },
-        }
-    }
-
-
-def compose_restricted_launch(
-    *,
-    binary: Path,
-    checkout: Path,
-    run_dir: Path,
-    host_auth: Mapping[str, str],
-    model: str | None = None,
-    effort: str | None = None,
-    system_prompt_file: Path | None = None,
-    session_id: str | None = None,
-    home: Path | None = None,
-    path: str = RUNTIME_PATH,
-    tmpdir: Path,
-    writable: bool = True,
-    read_paths: tuple[Path, ...] = (),
-    config_dir: Path | None = None,
-    resume: bool = False,
-) -> RestrictedLaunch:
-    """Compose one caged Claude turn, or refuse: a writer (`writable`) writes
-    its standalone checkout; a reviewer writes only its scratch, and reads the
-    candidate, its history and the named `read_paths`.
-
-    `host_auth` is the CLI host's credential (CLAUDE_CODE_OAUTH_TOKEN): it is in
-    the launch env and denied to every tool. `run_dir` must exist and be private
-    to this run; the settings and the client's config dir are created in it.
-    `tmpdir` is the run's scratch from `make_scratch`, owned by the caller.
-    """
-    for label, candidate in (
-        ("binary", binary),
-        ("checkout", checkout),
-        ("run directory", run_dir),
-    ):
-        if not candidate.is_absolute():
-            raise RestrictedLaunchRefused(f"the {label} {candidate} is not absolute")
-    for extra in read_paths:
-        if not extra.is_absolute():
-            raise RestrictedLaunchRefused(f"the read path {extra} is not absolute")
-    if writable:
-        _require_standalone_checkout(checkout)
-        extra_read: tuple[Path, ...] = ()
-    else:
-        extra_read = (*_review_gitdirs(checkout), *read_paths)
-    if not host_auth:
-        # Without it the client finds no login in its empty config dir and fails
-        # on authentication inside the cage; name the cause here instead.
-        raise RestrictedLaunchRefused("the launch carries no credential")
-    stray = set(host_auth) - CREDENTIAL_ENV_NAMES
-    if stray:
-        raise RestrictedLaunchRefused(
-            f"host_auth carries non-credential {sorted(stray)}"
-        )
-    if shutil.which("bwrap", path=path) is None:
-        raise RestrictedLaunchRefused(f"bwrap is not on {path}")
-    home = Path.home() if home is None else home
-    config_dir = run_dir / CONFIG_DIR if config_dir is None else config_dir
-    if resume:
-        _require_private_directory(config_dir)
-    settings = run_dir / SETTINGS_FILE
-    _require_private_directory(tmpdir)
-    raw = (
-        json.dumps(
-            _settings_document(
-                checkout,
-                tmpdir,
-                home,
-                host_auth,
-                writable=writable,
-                extra_read=extra_read,
-            ),
-            indent=1,
-        ).encode()
-        + b"\n"
-    )
-    try:
-        fd = os.open(
-            settings,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-            0o600,
-        )
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(raw)
-        if not resume:
-            config_dir.mkdir(mode=0o700)
-    except OSError as error:
-        raise RestrictedLaunchRefused(f"run directory {run_dir}: {error}") from error
-    sha256 = hashlib.sha256(raw).hexdigest()
-    verify_pinned_settings(settings, sha256)
-    cwd = tmpdir / "work"
-    try:
-        cwd.mkdir(mode=0o700)
-    except OSError as error:
-        raise RestrictedLaunchRefused(f"scratch {tmpdir}: {error}") from error
-    if writable:
-        preface = (
-            f"The writable project checkout is the exact directory {checkout}. "
-            "Enter that directory as your working directory for all project work. "
-            "Your initial working directory is private administrative scratch, "
-            "outside the project."
-        )
-    else:
-        preface = (
-            f"The candidate under review is the read-only directory {checkout}: "
-            "read it there. Your working directory is a private scratch "
-            "directory, and nothing you write reaches the candidate."
-        )
-
-    env = {
-        "PATH": path,
-        "HOME": str(home),
-        "TMPDIR": str(tmpdir),
-        "CLAUDE_CONFIG_DIR": str(config_dir),
-    }
-    # Model and effort travel in the env, never on argv (child.build_child_env).
-    # The native catalogue resolves family names before the tier values are set.
-    if model is not None:
-        model_env_build(model, None, binary, env)
-    if effort is not None:
-        env["CLAUDE_CODE_EFFORT_LEVEL"] = effort
-    env.update(host_auth)
-
-    # `--allowedTools Bash`: without it the permission layer answers before
-    # bwrap, and the cage is never what refused.
-    argv = [
-        os.fspath(binary),
-        "-p",
-        "--restricted",
-        "--permission-mode",
-        "dontAsk",
-        "--tools",
-        "Bash",
-        "--allowedTools",
-        "Bash",
-        "--strict-mcp-config",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        # No settings layer but the pinned one: neither the user's nor one the
-        # model could plant in the checkout for a later attempt.
-        "--setting-sources",
-        SETTING_SOURCES,
-        "--settings",
-        str(settings),
-    ]
-    if system_prompt_file is not None:
-        argv.extend(("--append-system-prompt-file", os.fspath(system_prompt_file)))
-    if session_id is not None:
-        if resume:
-            argv.extend(("--resume", session_id))
-        else:
-            argv.append(f"--session-id={session_id}")
-    return RestrictedLaunch(
-        argv=tuple(argv),
-        env=env,
-        settings_path=settings,
-        settings_sha256=sha256,
-        cwd=cwd,
-        preface=preface,
-    )
-
-
-#: What 2.1.284 answers every Bash call with when its sandbox cannot start; with
-#: `failIfUnavailable` nothing runs, yet the turn itself still ends "completed".
-SANDBOX_DOWN: Final = b"Sandbox is required but failed to initialize"
-
-
-def _refused_by_unstarted_sandbox(line: bytes) -> bool:
-    """A tool result the client itself failed with the unstarted-sandbox
-    message: never a command's output, a file or the model's text quoting it."""
-    if SANDBOX_DOWN not in line:
-        return False
-    try:
-        frame = json.loads(line)
-    except ValueError:
-        return False
-    message = frame.get("message") if isinstance(frame, dict) else None
-    content = message.get("content") if isinstance(message, dict) else None
-    if frame.get("type") != "user" or not isinstance(content, list):
-        return False
-    return any(
-        isinstance(block, dict)
-        and block.get("type") == "tool_result"
-        and block.get("is_error") is True
-        and isinstance(block.get("content"), str)
-        and block["content"].encode().startswith(SANDBOX_DOWN)
-        for block in content
-    )
-
-
-def require_sandbox_started(stdout: Path) -> None:
-    """Refuse a finished turn whose tool calls the unstarted sandbox refused."""
-    try:
-        with stdout.open("rb") as handle:
-            down = any(_refused_by_unstarted_sandbox(line) for line in handle)
-    except FileNotFoundError:
-        return
-    if down:
-        raise RestrictedLaunchRefused(
-            "the client's sandbox did not start; every command was refused"
-        )
+    match = _ENDPOINT.fullmatch(url)
+    if match is None:
+        return None
+    scheme, host, port = match.groups()
+    if port is not None and not 1 <= int(port) <= 65535:
+        return None
+    if host != "localhost":
+        try:
+            address = ipaddress.ip_address(host.strip("[]"))
+        except ValueError:
+            return None
+        if not any(address in network for network in PRIVATE_NETWORKS):
+            return None
+        host = f"[{address}]" if address.version == 6 else str(address)
+    return f"{scheme}://{host}" + ("" if port is None else f":{int(port)}")
 
 
 NODE_BOOTSTRAP = """import os, socket, subprocess, sys, time

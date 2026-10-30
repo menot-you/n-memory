@@ -33,7 +33,6 @@ The [security policy](../SECURITY.md) owns vulnerability reporting.
 
 ## Evidence limits
 
-The [catalog](setup-catalog.json) owns current results and remaining observations for this project.
 Record production and development dependency audits separately for each selected lock.
 An advisory service failure is an incomplete audit.
 CodeQL dispositions do not prove that no vulnerability exists.

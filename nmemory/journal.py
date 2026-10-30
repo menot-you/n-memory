@@ -75,17 +75,6 @@ class AuditEvent:
             ensure_ascii=False,
         )
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "seq": self.seq,
-            "at": format_rfc3339(self.at),
-            "actor": self.actor,
-            "action": self.action,
-            "subject": self.subject,
-            "reason": self.reason,
-            "chained_hash": self.chained_hash,
-        }
-
 
 def compute_chained_hash(prev_hash: str, canonical_line: str) -> str:
     """SHA-256 over prev_hash concatenated with the canonical line, WITHOUT separator.
@@ -112,20 +101,7 @@ class ChainStatus:
 @dataclass(frozen=True)
 class ReplayReport:
     chain: ChainStatus
-    audit_covers_state: bool
     out_of_band: list[str]
-
-    def to_dict(self) -> dict[str, Any]:
-        res: dict[str, Any] = {
-            "chain": "ok" if self.chain.is_ok else "broken",
-            "audit_covers_state": self.audit_covers_state,
-            "out_of_band": self.out_of_band,
-        }
-        if self.chain.is_ok:
-            res["verified"] = self.chain.count
-        else:
-            res["broken_seq"] = self.chain.broken_seq
-        return res
 
 
 # ---------------------------------------------------------------------------
@@ -179,11 +155,6 @@ def _line_port_python(event: AuditEvent) -> str:
     )
 
 
-def _hash_concat(prev_hash: str, line: str) -> str:
-    """The Rust form: both `as_bytes()` concatenated, with no separator."""
-    return sha256_hex((prev_hash + line).encode())
-
-
 def _hash_newline(prev_hash: str, line: str) -> str:
     """The old port form: a `\n` between the previous hash and the line."""
     return sha256_hex(f"{prev_hash}\n{line}".encode())
@@ -191,9 +162,9 @@ def _hash_newline(prev_hash: str, line: str) -> str:
 
 # Era order: index only increases.
 _ERAS: tuple[tuple[str, Any, Any], ...] = (
-    ("rust_historic", _line_rust_historic, _hash_concat),
+    ("rust_historic", _line_rust_historic, compute_chained_hash),
     ("port_python", _line_port_python, _hash_newline),
-    ("rust_parity", lambda e: e.canonical_line(), _hash_concat),
+    ("rust_parity", lambda e: e.canonical_line(), compute_chained_hash),
 )
 
 
@@ -356,10 +327,4 @@ def verify_replay(
         for cid in sorted(tombstoned_ids)
         if cid not in forgotten
     )
-    audit_covers = len(out_of_band) == 0
-
-    return ReplayReport(
-        chain=chain_stat,
-        audit_covers_state=audit_covers,
-        out_of_band=out_of_band,
-    )
+    return ReplayReport(chain=chain_stat, out_of_band=out_of_band)

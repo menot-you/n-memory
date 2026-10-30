@@ -26,6 +26,20 @@ from ..journal import (
 from .base import Repository
 
 
+def audit_event_from_row(r: tuple[Any, ...]) -> AuditEvent:
+    return AuditEvent(
+        seq=int(r[0]),
+        at=parse_rfc3339(r[1]),
+        actor=str(r[2]),
+        action=str(r[3]),
+        subject=str(r[4]),
+        reason=str(r[5]) if r[5] is not None else None,
+        chained_hash=str(r[6]),
+        # Keep the raw timestamp: historical hashes include nanoseconds.
+        stored_at=str(r[1]),
+    )
+
+
 class AuditRepository(Repository):
     """Owns audit_events."""
 
@@ -137,21 +151,7 @@ class AuditRepository(Repository):
                 query += f" LIMIT {limit}"
             cur.execute(query, tuple(params))
             rows = cur.fetchall()
-            return [
-                AuditEvent(
-                    seq=int(r[0]),
-                    at=parse_rfc3339(r[1]),
-                    actor=str(r[2]),
-                    action=str(r[3]),
-                    subject=str(r[4]),
-                    reason=str(r[5]) if r[5] is not None else None,
-                    chained_hash=str(r[6]),
-                    # The RAW column string: the Rust era signed nanoseconds
-                    # that `parse_rfc3339` trims. Without it, that era is unreadable.
-                    stored_at=str(r[1]),
-                )
-                for r in rows
-            ]
+            return [audit_event_from_row(r) for r in rows]
 
     def count_audit_events(self) -> int:
         """The LOGICAL size of the ledger: the epoch boundary does not count.
@@ -190,19 +190,5 @@ class AuditRepository(Repository):
                 "SELECT seq, at, actor, action, subject, reason, chained_hash FROM audit_events ORDER BY seq ASC"
             )
             rows = cur.fetchall()
-            events = [
-                AuditEvent(
-                    seq=int(r[0]),
-                    at=parse_rfc3339(r[1]),
-                    actor=str(r[2]),
-                    action=str(r[3]),
-                    subject=str(r[4]),
-                    reason=str(r[5]) if r[5] is not None else None,
-                    chained_hash=str(r[6]),
-                    # The RAW column string: the Rust era signed nanoseconds
-                    # that `parse_rfc3339` trims. Without it, that era is unreadable.
-                    stored_at=str(r[1]),
-                )
-                for r in rows
-            ]
+            events = [audit_event_from_row(r) for r in rows]
             return verify_chain(events)

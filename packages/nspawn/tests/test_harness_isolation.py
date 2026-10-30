@@ -26,7 +26,9 @@ INNER_MODULE = Path(__file__).with_name("harness_isolation_inner.py")
 MEMBER_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_a_test_run_never_reaches_the_session_socket_its_parent_names() -> None:
+def test_a_test_run_never_reaches_the_session_socket_its_parent_names(
+    tmp_path: Path,
+) -> None:
     directory = Path(tempfile.mkdtemp(prefix="nsh"))
     path = directory / "session.sock"
     try:
@@ -40,6 +42,9 @@ def test_a_test_run_never_reaches_the_session_socket_its_parent_names() -> None:
                 if not name.startswith("PYTEST_")
             }
             environment[CALLER_SOCKET_ENV] = str(path)
+            child_temporary = tmp_path / "child tmpdir"
+            child_temporary.mkdir()
+            environment["TMPDIR"] = str(child_temporary)
             inner = subprocess.run(
                 [
                     sys.executable,

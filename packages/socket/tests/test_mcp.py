@@ -395,36 +395,6 @@ def test_closed_client_rejects_calls_and_frames(tmp_path: Path) -> None:
         client._write(b"{}\n", None)
 
 
-@pytest.mark.parametrize("cwd_override", [False, True])
-def test_configured_open_uses_the_selected_working_directory(
-    tmp_path: Path, cwd_override: bool
-) -> None:
-    selected = tmp_path / "selected"
-    selected.mkdir()
-    script = tmp_path / "cwd.py"
-    script.write_text("""import json, os, sys
-for line in sys.stdin:
-    request = json.loads(line)
-    if "id" not in request: continue
-    result = {"serverInfo": {"name": "nspawn"}} if request["method"] == "initialize" else {"content": [{"type": "text", "text": json.dumps({"cwd": os.getcwd()})}]}
-    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
-""")
-    (tmp_path / "plugin").mkdir()
-    (tmp_path / "plugin/.mcp.json").write_text(
-        json.dumps(
-            {
-                "mcpServers": {
-                    "nspawn": {"command": sys.executable, "args": [str(script)]}
-                }
-            }
-        )
-    )
-    with McpClient.open(tmp_path, selected if cwd_override else None) as client:
-        assert client.call("fixture_read", {}) == {
-            "cwd": str(selected if cwd_override else tmp_path)
-        }
-
-
 @pytest.mark.parametrize("stream", ["stdin", "stdout"])
 def test_a_call_on_a_closed_client_is_one_typed_error(
     tmp_path: Path, stream: str

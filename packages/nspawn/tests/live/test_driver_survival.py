@@ -23,8 +23,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from live.live_support import McpStdio, store_rows
 
+from live.live_support import McpStdio, store_rows
 from nspawn.process_identity import ProcessIdentity, process_identity_matches
 
 SYSTEMD_RUN = "/usr/bin/systemd-run"
@@ -39,7 +39,6 @@ def _bus() -> Path:
 def _manager_environment() -> dict[str, str]:
     runtime = Path(f"/run/user/{os.geteuid()}")
     return {
-        "XDG_RUNTIME_DIR": str(runtime),
         "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime / 'bus'}",
     }
 
@@ -47,9 +46,12 @@ def _manager_environment() -> dict[str, str]:
 def _systemctl(*arguments: str) -> subprocess.CompletedProcess[bytes] | None:
     if not Path(SYSTEMCTL).exists():  # macOS: no scopes were made
         return None
+    environment = {**os.environ, **_manager_environment()}
+    # Use the public bus, not the private manager socket outside the cage.
+    environment.pop("XDG_RUNTIME_DIR", None)
     return subprocess.run(
         [SYSTEMCTL, "--user", *arguments],
-        env={**os.environ, **_manager_environment()},
+        env=environment,
         capture_output=True,
         timeout=30,
         check=False,

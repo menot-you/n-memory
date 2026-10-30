@@ -133,9 +133,9 @@ def test_noncausal_or_uncorrelated_carriers_cannot_rotate_an_account(kind):
 def test_route_list_is_ordered_and_route_switch_is_a_monotonic_real_wall_write(
     root, tmp_path
 ):
-    from nspawn.route import read_roster
+    from nspawn.route import node_roster
 
-    roster = read_roster()
+    roster = node_roster()
     create_store(tmp_path / "routes.db")
     with Registry(tmp_path / "routes.db", "route-transition-test") as registry:
         registry.upgrade()
@@ -166,7 +166,7 @@ def test_route_list_is_ordered_and_route_switch_is_a_monotonic_real_wall_write(
 def test_unknown_wall_write_is_read_before_one_bounded_identical_replay(
     root, tmp_path, monkeypatch, mode, expected
 ):
-    from nspawn.route import read_roster
+    from nspawn.route import node_roster
 
     create_store(tmp_path / "routes.db")
     with Registry(tmp_path / "routes.db", "route-transition-test") as registry:
@@ -190,7 +190,7 @@ def test_unknown_wall_write_is_read_before_one_bounded_identical_replay(
             monkeypatch.setattr(registry, "get_enforced_account_wall_rows", missing)
             with pytest.raises(RegistryError, match="read unavailable"):
                 route_switch(
-                    read_roster(),
+                    node_roster(),
                     registry,
                     f"alpha@{root / 'claude-home'}",
                     rejection(),
@@ -199,7 +199,7 @@ def test_unknown_wall_write_is_read_before_one_bounded_identical_replay(
         else:
             assert (
                 route_switch(
-                    read_roster(),
+                    node_roster(),
                     registry,
                     f"alpha@{root / 'claude-home'}",
                     rejection(),
@@ -212,9 +212,9 @@ def test_unknown_wall_write_is_read_before_one_bounded_identical_replay(
 
 
 def test_the_sdk_route_list_excludes_a_banned_account(root, tmp_path):
-    from nspawn.route import read_roster
+    from nspawn.route import node_roster
 
-    roster = read_roster()
+    roster = node_roster()
     provider = roster.select("claude")
     assert provider is not None
     provider.excluded_accounts = ["alpha"]
@@ -235,7 +235,7 @@ def test_route_read_and_switch_use_declared_names_without_a_binary(
     root, tmp_path, monkeypatch, verb, model
 ):
     from nspawn import claude_catalog
-    from nspawn.route import RosterUnreadable, read_roster
+    from nspawn.route import RosterUnreadable, node_roster
 
     def refuse(binary):
         pytest.fail("The roster read must not start the test client")
@@ -252,9 +252,9 @@ def test_route_read_and_switch_use_declared_names_without_a_binary(
         '[role_profile.writer]\nmodel = "claude-opus-5-5"\n'
     )
     with pytest.raises(RosterUnreadable):
-        read_roster()
+        node_roster()
     test_route.edit(root, 'model = "claude-opus-5-5"', 'model = "haiku"')
-    roster = read_roster()
+    roster = node_roster()
     assert roster.role_profiles["writer"]["model"] == "haiku"
     create_store(tmp_path / "routes.db")
     with Registry(tmp_path / "routes.db", "route-declared-test") as registry:
@@ -278,9 +278,9 @@ def test_route_read_and_switch_use_declared_names_without_a_binary(
 
 
 def test_a_switch_moves_a_node_off_an_excluded_account(root, tmp_path):
-    from nspawn.route import read_roster
+    from nspawn.route import node_roster
 
-    roster = read_roster()
+    roster = node_roster()
     provider = roster.select("claude")
     assert provider is not None
     provider.excluded_accounts = ["alpha"]
@@ -352,9 +352,9 @@ def test_an_organization_refusal_of_another_turn_walls_nothing(kind):
 def test_route_switch_moves_a_node_off_an_account_its_organization_refuses(
     root, tmp_path
 ):
-    from nspawn.route import read_roster
+    from nspawn.route import node_roster
 
-    roster = read_roster()
+    roster = node_roster()
     create_store(tmp_path / "routes.db")
     now = ORG_REFUSAL["observed_at"]
     with Registry(tmp_path / "routes.db", "route-org-test") as registry:

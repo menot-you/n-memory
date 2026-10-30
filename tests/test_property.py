@@ -21,7 +21,6 @@ from hypothesis import strategies as st
 from nmemory.capsule_ref import (
     HANDLE_PREFIXES,
     MAX_SLUG_LEN,
-    CapsuleHandle,
     ParsedCapsuleRef,
     resolve_capsule_ref,
 )
@@ -127,16 +126,22 @@ _slugs = (
 _TOKEN_PREFIXES = tuple(p for p in HANDLE_PREFIXES if "-" not in p)
 
 
+# One generated handle, as (prefix, sequence, slug). `_render` writes its text form.
+_Handle = tuple[str, int, str | None]
+
+
 @st.composite
 def _handles(draw: st.DrawFn, prefixes: tuple[str, ...] = HANDLE_PREFIXES) -> Any:
     sequence = draw(st.integers(min_value=1, max_value=10**12))
-    handle = CapsuleHandle.new(
-        f"cap-{sequence}",
-        draw(st.sampled_from(prefixes)),
-        draw(st.one_of(st.none(), _slugs)),
-    )
-    assert handle is not None
-    return handle
+    prefix = draw(st.sampled_from(prefixes))
+    slug = draw(st.one_of(st.none(), _slugs))
+    return (prefix, sequence, slug)
+
+
+def _render(handle: _Handle) -> str:
+    prefix, sequence, slug = handle
+    base = f"{prefix}-{sequence}"
+    return f"{base}-{slug}" if slug else base
 
 
 class _FakeStore:
@@ -151,9 +156,9 @@ class _FakeStore:
 
 @given(handle=_handles())
 def test_property_a_handle_round_trips_through_the_reference_grammar(
-    handle: CapsuleHandle,
+    handle: _Handle,
 ) -> None:
-    """`parse(str(handle))` recovers prefix, sequence, and slug exactly.
+    """`parse(_render(handle))` recovers prefix, sequence, and slug exactly.
 
     The search is over PREFIX × SLUG together, because the two collide: a slug
     may carry `-`, which is also the sequence separator, so a `parse` that split
@@ -164,31 +169,27 @@ def test_property_a_handle_round_trips_through_the_reference_grammar(
     either one alone keeps this green; both must go before `capability-5-x`
     parses as `cap` + `ability-5-x` (measured, not assumed).
     """
-    parsed = ParsedCapsuleRef.parse(str(handle))
-    assert (parsed.prefix, parsed.sequence, parsed.slug) == (
-        handle.prefix,
-        handle.sequence,
-        handle.slug,
-    )
+    parsed = ParsedCapsuleRef.parse(_render(handle))
+    assert (parsed.prefix, parsed.sequence, parsed.slug) == handle
 
 
 @given(handle=_handles())
-def test_property_canonical_id_is_idempotent(handle: CapsuleHandle) -> None:
+def test_property_canonical_id_is_idempotent(handle: _Handle) -> None:
     """Re-parsing a canonical id yields the same canonical id, and is canonical.
 
     `cap-<n>` is the store identity every reference collapses to; a second pass
     through the grammar must be a no-op, or a caller that normalises twice
     addresses a different row than one that normalises once.
     """
-    once = ParsedCapsuleRef.parse(str(handle)).canonical_id()
+    once = ParsedCapsuleRef.parse(_render(handle)).canonical_id()
     twice = ParsedCapsuleRef.parse(once)
-    assert twice.canonical_id() == once == f"cap-{handle.sequence}"
+    assert twice.canonical_id() == once == f"cap-{handle[1]}"
     assert twice.is_canonical()
 
 
 @given(reference=_handles(), stored=_handles(), missing=st.booleans())
 def test_property_a_parsed_reference_never_resolves_to_another_capsule(
-    reference: CapsuleHandle, stored: CapsuleHandle, missing: bool
+    reference: _Handle, stored: _Handle, missing: bool
 ) -> None:
     """A successful parse resolves to `cap-<its own n>` or does not resolve.
 
@@ -198,9 +199,9 @@ def test_property_a_parsed_reference_never_resolves_to_another_capsule(
     on purpose — the verdict it gets today is a false rejection, which this
     property permits and the one below does not.
     """
-    store = _FakeStore(None if missing else str(stored))
-    res = resolve_capsule_ref(store, str(reference))
-    expected_id = f"cap-{reference.sequence}"
+    store = _FakeStore(None if missing else _render(stored))
+    res = resolve_capsule_ref(store, _render(reference))
+    expected_id = f"cap-{reference[1]}"
 
     assert res.id in (None, expected_id)
     if missing:
@@ -209,17 +210,17 @@ def test_property_a_parsed_reference_never_resolves_to_another_capsule(
 
     if res.status == "resolved":
         assert res.id == expected_id
-        assert res.handle == str(stored)
-        parsed = ParsedCapsuleRef.parse(str(reference))
+        assert res.handle == _render(stored)
+        parsed = ParsedCapsuleRef.parse(_render(reference))
         if not parsed.is_canonical():
-            assert str(stored).startswith(f"{parsed.prefix}-")
+            assert _render(stored).startswith(f"{parsed.prefix}-")
             if parsed.slug is not None:
-                assert str(stored).endswith(f"-{parsed.slug}")
+                assert _render(stored).endswith(f"-{parsed.slug}")
 
 
 @given(handle=_handles(prefixes=_TOKEN_PREFIXES))
 def test_property_the_exact_stored_handle_always_resolves(
-    handle: CapsuleHandle,
+    handle: _Handle,
 ) -> None:
     """The store's own handle, handed back verbatim, resolves — as does cap-<n>.
 
@@ -232,16 +233,16 @@ def test_property_the_exact_stored_handle_always_resolves(
     failure-pattern capsule is addressable by its own handle. The upstream
     implementation compares structured `handle.prefix()` instead and has no such hole.
     """
-    store = _FakeStore(str(handle))
+    store = _FakeStore(_render(handle))
 
-    res = resolve_capsule_ref(store, str(handle))
+    res = resolve_capsule_ref(store, _render(handle))
     assert res.status == "resolved"
-    assert res.id == f"cap-{handle.sequence}"
-    assert res.handle == str(handle)
+    assert res.id == f"cap-{handle[1]}"
+    assert res.handle == _render(handle)
 
-    canonical = resolve_capsule_ref(store, f"cap-{handle.sequence}")
+    canonical = resolve_capsule_ref(store, f"cap-{handle[1]}")
     assert canonical.status == "resolved"
-    assert canonical.id == f"cap-{handle.sequence}"
+    assert canonical.id == f"cap-{handle[1]}"
 
 
 # --------------------------------------------------------------------------

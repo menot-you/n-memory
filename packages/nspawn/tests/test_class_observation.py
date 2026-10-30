@@ -194,7 +194,7 @@ def test_a_version_1_store_gains_the_table_on_open_and_keeps_its_runs() -> None:
         connection.close()
 
     with Registry(path, "i-upgrade") as upgraded:
-        assert upgraded.open(now=1) == REGISTRY_SCHEMA_VERSION == 6
+        assert upgraded.open(now=1) == REGISTRY_SCHEMA_VERSION == 7
         assert upgraded.get_run("old") is not None
         assert upgraded.export_class_observations() == ()
         # The upgraded store records the outcome too: its trigger came with it.
@@ -228,7 +228,7 @@ def test_a_version_1_store_gains_the_table_on_open_and_keeps_its_runs() -> None:
         assert (exported.run_id, exported.phase) == ("new", RunPhase.FAILED)
     # A second open finds the current version and adds nothing.
     with Registry(path, "i-again") as again:
-        assert again.open(now=2) == 6
+        assert again.open(now=2) == 7
 
 
 def test_the_observation_outlives_its_run_being_pruned(registry: Registry) -> None:

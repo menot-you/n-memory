@@ -26,8 +26,8 @@ Restart the client. Compare its `tools/list` result with the [reference](REFEREN
 
 The [loader](../nmemory/config.py) reads `~/.nott/memory.toml`.
 `NOTT_NMEMORY_CONFIG` can select another file.
-The loader checks `[system1]`, `[curator]`, and `[github]`.
-It ignores the retired `[store]` table.
+The loader checks `[system1]` and `[curator]`.
+It ignores the retired `[store]` and `[github]` tables.
 Do not configure a persistent database override.
 
 | Choice | Configuration | Effect |
@@ -38,7 +38,6 @@ Do not configure a persistent database override.
 | Question route | `NOTT_SYSTEM1_<QUESTION>_{ENDPOINT,MODEL,API_KEY}` | Set all three values together |
 | Curator | `nmemory curator set --provider P [--account A]` | Select a supported inference route |
 | Embeddings | `nmemory embedding show --json` | Read the active space and coverage |
-| GitHub mirror | `[github]` repo, label, project, efforts | Fence explicit synchronization |
 
 Never place an API key in TOML or process arguments.
 The [privacy guide](PRIVACY.md) separates local storage, embedding, classification, and curator processing.
@@ -63,7 +62,7 @@ Call `nmemory_capsule_ingest` in the MCP client:
 Keep the returned capsule ID.
 Call `nmemory_capsule_pin` with that ID, `pinned: true`, and a reason.
 Start a fresh session with project `example`.
-Call `nmemory_project_bootstrap` with `{"project_id":"example"}`.
+Call `nmemory_context_show` with `{"query":"example decision","project_id":"example"}`.
 Check the pinned decision and its source.
 Call `nmemory_capsule_retrieve` with `{"terms":["SQLite"],"project_id":"example","lane":"term"}`.
 Read the returned evidence and receipt.

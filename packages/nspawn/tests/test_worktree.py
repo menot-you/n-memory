@@ -31,6 +31,13 @@ def git(*args: str, cwd: Path) -> None:
     )
 
 
+def _age(*paths: Path) -> None:
+    """Set each path's modification time back, so a later baseline sees a clean tree."""
+    old = (time.time_ns() - 10_000_000_000) / 1e9
+    for path in paths:
+        os.utime(path, (old, old))
+
+
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
     root = tmp_path / "repo"
@@ -170,6 +177,90 @@ def test_unwritten_since_counts_the_writers_nott_files_and_a_reset_mtime(
     (tree / "kept.py").write_text("y")
     os.utime(tree / "kept.py", (old, old))
     assert wt.unwritten_since(tree, since_ns=since) is False
+
+
+def test_unwritten_since_counts_a_commit_on_the_runs_branch(repo: Path) -> None:
+    """A run whose only change is a commit leaves a clean tree: that commit is
+    its write, so the writer keeps its tree."""
+    (repo / "next.py").write_text("y\n", encoding="utf-8")
+    git("add", "next.py", cwd=repo)
+    since = time.time_ns()
+    time.sleep(0.01)
+    git("commit", "-qm", "committed after the baseline", cwd=repo)
+    assert wt.unwritten_since(repo, since_ns=since) is False
+    # The commit alone is not a write for a later baseline: `.git` still changes
+    # by itself, and that is not the writer's.
+    assert wt.unwritten_since(repo, since_ns=time.time_ns())
+
+
+def test_unwritten_since_counts_a_commit_in_a_linked_worktree(
+    repo: Path, linked: Path
+) -> None:
+    """The branch ref of a linked worktree lives in the common git directory."""
+    (linked / "w.py").write_text("w\n", encoding="utf-8")
+    git("add", "w.py", cwd=linked)
+    since = time.time_ns()
+    time.sleep(0.01)
+    git("commit", "-qm", "committed in the linked worktree", cwd=linked)
+    assert wt.unwritten_since(linked, since_ns=since) is False
+
+
+def test_unwritten_since_is_unsure_when_head_is_not_text(repo: Path) -> None:
+    """A branch name can hold bytes that are not UTF-8. The witness must answer
+    unsure, not raise: a raised error ends the run as a dead worker, with no
+    failover and no moved notes."""
+    (repo / ".git" / "HEAD").write_bytes(b"ref: refs/heads/p\xe1cio\n")
+    _age(repo, repo / "file.txt")
+    assert wt.unwritten_since(repo, since_ns=time.time_ns()) is False
+
+
+@pytest.mark.timeout(10)
+def test_unwritten_since_does_not_block_on_a_fifo_head(repo: Path) -> None:
+    """A planted FIFO at .git/HEAD must not hold the worker open with no end."""
+    (repo / ".git" / "HEAD").unlink()
+    os.mkfifo(repo / ".git" / "HEAD")
+    _age(repo, repo / "file.txt")
+    assert wt.unwritten_since(repo, since_ns=time.time_ns()) is False
+
+
+def test_unwritten_since_is_unsure_when_head_cannot_be_read(repo: Path) -> None:
+    """An unreadable HEAD is not an absent one: the answer is unsure, not "no
+    commit"."""
+    (repo / ".git" / "HEAD").chmod(0o000)
+    _age(repo, repo / "file.txt")
+    assert wt.unwritten_since(repo, since_ns=time.time_ns()) is False
+
+
+def test_unwritten_since_is_unsure_when_the_git_marker_cannot_be_read(
+    repo: Path, linked: Path
+) -> None:
+    """A linked worktree names its git directory in a `.git` file. That read has
+    three answers: a git directory, no git there, or no honest answer."""
+    (linked / ".git").chmod(0o000)
+    _age(linked, linked / "file.txt")
+    assert wt.unwritten_since(linked, since_ns=time.time_ns()) is False
+
+
+def test_unwritten_since_does_not_read_through_a_symlinked_head(
+    repo: Path, linked: Path
+) -> None:
+    """A planted symlink in the git directory is not followed: what lives outside
+    this tree is not the writer's, and the answer for it is unsure."""
+    outside = repo.parent / "elsewhere"
+    outside.write_text("not a ref\n", encoding="utf-8")
+    head = repo / ".git" / "worktrees" / linked.name / "HEAD"
+    head.unlink()
+    head.symlink_to(outside)
+    _age(linked, linked / "file.txt")
+    assert wt.unwritten_since(linked, since_ns=time.time_ns()) is False
+
+
+def test_unwritten_since_refuses_a_git_file_past_its_ceiling(repo: Path) -> None:
+    """git keeps HEAD to one short line. A file there is not HEAD: reading it
+    without a bound is what lets one planted file take the whole host."""
+    (repo / ".git" / "HEAD").write_bytes(b"\x00" * 1_000_000)
+    _age(repo, repo / "file.txt")
+    assert wt.unwritten_since(repo, since_ns=time.time_ns()) is False
 
 
 def test_unwritten_since_ignores_a_link_that_another_tree_adds(

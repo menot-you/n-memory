@@ -8,8 +8,12 @@ from typing import Any
 
 import pytest
 
+from nmemory.database import Cursor
 from nmemory.embedding import EmbeddingClient
 from nmemory.embedding_index import EmbeddingWorker
+from nmemory.journal import ReplayReport
+from nmemory.queries import journal as journal_queries
+from nmemory.repositories.capsules import CapsuleRepository, ListFilter, StoredCapsule
 from nmemory.server import MemoryServer
 from nmemory.space import DIMENSION
 from nmemory.store import Store
@@ -143,3 +147,48 @@ def test_session_bracket_lifecycle() -> None:
         "test-actor",
     )
     assert "error" in repeat_res or repeat_res.get("isError") is True
+
+
+def test_session_start_reads_no_capsule_and_does_not_replay_the_journal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A session start does not read the store, so its cost does not grow with it.
+
+    It read every capsule (`capsules.list()`) and replayed the full audit chain
+    (`verify_replay`) to set a `store_health` field that no consumer read. The
+    daily `nmemory quality measure` run checks the audit chain now.
+    """
+    store = Store.open_disposable_test_store()
+    server = MemoryServer(store=store)
+    _ok(
+        server,
+        "nmemory_capsule_ingest",
+        {
+            "content": "A live capsule so that the store is not empty.",
+            "source": "session:test-session-start",
+            "anchor": "PLAN.md:1",
+            "confidence": 0.9,
+        },
+    )
+    calls: list[str] = []
+    real_list = CapsuleRepository.list
+    real_replay = journal_queries.replay_report
+
+    def counted_list(
+        self: CapsuleRepository, filt: ListFilter | None = None
+    ) -> list[StoredCapsule]:
+        calls.append("capsules.list")
+        return real_list(self, filt)
+
+    def counted_replay(cur: Cursor) -> ReplayReport:
+        calls.append("verify_replay")
+        return real_replay(cur)
+
+    monkeypatch.setattr(CapsuleRepository, "list", counted_list)
+    monkeypatch.setattr(journal_queries, "replay_report", counted_replay)
+
+    started = _ok(server, "nmemory_session_start", {})
+
+    assert calls == []
+    assert set(started) == {"session_id", "started_at"}
+    assert started["session_id"].startswith("sess-")

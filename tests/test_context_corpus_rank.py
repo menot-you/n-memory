@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import replace
 
 from nmemory.capsule import sha256_hex
 from nmemory.repositories.corpus import (
@@ -537,3 +538,29 @@ def test_named_product_readme_beats_generic_mcp_module() -> None:
         limit=2,
     )
     assert hits[0].occurrences[0].path == "apps/harness/body/README.md"
+
+
+def test_corpus_source_upserts_keep_every_field() -> None:
+    store = Store.open_disposable_test_store()
+    source = CorpusSourceRecord(
+        "markdown:/repo",
+        "markdown",
+        "/repo",
+        "rev-1",
+        "2026-09-27T00:00:00Z",
+        "ready",
+        "indexed",
+    )
+    assert store.corpus.replace_corpus_source(source, []) is True
+    assert store.corpus.list_corpus_sources() == [source]
+    unchanged = replace(source, indexed_at="2026-09-28T00:00:00Z", detail="ignored")
+    assert store.corpus.replace_corpus_source(unchanged, []) is False
+    assert store.corpus.list_corpus_sources() == [source]
+    unavailable = replace(
+        unchanged, revision="rev-2", status="unavailable", detail=None
+    )
+    store.corpus.set_corpus_source_unavailable(unavailable)
+    assert store.corpus.list_corpus_sources() == [unavailable]
+    ready = replace(unavailable, status="ready", detail="restored")
+    assert store.corpus.replace_corpus_source(ready, []) is True
+    assert store.corpus.list_corpus_sources() == [ready]

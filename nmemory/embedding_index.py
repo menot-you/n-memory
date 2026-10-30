@@ -20,7 +20,6 @@ from nott_database import DatabaseError
 from . import NMemoryError
 from .capsule import headline_of, sha256_hex
 from .consolidate import (
-    ConsolidationRecord,
     Tier,
     archive_deadline,
     protective_tier_moves,
@@ -30,7 +29,7 @@ from .embedding import (
     EmbeddingClient,
 )
 from .queries.embedding import embedding_status
-from .queries.sidecars import digest_sidecars, recall_mark
+from .queries.sidecars import consolidation_record, digest_sidecars, recall_mark
 from .space import (
     EmbeddingError,
     EmbeddingQuotaExhausted,
@@ -114,20 +113,11 @@ class EmbeddingWorker:
                         # A concurrent capture crossed the read; retry next cycle.
                         raise _ConsolidationDeferred
                     records.append(
-                        ConsolidationRecord(
-                            id=stored.id,
-                            seq=stored.seq,
-                            source_hash=stored.capsule.provenance.source_hash,
-                            content=stored.capsule.content,
-                            instruction_taint=stored.capsule.instruction_taint,
-                            authority_class=stored.capsule.authority_class,
-                            valid_to=stored.capsule.freshness.valid_to,
-                            created_at=stored.created_at,
-                            recall_count=sidecar.recall_count,
-                            is_superseded=stored.id in superseded,
-                            tier=sidecar.tier,
-                            pinned=sidecar.pinned,
-                            supersession_archive=stored.id in supersession_archives,
+                        consolidation_record(
+                            stored,
+                            sidecar,
+                            stored.id in superseded,
+                            stored.id in supersession_archives,
                         )
                     )
                 moves = protective_tier_moves(records, now)

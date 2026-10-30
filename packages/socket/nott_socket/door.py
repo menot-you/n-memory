@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import errno
 import fcntl
-import logging
 import os
 import socket
 import stat
@@ -15,8 +14,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Self
-
-logger = logging.getLogger(__name__)
 
 SOCKET_MODE: int = 0o600
 STAGING_MODE: int = 0o700

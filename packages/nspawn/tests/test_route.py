@@ -35,7 +35,7 @@ def test_route_cli_catalogue_error_is_typed(
     def refuse():
         raise ModelCatalogError("The test catalogue is unavailable")
 
-    monkeypatch.setattr(route, "read_roster", refuse)
+    monkeypatch.setattr(route, "node_roster", refuse)
     options = ["claude", "--model", "default", "--effort", "high"]
     if verb == "switch":
         options += ["--route", "alpha@/test-home"]
@@ -84,6 +84,11 @@ CLAUDE_CLEARED = dict.fromkeys(
         "ANTHROPIC_SMALL_FAST_MODEL",
         "CLAUDE_CODE_USE_BEDROCK",
         "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_USE_FOUNDRY",
+        "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+        "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
+        "CLAUDE_CODE_USE_MANTLE",
+        "CLAUDE_CODE_USE_GATEWAY",
     ),
     "",
 )
@@ -174,8 +179,10 @@ def root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     ):
         secrets = tmp_path / f"{provider}-secrets"
         secrets.mkdir(mode=0o700)
+        secrets.chmod(0o700)  # whatever the umask
         for alias in aliases:
             (secrets / f"{alias}.token").write_text(TOKENS[alias] + "\n")
+            (secrets / f"{alias}.token").chmod(0o600)  # whatever the umask
     roster = tmp_path / "spawn.toml"
     roster.write_text(ROSTER.format(root=tmp_path))
     monkeypatch.setenv("NOTT_NSPAWN_ROSTER", str(roster))
@@ -186,7 +193,7 @@ def native_profile(
     provider: str, recorded: str | None = None
 ) -> tuple[str, dict[str, str], list[str]]:
     return route.route_start(
-        route.read_roster(),
+        route.node_roster(),
         provider,
         recorded,
         codex_adapter=os.environ.get("NOTT_NODE_CODEX_ADAPTER"),
@@ -243,6 +250,7 @@ def test_a_declared_claude_account_brings_its_endpoint_and_variable(
 ) -> None:
     home = str(root / "claude-home")
     (root / "claude-secrets/gateway.token").write_text("fixture-token-gateway\n")
+    (root / "claude-secrets/gateway.token").chmod(0o600)  # whatever the umask
     edit(
         root,
         'model_fast = "claude-haiku-4-5"\n',
@@ -504,7 +512,7 @@ def test_agy_new_and_recorded_routes(root: Path) -> None:
             "qwen",
             None,
             ("qwen-secrets/server.token", None),
-            "qwen account token file is unreadable",
+            "qwen account: server.token is not there: put the account's token in it",
         ),
         (
             "qwen",

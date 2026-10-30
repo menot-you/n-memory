@@ -35,7 +35,6 @@ from nspawn.mcp import (
     NSPAWN_TOOL_BY_NAME,
     NSPAWN_TOOL_CONTRACTS,
     McpServer,
-    ResponseTooLarge,
     SupervisorUnconfigured,
     _to_jsonable,
     _wire_kwargs,
@@ -95,25 +94,13 @@ def payload(answer: dict[str, Any] | None) -> Any:
 # --------------------------------------------------------------------------
 
 
-#: The one tool whose input schema is empty on purpose. Named, not inferred:
-#: a placeholder `{}` on any other contract is still refused.
-_ARGUMENTLESS_TOOLS = frozenset({"nspawn_run_list"})
-
-
 def test_tools_list_answers_exactly_the_declared_contracts() -> None:
     listed = [tool.model_dump(by_alias=True, exclude_none=True) for tool in main.TOOLS]
     assert [tool["name"] for tool in listed] == [c.name for c in NSPAWN_TOOL_CONTRACTS]
     for tool, contract in zip(listed, NSPAWN_TOOL_CONTRACTS, strict=True):
         assert tool["description"] == contract.description
         assert tool["inputSchema"] == contract.input_schema
-        if tool["name"] in _ARGUMENTLESS_TOOLS:
-            # The fleet listing takes nothing; its schema must then be CLOSED,
-            # so an argument meant for `nspawn_run_show` is refused, not ignored.
-            assert tool["inputSchema"]["properties"] == {}
-            assert tool["inputSchema"]["additionalProperties"] is False
-            assert tool["inputSchema"]["required"] == []
-        else:
-            assert tool["inputSchema"]["properties"], "schema must not be empty"
+        assert tool["inputSchema"]["properties"], "schema must not be empty"
 
 
 # --------------------------------------------------------------------------
@@ -122,7 +109,7 @@ def test_tools_list_answers_exactly_the_declared_contracts() -> None:
 
 _STATUS_SCHEMA = NSPAWN_TOOL_BY_NAME["nspawn_run_show"].input_schema
 _EXECUTE_SCHEMA = NSPAWN_TOOL_BY_NAME["nspawn_run_start"].input_schema
-#: The fleet read is its own tool, `nspawn_run_list`, which takes nothing; the
+#: The fleet read is its own tool, `nspawn_run_list`, which requires no arguments; the
 #: missing-required rule is proven on `nspawn_result_show`, and `nspawn_run_show`
 #: requires the run it reads.
 _RESULT_SCHEMA = NSPAWN_TOOL_BY_NAME["nspawn_result_show"].input_schema
@@ -137,6 +124,29 @@ def test_missing_required_argument_is_invalid_params() -> None:
 
 def test_the_fleet_read_declares_nothing_required() -> None:
     validate_arguments(NSPAWN_TOOL_BY_NAME["nspawn_run_list"].input_schema, {})
+
+
+@pytest.mark.parametrize("include_terminal", [False, True])
+def test_run_list_declares_the_terminal_switch(include_terminal: bool) -> None:
+    schema = NSPAWN_TOOL_BY_NAME["nspawn_run_list"].input_schema
+    validate_arguments(schema, {"include_terminal": include_terminal})
+    assert schema["properties"]["include_terminal"]["default"] is False
+    assert schema["additionalProperties"] is False
+    assert schema["required"] == []
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, "true", [], {}])
+def test_run_list_refuses_non_boolean_terminal_switch(value: object) -> None:
+    fake = FakeSupervisor(fleet_result=_fleet_page())
+    answer = ask(
+        McpServer(supervisor=fake),
+        "tools/call",
+        {"name": "nspawn_run_list", "arguments": {"include_terminal": value}},
+    )
+    assert answer is not None
+    assert answer["error"]["code"] == INVALID_PARAMS
+    assert "include_terminal" in answer["error"]["message"]
+    assert fake.calls == []
 
 
 def test_run_show_requires_the_run_it_reads() -> None:
@@ -709,7 +719,7 @@ def test_l7s_own_refusal_is_not_swallowed_by_l6(
 
 
 # --------------------------------------------------------------------------
-# Response-size enforcement on the NEW dispatch path (not just `tool_result`).
+# Tool name and argument refusals on the dispatch path.
 # --------------------------------------------------------------------------
 
 
@@ -829,6 +839,7 @@ class _StandInFleetPage:
 
     observed_at: int
     runs: tuple[_StandInFleetRun, ...]
+    notices: tuple[object, ...] = ()
 
 
 def _fleet_page() -> _StandInFleetPage:
@@ -1094,10 +1105,6 @@ def _one(name: str, value: object, spec: dict[str, Any]) -> None:
 # --------------------------------------------------------------------------
 
 
-def test_response_too_large_carries_internal_error_code() -> None:
-    assert ResponseTooLarge(99).code == INTERNAL_ERROR
-
-
 def test_supervisor_unconfigured_carries_internal_error_code_and_message() -> None:
     error = SupervisorUnconfigured("/state/nspawn.sqlite3", "no such file")
     assert error.code == INTERNAL_ERROR
@@ -1105,17 +1112,6 @@ def test_supervisor_unconfigured_carries_internal_error_code_and_message() -> No
         "nspawn has no supervisor configured: the registry at /state/nspawn.sqlite3 "
         "cannot be opened (no such file)"
     )
-
-
-def test_tool_result_boundary_exactly_at_the_cap_does_not_raise() -> None:
-    mcp.tool_result("x" * mcp.MAX_MCP_RESPONSE_BYTES)
-
-
-def test_tool_result_over_the_cap_names_the_actual_size() -> None:
-    size = mcp.MAX_MCP_RESPONSE_BYTES + 1
-    with pytest.raises(ResponseTooLarge) as caught:
-        mcp.tool_result("x" * size)
-    assert str(size) in caught.value.rpc_message
 
 
 def test_bounded_result_uses_compact_separators_not_the_json_default() -> None:
@@ -1264,6 +1260,31 @@ def test_a_non_string_provider_is_refused_before_the_supervisor_is_touched() -> 
     assert fake.calls == []
 
 
+def test_a_run_start_that_names_an_orchestrator_is_refused_as_undeclared() -> None:
+    """The orchestrator binding launched `nott_harness.orchestrator_mcp`, which
+    #1297 deleted. The door refuses the argument as undeclared, and the
+    supervisor admits no run for it."""
+    fake = FakeSupervisor()
+    answer = ask(
+        McpServer(supervisor=fake),
+        "tools/call",
+        {
+            "name": "nspawn_run_start",
+            "arguments": {
+                "prompt": "fixture",
+                "cwd": "/project",
+                "class": "judgment",
+                "read_only": True,
+                "orchestrator": {"session": "s"},
+            },
+        },
+    )
+    assert answer is not None
+    assert answer["error"]["code"] == INVALID_PARAMS
+    assert "'orchestrator' was unexpected" in answer["error"]["message"]
+    assert fake.calls == []
+
+
 def test_the_WHOLE_quota_report_renders_as_plain_json() -> None:
     # THE DICT TRAP, driven end to end. Every state, every nesting level, and a
     # float, a None and an Enum on the way down.
@@ -1302,7 +1323,7 @@ def test_the_WHOLE_quota_report_renders_as_plain_json() -> None:
 
 
 # --------------------------------------------------------------------------
-# F-008: the fleet read is `nspawn_run_list`; it takes nothing and CANNOT long-poll.
+# F-008: the fleet read is `nspawn_run_list`; it requires no arguments and CANNOT long-poll.
 # `nspawn_run_show` reads one run and is the only verb that may.
 # --------------------------------------------------------------------------
 
@@ -1312,7 +1333,7 @@ def test_run_list_lists_the_fleet() -> None:
     answer = ask(
         McpServer(supervisor=fake),
         "tools/call",
-        {"name": "nspawn_run_list", "arguments": {}},
+        {"name": "nspawn_run_list", "arguments": {"include_terminal": True}},
     )
     assert answer is not None
     assert fake.calls == [("fleet", {})]
@@ -1326,6 +1347,8 @@ def test_run_list_lists_the_fleet() -> None:
     assert first["tokens"] == 1234
     # Age is derivable from ONE clock, never carried twice.
     assert rendered["observed_at"] - first["created_at"] == 100
+
+    assert rendered["terminal_omitted"] == 0
 
 
 def test_run_show_reads_that_one_run() -> None:
@@ -1527,7 +1550,9 @@ def test_the_roster_ANSWERS_WHILE_THE_STORE_IS_DEAD(
     home = tmp_path / "home"
     secrets = home / "secrets" / "claude"
     secrets.mkdir(parents=True)
+    secrets.chmod(0o700)  # whatever the umask
     (secrets / "guara-owner-invalid.token").write_text("x", encoding="utf-8")
+    (secrets / "guara-owner-invalid.token").chmod(0o600)  # whatever the umask
     (home / ".nott").mkdir(parents=True)
     (home / ".nott" / "spawn.toml").write_text(
         "[[provider]]\n"
@@ -1608,6 +1633,7 @@ def test_the_instructions_name_the_retired_legacy_verbs_nowhere() -> None:
 def test_the_instructions_keep_the_pinned_prefix_and_describe_the_fleet_read() -> None:
     assert mcp.SERVER_INSTRUCTIONS.startswith("nSPAWN controls executors")
     assert "nspawn_run_list lists the fleet" in mcp.SERVER_INSTRUCTIONS
+    assert "pass include_terminal=true" in mcp.SERVER_INSTRUCTIONS
 
 
 # --------------------------------------------------------------------------
@@ -1909,6 +1935,15 @@ def test_writer_descriptions_name_every_kind_that_can_write() -> None:
     assert "class" not in _REVIEW_PROPERTIES
 
 
+def test_native_write_description_states_the_uncaged_plugin_boundary() -> None:
+    tool = next(tool for tool in main.TOOLS if tool.name == "nspawn_run_start")
+    listed = tool.model_dump(by_alias=True)
+    description = listed["inputSchema"]["properties"]["native_write"]["description"]
+    assert "without a writer cage" in description
+    assert "Writer plugins retain their hooks" in description
+    assert "nSPAWN MCP" in description
+
+
 def test_batch_unknown_provider_uses_resolver_wording_before_dispatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1919,8 +1954,8 @@ def test_batch_unknown_provider_uses_resolver_wording_before_dispatch(
         FakeSupervisor, "declared_providers", Supervisor.declared_providers
     )
     with (
-        patch.object(Roster, "default_path", return_value=source) as resolve,
-        patch.object(Roster, "read", wraps=Roster.read) as read,
+        patch.object(Roster, "_source", return_value=(source, None)) as resolve,
+        patch.object(Roster, "_parse", wraps=Roster._parse) as parse,
     ):
         answer = ask(
             McpServer(supervisor=fake),
@@ -1935,7 +1970,7 @@ def test_batch_unknown_provider_uses_resolver_wording_before_dispatch(
             },
         )
     resolve.assert_called_once_with(Path("/dispatch/worktree"))
-    read.assert_called_once_with(source)
+    parse.assert_called_once_with(source, source.read_bytes())
     assert fake.calls == []
     assert answer == {
         "jsonrpc": "2.0",

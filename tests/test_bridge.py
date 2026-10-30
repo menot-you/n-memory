@@ -1,38 +1,13 @@
+"""The Markdown splitter of the context corpus, and the capture outcome row."""
+
 from __future__ import annotations
 
 import json
-import os
-from dataclasses import FrozenInstanceError
-from datetime import UTC, datetime
-from pathlib import Path
 
 import pytest
+from storefile import sample_capsule_id
 
-from nmemory.bridge import (
-    BridgeCandidate,
-    BridgeIoError,
-    BridgeNotADirectory,
-    BridgeSource,
-    BridgeSourceMissing,
-    candidates_from,
-    heading_level,
-    import_block_source_key,
-    read_source,
-    split_markdown,
-)
-from nmemory.capsule import AuthorityClass
-from nmemory.relation import RelationKind, RelationOrigin
-from nmemory.server import MemoryServer
-from nmemory.store import Store
-from nmemory.tools import import_ as import__tool
-
-NOW = datetime(2026, 8, 21, 12, 0, 0, tzinfo=UTC)
-
-
-def test_bridge_candidate_cannot_change_after_reading() -> None:
-    candidate = BridgeCandidate("content", "note.md:1", "memory-dir")
-    with pytest.raises(FrozenInstanceError):
-        candidate.content = "replacement"  # type: ignore[misc]  # verify runtime immutability
+from nmemory.bridge import heading_level, split_markdown
 
 
 def test_heading_boundaries_keep_preamble_and_nested_subsections() -> None:
@@ -50,62 +25,6 @@ def test_heading_boundaries_keep_preamble_and_nested_subsections() -> None:
     ]
 
 
-def test_memory_directory_reads_sorted_markdown_and_ignores_other_entries(
-    tmp_path: Path,
-) -> None:
-    directory = tmp_path / "notes"
-    directory.mkdir()
-    (directory / "b.md").write_text("second")
-    (directory / "a.md").write_text("first")
-    (directory / "ignored.txt").write_text("ignored")
-    (directory / "nested.md").mkdir()
-    (directory / "linked.md").symlink_to(directory / "a.md")
-    supplied_paths: list[str | Path] = ["notes", directory]
-    for supplied in supplied_paths:
-        result = read_source("memory-dir", tmp_path, tmp_path, supplied)
-        assert [(c.content, c.anchor, c.source_label) for c in result] == [
-            ("first", "notes/a.md:1", "memory-dir"),
-            ("second", "notes/b.md:1", "memory-dir"),
-        ]
-
-
-def test_bridge_missing_sources_and_invalid_directory_are_typed(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="unknown bridge source"):
-        read_source("invalid", tmp_path, tmp_path)
-    with pytest.raises(ValueError, match="requires memory_dir"):
-        read_source("memory-dir", tmp_path, tmp_path)
-    with pytest.raises(BridgeSourceMissing):
-        read_source("user-claude-md", tmp_path, tmp_path)
-    with pytest.raises(BridgeSourceMissing):
-        read_source("memory-dir", tmp_path, tmp_path, "missing")
-    (tmp_path / "file").write_text("not a directory")
-    with pytest.raises(BridgeNotADirectory):
-        read_source("memory-dir", tmp_path, tmp_path, "file")
-
-
-@pytest.mark.parametrize("anchor", ["notes/a.md:12", "notes/a.md"])
-def test_import_identity_ignores_line_number(anchor: str) -> None:
-    assert import_block_source_key("memory-dir", anchor) == "memory-dir\nnotes/a.md"
-
-
-@pytest.mark.parametrize("operation", ["listdir", "lstat", "open"])
-def test_bridge_io_errors_preserve_typed_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
-) -> None:
-    (tmp_path / "a.md").write_text("content")
-
-    def inaccessible(*args: object, **kwargs: object) -> None:
-        raise PermissionError("access denied")
-
-    target = (
-        "builtins.open" if operation == "open" else f"nmemory.bridge.os.{operation}"
-    )
-    with monkeypatch.context() as patch:
-        patch.setattr(target, inaccessible)
-        with pytest.raises(BridgeIoError, match="access denied"):
-            read_source("memory-dir", tmp_path, tmp_path, tmp_path)
-
-
 def test_frontmatter_is_skipped_and_line_numbers_stay_original() -> None:
     doc = "---\ntitle: cfg\n---\n\nFirst block.\n\nSecond block.\n"
     got = split_markdown(doc)
@@ -119,18 +38,6 @@ def test_unclosed_frontmatter_opener_is_plain_content() -> None:
     doc = "---\nnot frontmatter, never closed"
     got = split_markdown(doc)
     assert got == [(1, "---\nnot frontmatter, never closed")]
-
-
-def test_in_root_anchor_is_root_relative_out_of_root_stays_absolute() -> None:
-    root = Path("/injected-anchor-root")
-    in_root = root / "mcps/nmemory/PLAN.md"
-    got = candidates_from("only block", in_root, "project-claude-md", root)
-    assert len(got) == 1
-    assert got[0].anchor == "mcps/nmemory/PLAN.md:1"
-
-    out_of_root = Path("/etc/some-notes.md")
-    got = candidates_from("only block", out_of_root, "project-claude-md", root)
-    assert got[0].anchor == "/etc/some-notes.md:1"
 
 
 def test_heading_documents_split_per_top_level_section_with_preamble() -> None:
@@ -220,243 +127,53 @@ def test_all_blank_preamble_region_is_dropped() -> None:
     assert got == [(3, "# H\nbody")]
 
 
-def test_fixed_source_that_is_a_directory_is_rejected(tmp_path: Path) -> None:
-    claude_dir = tmp_path / "CLAUDE.md"
-    claude_dir.mkdir()
-    with pytest.raises(BridgeIoError) as exc:
-        read_source(BridgeSource.PROJECT_CLAUDE_MD, tmp_path, tmp_path)
-    assert "not a regular file" in str(exc.value)
-
-
-def test_fixed_source_with_invalid_utf8_is_typed_io(tmp_path: Path) -> None:
-    agents = tmp_path / "AGENTS.md"
-    agents.write_bytes(b"\xff\xfe\xfd")
-    with pytest.raises(BridgeIoError) as exc:
-        read_source(BridgeSource.PROJECT_AGENTS_MD, tmp_path, tmp_path)
-    assert "bridge read failed" in str(exc.value)
-
-
-def test_import_project_claude_md_births_tainted_capsules(tmp_path: Path) -> None:
-    claude = tmp_path / "CLAUDE.md"
-    claude.write_text(
-        "# Project rules\n\nRule 1: Always verify.\n\n# Next section\n\nRule 2: Never assume.\n"
-    )
-
-    store = Store.open_disposable_test_store()
-    server = MemoryServer(
-        store=store, anchor_root=str(tmp_path), project_dir=str(tmp_path)
-    )
-
-    res = import__tool.handle(
-        server.handler_state(), {"source": "project-claude-md"}, None, NOW, "test-actor"
-    )
-    data = json.loads(res["content"][0]["text"])
-
-    assert data["outcome"] == "imported"
-    assert data["source"] == "project-claude-md"
-    assert data["captured"] == 2
-    assert data["rejected"] == 0
-    assert data["deduped"] == 0
-
-    first_id = data["outcomes"][0]["id"]
-    sc = store.capsules.get(first_id)
-    assert sc is not None
-    assert sc.capsule.authority_class == AuthorityClass.EXTERNALLY_IMPORTED
-    assert sc.capsule.instruction_taint is True
-    assert sc.capsule.provenance.source == "project-claude-md"
-    assert "CLAUDE.md:" in sc.capsule.provenance.anchor
-
-    # Idempotent re-import dedupes everything
-    again = import__tool.handle(
-        server.handler_state(), {"source": "project-claude-md"}, None, NOW, "test-actor"
-    )
-    again_data = json.loads(again["content"][0]["text"])
-    assert again_data["captured"] == 0
-    assert again_data["deduped"] == 2
-
-
-def test_import_user_claude_md_without_base_resolves_under_home_dir(
-    tmp_path: Path,
+@pytest.mark.parametrize("deduped", [False, True])
+@pytest.mark.parametrize("populated", [False, True])
+def test_capture_outcome_row_keeps_exact_values_and_field_order(
+    deduped: bool, populated: bool
 ) -> None:
-    home = tmp_path / "home"
-    (home / ".claude").mkdir(parents=True)
-    (home / ".claude" / "CLAUDE.md").write_text(
-        "# Home rule\nThe home dir carries exactly one memory.\n"
-    )
+    from nmemory.ingest import DedupHint, IngestOutcome, SiblingHint
+    from nmemory.taint import scan
+    from nmemory.tools.ingest import outcome_row
 
-    store = Store.open_disposable_test_store()
-    server = MemoryServer(
-        store=store,
-        anchor_root=str(tmp_path),
-        home_dir=str(home),
-        project_dir=str(tmp_path / "empty-project"),
+    captured_id = sample_capsule_id(2)
+    superseded_id = sample_capsule_id(0)
+    findings = scan("system:") if populated else []
+    outcome = IngestOutcome(
+        id=captured_id,
+        deduped=deduped,
+        dedup_hint=DedupHint("cap-1", 0.875) if populated else None,
+        taint_findings=findings,
+        siblings=[SiblingHint("cap-1", 0.75)] if populated else [],
+        superseded=superseded_id if populated else None,
+        project_canon=("alias", "canonical") if populated else None,
+        derivation_findings=findings,
     )
-
-    res = import__tool.handle(
-        server.handler_state(), {"source": "user-claude-md"}, None, NOW, "test-actor"
+    status = "deduplicated" if deduped else "captured"
+    expected = {
+        "status": status,
+        "id": captured_id,
+        "dedup_hint": {"similar_id": "cap-1", "score": 0.875}
+        if populated and not deduped
+        else None,
+    }
+    if populated:
+        if not deduped:
+            expected["siblings"] = [{"id": "cap-1", "score": 0.75}]
+        expected["superseded"] = superseded_id
+        expected["project_id"] = {"was": "alias", "now": "canonical"}
+        if deduped:
+            expected["derivation_tainted"] = True
+        expected["taint_findings"] = ["role_prefix_injection: system:"] * (
+            2 if deduped else 1
+        )
+        expected["anchor_note"] = "anchor absent"
+    actual, reason = outcome_row(
+        outcome,
+        ["role_prefix_injection: system:"] if populated else [],
+        "anchor absent" if populated else None,
     )
-    data = json.loads(res["content"][0]["text"])
-    assert data["outcome"] == "imported"
-    assert data["captured"] == 1
-
-
-def test_import_symlink_leaf_is_a_typed_rejected_outcome_not_a_protocol_error(
-    tmp_path: Path,
-) -> None:
-    outside = tmp_path / "outside.md"
-    outside.write_text("secret")
-    claude = tmp_path / "CLAUDE.md"
-    os.symlink(str(outside), str(claude))
-
-    store = Store.open_disposable_test_store()
-    server = MemoryServer(
-        store=store, anchor_root=str(tmp_path), project_dir=str(tmp_path)
-    )
-
-    res = import__tool.handle(
-        server.handler_state(), {"source": "project-claude-md"}, None, NOW, "test-actor"
-    )
-    data = json.loads(res["content"][0]["text"])
-    assert data["outcome"] == "rejected"
-    assert "whitelisted leaf is a symlink" in data["reason"]
-
-
-def test_import_param_errors_for_dir(tmp_path: Path) -> None:
-    store = Store.open_disposable_test_store()
-    server = MemoryServer(
-        store=store, anchor_root=str(tmp_path), project_dir=str(tmp_path)
-    )
-
-    res1 = import__tool.handle(
-        server.handler_state(),
-        {"source": "project-claude-md", "dir": "some/dir"},
-        None,
-        NOW,
-        "test-actor",
-    )
-    assert res1.get("isError") is True
-    assert "dir applies only to source" in res1["content"][0]["text"]
-
-    res2 = import__tool.handle(
-        server.handler_state(), {"source": "memory-dir"}, None, NOW, "test-actor"
-    )
-    assert res2.get("isError") is True
-    assert "requires a non-empty dir" in res2["content"][0]["text"]
-
-
-def test_reimport_auto_supersedes_changed_block_and_revives_reverted_block(
-    tmp_path: Path,
-) -> None:
-    claude = tmp_path / "CLAUDE.md"
-    claude.write_text("# A\nRule A version 1.\n")
-
-    store = Store.open_disposable_test_store()
-    server = MemoryServer(
-        store=store, anchor_root=str(tmp_path), project_dir=str(tmp_path)
-    )
-
-    # 1. Initial import
-    r1 = json.loads(
-        import__tool.handle(
-            server.handler_state(),
-            {"source": "project-claude-md"},
-            None,
-            NOW,
-            "test-actor",
-        )["content"][0]["text"]
-    )
-    cap_a1_id = r1["outcomes"][0]["id"]
-    assert store.capsules.get(cap_a1_id) is not None
-
-    # 2. Edit block -> re-import (should auto-supersede)
-    claude.write_text("# A\nRule A version 2.\n")
-    r2 = json.loads(
-        import__tool.handle(
-            server.handler_state(),
-            {"source": "project-claude-md"},
-            None,
-            NOW,
-            "test-actor",
-        )["content"][0]["text"]
-    )
-    cap_a2_id = r2["outcomes"][0]["id"]
-    assert cap_a2_id != cap_a1_id
-    assert store.relations.is_superseded(cap_a1_id) is True
-
-    rels = store.relations.list_relations_for(cap_a1_id)
-    assert any(
-        r.kind == RelationKind.SUPERSEDES
-        and r.from_id == cap_a2_id
-        and r.to_id == cap_a1_id
-        and r.origin == RelationOrigin.IMPORT
-        for r in rels
-    )
-
-    # 3. Revert block back to version 1 -> re-import (should revive version 1 and supersede version 2)
-    claude.write_text("# A\nRule A version 1.\n")
-    r3 = json.loads(
-        import__tool.handle(
-            server.handler_state(),
-            {"source": "project-claude-md"},
-            None,
-            NOW,
-            "test-actor",
-        )["content"][0]["text"]
-    )
-    assert r3["deduped"] == 1
-    assert store.relations.is_superseded(cap_a1_id) is False
-    assert store.relations.is_superseded(cap_a2_id) is True
-
-
-def test_reimport_tolerates_a_supersedes_edge_with_revocation_history(
-    tmp_path: Path,
-) -> None:
-    """Review a506eb24 #3: U1 rejects `unsupersede` of an edge with revocation
-    history; a re-import that reverts the block cannot become `isError` because
-    of that — audits and proceeds."""
-    claude = tmp_path / "CLAUDE.md"
-    claude.write_text("# A\nRule A version 1.\n")
-    store = Store.open_disposable_test_store()
-    server = MemoryServer(
-        store=store, anchor_root=str(tmp_path), project_dir=str(tmp_path)
-    )
-    r1 = json.loads(
-        import__tool.handle(
-            server.handler_state(),
-            {"source": "project-claude-md"},
-            None,
-            NOW,
-            "test-actor",
-        )["content"][0]["text"]
-    )
-    a1 = r1["outcomes"][0]["id"]
-    claude.write_text("# A\nRule A version 2.\n")
-    r2 = json.loads(
-        import__tool.handle(
-            server.handler_state(),
-            {"source": "project-claude-md"},
-            None,
-            NOW,
-            "test-actor",
-        )["content"][0]["text"]
-    )
-    a2 = r2["outcomes"][0]["id"]
-    # Revoke and re-add the edge: remains LIVE and with revocation history —
-    # the case where `unsupersede` (a DELETE) rejects.
-    store.revoke_relation(
-        RelationKind.SUPERSEDES, a2, a1, actor="test-actor", reason="undo", now=NOW
-    )
-    store.add_relation(RelationKind.SUPERSEDES, a2, a1, origin="import", now=NOW)
-    assert store.relations.is_superseded(a1) is True
-    claude.write_text("# A\nRule A version 1.\n")
-    r3 = import__tool.handle(
-        server.handler_state(), {"source": "project-claude-md"}, None, NOW, "test-actor"
-    )
-    assert not r3.get("isError"), r3
-    assert store.relations.is_superseded(a1) is True, (
-        "history stays; nothing was deleted"
-    )
-    assert any(
-        "unsupersede refused" in str(e.reason)
-        for e in store.audit.list_audit(subject=a1)
+    assert json.dumps(actual) == json.dumps(expected)
+    assert reason == (
+        "deduplicated; derivation tainted" if deduped and populated else status
     )

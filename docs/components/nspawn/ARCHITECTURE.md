@@ -8,14 +8,14 @@ flowchart LR
         Roster[Private roster] --> Picker[Account selection]
         Picker --> Supervisor
         Supervisor --> Registry[(Run registry SQLite)]
-        Supervisor --> Custody[Process identity and sandbox]
+        Supervisor --> Custody[Process identity and run slice]
         Custody --> Pump[Bounded redacted output]
         Pump --> Registry
     end
     subgraph Vendor[Native account boundary]
         Custody --> Claude[Claude Code]
         Custody --> Codex[Codex app-server]
-        Custody --> AGY[AGY admission currently refused]
+        Custody --> AGY[AGY native runs]
     end
     Registry --> Result[Status and result readback]
     Result --> Client
@@ -37,6 +37,57 @@ The native clients can send task text to their configured providers.
 Use the [runbook](RUNBOOK.md) for setup, failure diagnosis, backup, and restoration.
 The [reference](REFERENCE.md) links each public interface to its source.
 
+## Runs without notices
+
+A Claude Code session keeps the tool list from when its stdio door started.
+A subagent keeps the tool list from its own start, even after a parent reconnect.
+An older list can omit `notice`, so the client sends `"notice": "false"` as a string.
+The current door correctly refuses that string.
+The workflow route reads disk at each use, so it can require an option absent from the caller's tool list.
+
+Use `nspawn run start` or `nspawn review start` with the tool's arguments as one JSON object on stdin.
+Set `"notice": false` in that object to start without a notice.
+Both commands call a new stdio door of the installed runtime, independent of the caller's tool list.
+The door keeps the caller's working directory for project scope but does not load an `nspawn` package from that directory.
+The call deadline exceeds the driver's 180-second acknowledgement wait.
+The CLI does not validate or change tool arguments. The door validates them.
+Both commands print the tool's answer as one JSON line.
+They exit 0 for an answer, 2 for invalid CLI input or a refusal, and 1 for a door failure.
+A refusal includes its structured data on stderr, which can name a `launch_uuid` for `nspawn_run_show`.
+Read that launch before another start: a failed call does not prove that no run started.
+
+`nspawn_run_start` and `nspawn_review_start` accept the boolean `notice` option.
+It defaults to true. An omitted option keeps the existing notice behavior.
+`nspawn_batch_start` has no notice option.
+A node door refuses `notice: false` with `InvalidArguments` before admission.
+The host needs each node run's notice to count attention and Stop work.
+
+With `notice: false`, the dispatch frame has `caller: null`.
+The frame arguments do not contain `notice`.
+Admission, keyed reattach and successor runs write no notice row for that caller.
+The run sends no push and supplies no SessionStart drain notice.
+This uses the existing notice path and store schema.
+The option does not change the request fingerprint.
+The same idempotency key still names one run with or without the option.
+A reattach without the option can write its caller's notice row as before.
+The journal keeps its parent evidence.
+The run owner, group and swarm group do not change.
+
+Use `nspawn run wait <run-id>` to wait without a notice.
+The command calls `nspawn_run_show` through the runtime's MCP peer.
+The command reads a spilled answer from its file and then deletes the file.
+Each call uses `timeout_ms: 20000`, within the client's 30-second deadline.
+The read keeps orphan reaping and node scoping.
+The command repeats until the run is orphaned, completed, failed or closed.
+For a failed or closed run, it follows the successor in `warning`.
+It follows at most `Supervisor.MAX_CONTINUATIONS` successors.
+It prints one JSON line with the final `run_id` and `phase`.
+It exits 0 for completed and 3 for another terminal phase.
+A refusal exits 2, leaves stdout empty and names the run on stderr.
+A peer failure exits 1.
+A usage error refuses before the peer starts.
+The command has no timeout option. Callers bound their own wait.
+
 ## Full design and contract
 
 This section is the full technical text that the README held before the launch rewrite.
@@ -57,7 +108,7 @@ Ad hoc shell subagents die when the parent terminal closes, overwrite shared wor
 | --- | --- |
 | Subagents die when the caller terminal closes or leave orphan processes behind. | Each run executes in its own driver process and systemd slice, and survives caller restarts. |
 | Expensive reasoning models run on mechanical tasks while complex tasks starve. | System1 (`Laya` / `Jev` or local SLM) classifies the prompt and routes across 8 execution classes. |
-| Parallel writers collide in the same Git checkout. | Read-only runs execute in a strict cage, and writable runs take an exclusive one-writer claim. |
+| Parallel writers collide in the same Git checkout. | Read-only runs start with the tools of their agent file only, and writable runs take an exclusive one-writer claim. |
 | Hitting a 5-hour or 7-day quota wall aborts the whole workflow. | The roster tracks per-account utilization and `cooling_until` walls, and routes around exhausted accounts. |
 | Independent code review shares the author session's biased context. | `nspawn_review_start` starts a fresh read-only witness session with zero shared context. |
 | Raw vendor streams can expose tokens or environment secrets. | Transcripts pass through credential redaction before persistence in the SQLite run registry. |
@@ -75,7 +126,7 @@ flowchart LR
     A[Caller MCP or CLI] -->|nspawn_run_start / review_start| B[Admission & Idempotency Lock]
     B --> C[System1 Task Classifier & Quota Picker]
     C --> D{Execution Mode}
-    D -->|read_only: true| E[Caged Reader: cwd + read_paths]
+    D -->|read_only: true| E[Reader: agent tools + own slice]
     D -->|native_write: true| F[One-Writer Claim + Isolated Slice]
     E --> G[Native Vendor CLI: Claude / Codex / AGY]
     F --> G
@@ -122,15 +173,15 @@ Running multiple coding agents across personal or team accounts often hits vendo
 - **Automatic cooling walls (`cooling_until`):** when an account hits a rate limit, `nSPAWN` fences that account until its reset window. It routes the next dispatch to a healthy account on the same provider.
 - **Zero fabricated numbers:** `nspawn_quota_show` reports `observed`, `stale`, `expired`, `never_observed`, or `no_source`—never a fake `0%` standing in for an unmeasured account.
 
-#### 3. Caged readers vs. one-writer worktree custody
+#### 3. Read-only runs vs. one-writer worktree custody
 
-- **Read-only cage (`read_only: true`):** confines the child process to `cwd` and explicit `--add-dir` `read_paths`. Under the Claude `dontAsk` cage, only read-only inspection commands run. The cage refuses scripts, interpreters, and writes without prompting.
-- **Exclusive one-writer claim (`native_write: true`):** requires a standalone Git clone (`.git` directory, not a linked worktree) under an approved `[native_write]` root. The writer receives an isolated disposable `HOME` and `TMPDIR` under `cwd/.nott/disposable`, runs with network access disabled inside its systemd slice, and cannot mutate `.git`.
+- **Read-only run (`read_only: true`):** the native client reads `cwd` and explicit `--add-dir` `read_paths`. It receives the tools that its agent file declares and no other tool. An agent that declares `Read, Grep, Glob` has no Bash. Under `dontAsk`, a tool request without permission fails. The run starts in a run slice of its own, with no bwrap settings.
+- **Exclusive one-writer claim (`native_write: true`):** requires a standalone Git clone (`.git` directory, not a linked worktree) under an approved `[native_write]` root. The writer starts in its clone without a writer cage. Claude retains ordinary settings, inherited environment and plugin hooks. Writer plugins omit nSPAWN MCP. Codex and AGY receive no adapter writer permission profile. The run retains its process scope and exclusive claim.
 - **Checked `ProcessIdentity` and slice drain:** `nspawn_run_close` re-verifies `(pid, starttime_ticks, uid)` before sending `SIGSTOP` then `SIGKILL` to the process group, and empties the systemd slice before releasing the worktree lock.
 
 #### 4. Independent zero-context witness reviews (`nspawn_review_start`) and batch fanout (`nspawn_batch_start`)
 
-- **Fresh witness reviews:** `nspawn_review_start` starts a caged read-only branch review in a fresh session with zero shared context from the author session. You can pass a specialized reviewer agent (`nott:python-reviewer`, `nott:security-reviewer`, `nott:silent-failure-hunter`, `nott:pr-test-analyzer`).
+- **Fresh witness reviews:** `nspawn_review_start` starts a read-only branch review in a fresh session with zero shared context from the author session. You can pass a specialized reviewer agent (`nott:python-reviewer`, `nott:security-reviewer`, `nott:silent-failure-hunter`, `nott:pr-test-analyzer`).
 - **Multi-provider fanout:** `nspawn_batch_start` dispatches one read-only prompt across multiple providers or accounts in parallel under composite idempotency keys (`key/0`, `key/1`, ...).
 
 ---
@@ -160,7 +211,7 @@ uv run nspawn provider list
 uv run nspawn quota show
 ```
 
-Dispatch a caged read-only session through MCP:
+Dispatch a read-only session through MCP:
 
 ```json
 {
@@ -303,34 +354,91 @@ not part of a public export. The recipe preserves the network-disabled
 profile and addressed-sendto refusal. Activation selects only nSPAWN's declared
 binary through `[bins].codex`.
 
-A new write run requires the explicit `native_write` opt-in. Claude receives
-`--permission-mode dontAsk` with its restricted Bash-only command and pinned
-sandbox settings. A tool request without prior permission fails instead of
-waiting for an operator. The mode grants no extra tool or filesystem access.
-A `session_id` resume must repeat `native_write=true`. An `original_run`
+A new write run requires the explicit `native_write` opt-in. Claude starts in
+its clone with ordinary settings. A `session_id` resume must repeat `native_write=true`. An `original_run`
 continuation retains the recorded opt-in.
 
 A Claude account can declare `home` as its existing Claude configuration directory.
 Unconfined runs and non-SDK routes pass it as `CLAUDE_CONFIG_DIR`. They retain `HOME`.
 An account without `home` retains the inherited Claude configuration directory.
 The roster refuses duplicate declared Claude directories. A recorded alias route
-refuses a changed directory instead of moving the session. Caged runs and SDK
+refuses a changed directory instead of moving the session. SDK
 nodes retain their private configuration directories. External session discovery
 reads the inherited directory and each declared Claude directory.
 
+A token provider's accounts follow its secrets directory. A token provider is a
+Claude-kind provider with `secrets` and no endpoint account. Each `<alias>.token`
+file that the roster does not declare is an account on the next roster read.
+It joins after the declared accounts, in name order, with the `auth_env` that
+Add account writes, and it goes when its file goes. A declared account keeps its
+table and its place, with or without its file.
+
+One fenced reader reads a Claude token file (`owner_roster.read_token_file`).
+The child's credential read and the route's token read use it. It opens the
+file with O_NOFOLLOW and checks it by fstat on that descriptor: the owner's
+regular file, one link, 1 to 64 KiB and an owner-only mode (no group or other
+bits). The reader never follows a link at the file itself, but it follows links
+in the file's directory path. A token file can be the owner's link, in a
+directory of the owner's alone (0700), to an absolute path. Then the reader
+opens the target's directory once and checks it by fstat: the owner's, not
+writable by group or other, and readable and searchable by the owner. It opens
+the target file relative to that descriptor with O_NOFOLLOW, and checks it by
+fstat, as above. So a key can live with its service (the qwen key), and the
+reader refuses a second link at the file. Each refusal names only `<alias>.token` and its
+fix, never a host path. A link into a directory that is not there says so, with
+its errno. A target directory that the owner cannot read and search, or EACCES
+or EPERM from opening it, names chmod u+rx on that directory. Another errno from
+opening it names the errno and says to check the link's target path. Only EACCES
+or EPERM from lstat or readlink names chmod 700 on the secrets directory. The
+reader changes no mode.
+
+A provider with no accounts table lists its accounts by the same rules, without
+reading a file. It lists only from a directory of the owner's alone (0700), only
+names in the run-row alias grammar, and only files that pass the fence with an
+owner-only mode.
+
+The roster read skips a token file with a note if the secrets directory is not
+the owner's alone (0700). It also skips a file that is not the owner's, has more
+than one link, is empty or holds more than 64 KiB, and a link that the reader
+refuses. A regular file that passes these checks but has group or other bits
+loses them through a descriptor that follows no link. So a 0644 file becomes
+0600, and a 0444 file becomes 0400. The read reads the mode back and notes
+"tightened <alias>.token to <mode>". It does the same for a declared account's
+own file and for a provider with no accounts table. A file that keeps those
+bits does not join. Its note names the errno, and it says to run chmod 600 only
+for EPERM, EACCES or EROFS. A mode that the file system keeps, as on vfat, gets
+a note of its own. A file that goes away or becomes a link while the read runs
+also gets a note of its own. The read never changes a file through a link. A
+link whose target has group or other bits stays out, and its note says to run
+chmod 600 on that file. A name outside the run-row alias grammar, the name of a
+provider and an alias that another provider has are also skipped. A skipped file
+never stops the roster. The account writers declare a followed account when it
+moves before the declared ones, and refuse to remove an account while its token
+file stays.
+
 An account with `auth_env = "ANTHROPIC_API_KEY"` and no base url sends an
-Anthropic API key. The picker keeps it for Haiku models only: any
-other model moves to the next account or route. A canvas node never starts on,
-is recorded on or moves to such an account, and `route start` refuses a node
-already recorded on one.
+Anthropic API key. It runs every model that its provider serves for an nSPAWN
+run (owner order, 2026-10-27). Declare the key accounts first in a `fill_first` provider to
+use them first. When a key has no credit left, the run's account gets a wall,
+and the next run goes to the next account. The key accounts serve nSPAWN runs
+only. A canvas node stays on OAuth: nSPAWN never starts a node on a key account
+or moves a node to one, `route show --account` refuses a pin of one, and `route
+start` refuses a node whose route names one. The reset that `route wall`
+gives also excludes the key accounts. A local endpoint that uses that variable
+with a base url, such as a qwen account, is not a key account.
 
 Each provider can set `excluded_accounts` to a list of account aliases. The picker
 refuses these accounts, including explicit requests. `nspawn route start` and
 `route show` also refuse a node made on an account before its exclusion. `route
 wall` and `route switch` still record a wall on it, so the node host can move a
 running node to another account. Excluded accounts never supply a reset time for
-the remaining pool. An unknown exclusion alias is refused when the account list is
-read for selection.
+the remaining pool. An exclusion alias that names no account excludes nothing.
+The picker ignores it. The run warning, `route show`, `route wall` and the
+provider list name it, with each skipped token file, so the owner can fix it. A
+run warning takes at most 2 KiB of these notes and counts the rest. A tightened
+note goes first, and the count that points to the provider list never includes
+it, because that list does not show it again.
+Removing an account also removes it from `excluded_accounts`.
 
 The picker spreads work over the accounts that are not excluded and not cooling
 down. Each account gets a score from its stored quota windows and its live runs:
@@ -415,7 +523,37 @@ direction). `nspawn_review_start` needs no `provider` and no `model`. A
 
 2. For a review, the route `[roles]` binds to `reviewer`, with its
    `[role_profile.reviewer]` model and effort.
-3. Every provider, in the class's rank, except a `named_only` provider.
+3. Each route that serves the agent's suggested model, in the class's rank.
+4. Every provider, in the class's rank, except a `named_only` provider.
+
+### Role routes and defaults
+
+A fresh native writer turn takes the `writer` role. It has no `session_id`
+or `original_run`. A review that is not a native writer takes the `reviewer`
+role. Other calls take no role.
+
+With no `provider`, the role's route follows the class's `[preference]` list.
+A role entry carries its profile as route defaults, not caller pins. Other
+preference entries keep their model and effort as pins.
+
+On the role's route, the caller's model wins. A `judgment` class ignores the
+agent's model. Otherwise, an agent's model that the route serves wins over the
+role's model. Then come the class fast lane and the route default. The caller's
+effort wins over the agent's effort, then the role's effort, then class and
+route defaults. Suggested and role efforts respect the class ceiling and the
+route's served ladder without refusal. A warning names an agent model that
+does not run and explains an effort fallback.
+
+A role effort admits its route only when the route serves a rung at or below
+the class ceiling. Otherwise, admission uses the class initial effort.
+
+An unpinned fresh native writer with a writer role uses the same admission walk.
+Its order contains only routes that list `write`. A credential re-pick keeps
+the role's model and effort. A pinned provider takes no role defaults and keeps
+its route. Resumed writers and writers without a writer role keep their prior
+routing behavior.
+
+### Witness exclusions and route failures
 
 `producer` names the author: route names, account aliases or model ids. nSPAWN
 skips a preference that is the producer's route, account or model, and keeps
@@ -436,14 +574,20 @@ names each one and its reason. It is `AllProvidersWalled` with
 `nearest_reset` when a wall stopped a preference, else `PickerError`.
 
 A route can also refuse the turn after admission: a model it does not serve
-(codex-main answers HTTP 400 for `gpt-6.1-sol`), a spent balance (HTTP 402, or
-Z.ai `1113`), a rate limit (HTTP 429), an organization that refuses the OAuth
+(codex-main answers HTTP 400 for `gpt-6.1-sol`), a spent balance (HTTP 402,
+Z.ai `1113`, or an Anthropic API key whose answer says that its credit balance
+is too low), a rate limit (HTTP 429), an organization that refuses the OAuth
 account (HTTP 403 `oauth_org_not_allowed`), or a quota wall. nSPAWN is the
 router (owner): an account, balance, quota or rate-limit failure is
 its routing event for every run class, not the caller's. It walls what failed.
 HTTP 401 and 403 wall the account for 300 s. HTTP 402 walls it for the hour, or
-to the vendor's reset. HTTP 429 walls it for 300 s (`rate_limited`). A 429 on a
-Claude route with no account walls the route for 300 s. A vendor code that the roster
+to the vendor's reset. Anthropic sends the spent credit of an API key as HTTP
+400, and Claude Code prints "Credit balance is too low". nSPAWN reads an API
+error result (`terminal_reason` `api_error`) with that text as HTTP 402
+(`terminal._CREDIT_REFUSAL`). A max_turns failure, or another failure whose
+answer quotes the text, keeps its own class and gets no wall. The run telemetry
+keeps the status that the vendor sent. HTTP 429 walls it for 300 s (`rate_limited`).
+A 429 on a Claude route with no account walls the route for 300 s. A vendor code that the roster
 declares in `exhausted_codes` walls the route for the hour. An undeclared code
 is a 429 like any other.
 
@@ -461,17 +605,21 @@ and model that run the node, and why each provider before it could not. The
 node host shows the alert as the reason of the node's `switched` event, before
 the vendor starts, and keeps it in the journal. A pin (`--account`) or a
 recorded route (`--route`) never moves. When no provider can serve, the walled
-provider's refusal stands, with each reason. The picker's API-key rule
-applies as before, so the move never gives an Anthropic API-key account.
+provider's refusal stands, with each reason. The move never gives an Anthropic
+API-key account.
 
 A read-only Claude turn on an account that the caller did not pin first
 continues in the same run on the next account of the route. The run's `warning` says
-`moved off <route>/<account> (<cause>)` for each account it left. A caged turn
-also says `refused on <accounts>; the turn then ran on <account>`. When the
+`moved off <route>/<account> (<cause>)` for each account it left. A native
+writer continuation walled by its subscription also says
+`refused on <accounts>; the turn then ran on <account>`. When the
 route has no account left, the work continues as a new run, for the same
 caller, on the next entry of its walk. Every fresh run has a walk. For a review
-or a verification it is the owner's preference order. For any other class it is
-the other routes of its class, then the other accounts of its route. A pinned
+or a verification it is the owner's preference order. A fresh unpinned native
+writer with a writer role also takes that order, on writable routes only.
+Its walk ends with the other accounts of the route that its run took, each once.
+For any other class it is the other routes of its class, then the other
+accounts of its route. A pinned
 route walks only its other accounts, and a pin on an account has no walk. A
 resume never moves: it is the caller's conversation. The failed run's `warning`
 says `continued as run <id> on <route>`, and the new run's `warning` names the
@@ -583,8 +731,11 @@ answer is one tool call: `nspawn_provider_list` reports the roster (and answers
 even while the registry is down), and every routing refusal names the set it
 accepted, so no reader of this package needs to `cat` a config file to route.
 
-`nspawn_run_list` lists the fleet — the query an orchestrator makes every tick,
-which used to be answered only by reading `nspawn.runs` over psql.
+`nspawn_run_list` reads the newest fleet page. Its default keeps nonterminal
+runs and terminal runs with undelivered notices. It preserves `notices` and
+reports the omitted terminal count in `terminal_omitted`. Pass
+`include_terminal=true` to read every run on the page, with zero omissions.
+Direct `Supervisor.fleet()` consumers and CLI fleet commands keep the full page.
 `nspawn_run_show` reads one run, and only it can long-poll. Its `effort` field
 answers what the caller asked for (`requested`) and what the launcher was handed
 (`sent`), as the run's admission recorded them (`*_source: "admission"`, where a
@@ -657,7 +808,7 @@ Known amounts remain lower bounds. Source failures remain typed failures.
 | `mcp.py` | `src/server.rs` | the MCP surface: seven tools, two ceilings, typed refusals |
 | `cli.py` | — | the one executable `nspawn <noun> <verb>`: `mcp serve` serves stdio (a bare `nspawn` is a usage error) |
 | `claude_catalog.py` | — | bounded native model metadata with no prompt or credential |
-| `claude_restricted.py` | — | the caged Claude writer launch: `--restricted` Bash-only argv, a closed env and a pinned bubblewrap sandbox settings file, refused rather than loosened |
+| `claude_restricted.py` | — | Claude node cages; native writers and readers use the ordinary launch |
 | `main.py` | `src/main.rs` | the stdio door on the official MCP Python SDK (`mcp`), one session per process, reached through `cli.py` |
 | `driver.py` | — | the per-call driver: every dispatch runs in its own process and transient user scope, so a run outlives the session that started it |
 | `notify.py` | — | the terminal-notice outbox: pushed to a live caller, else printed once at the project's next session start; a node's (`node:<session>`) notice is neither, the host claims it with `nspawn notice take` and acks it by run, generation and token; the runs of one swarm (`swarm`, group `swarm:<name>`) give their caller one notice when all are terminal |

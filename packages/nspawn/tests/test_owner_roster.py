@@ -15,7 +15,6 @@ import sample_roster
 
 from nspawn import classify, system1
 from nspawn.owner_roster import (
-    UNCLASSIFIED,
     ClassPolicy,
     Roster,
     RosterError,
@@ -489,8 +488,11 @@ def test_a_provider_with_secrets_directory_discovers_accounts_and_resolves_token
 ) -> None:
     secrets_dir = tmp_path / "secrets"
     secrets_dir.mkdir()
+    secrets_dir.chmod(0o700)  # whatever the umask
     (secrets_dir / "strife.token").write_text("sk-ant-" + "oat01-token-a")
+    (secrets_dir / "strife.token").chmod(0o600)  # whatever the umask
     (secrets_dir / "claude-court.token").write_text("sk-ant-" + "oat01-token-b")
+    (secrets_dir / "claude-court.token").chmod(0o600)  # whatever the umask
 
     path = _write(
         tmp_path,
@@ -573,7 +575,9 @@ def test_a_bare_alias_discovered_under_two_providers_is_refused_at_resolution(
     for name in ("a", "b"):
         directory = tmp_path / name
         directory.mkdir()
+        directory.chmod(0o700)  # whatever the umask
         (directory / "shared.token").write_text("x")
+        (directory / "shared.token").chmod(0o600)  # whatever the umask
     path = _write(
         tmp_path,
         f'[[provider]]\nname = "a"\nsecrets = "{tmp_path / "a"}"\n\n'
@@ -670,7 +674,7 @@ def test_the_u8_guard_on_the_policy_itself_refuses_a_direct_construction() -> No
 
 
 def test_a_classes_table_without_unclassified_is_refused(tmp_path: Path) -> None:
-    """`unclassified` is the fail-closed ceiling; without it a System1 outage escalates."""
+    """Classless dispatches need an explicit effort policy."""
     with pytest.raises(RosterError) as refusal:
         Roster.read(
             _write(
@@ -679,6 +683,8 @@ def test_a_classes_table_without_unclassified_is_refused(tmp_path: Path) -> None
             )
         )
     assert "unclassified" in str(refusal.value)
+    assert "classless effort policy" in str(refusal.value)
+    assert "falls back" not in str(refusal.value)
 
 
 def test_a_classes_table_with_unclassified_loads(tmp_path: Path) -> None:
@@ -765,7 +771,7 @@ def test_an_inherited_implementation_policy_binds_the_picker(tmp_path: Path) -> 
     assert "implementation" in refused.value.message
 
 
-def test_an_inherited_implementation_policy_falls_closed_on_a_system1_failure(
+def test_an_inherited_implementation_policy_stands_on_a_system1_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def unavailable(*_args: object, **_kwargs: object) -> object:
@@ -776,8 +782,11 @@ def test_an_inherited_implementation_policy_falls_closed_on_a_system1_failure(
     effective, warning, _ = classify.resolve_execution_class(
         "implementation", "implement the agreed fix", roster
     )
-    assert effective == UNCLASSIFIED
+    assert effective == "implementation"
     assert warning is not None and "implementation" in warning
+    picked = pick_execution(roster, 1_000_000, execution_class=effective)
+    assert picked.executed_provider.name == "capped"
+    assert picked.effort == "high"
 
 
 def test_a_roster_with_no_classes_table_at_all_still_loads(tmp_path: Path) -> None:

@@ -7,17 +7,11 @@ own shape or a TYPED refusal that names what is missing.
 
 import threading
 
-import pytest
 from mcp_fakes import FakeSupervisor, handle
 
-from nspawn import errors, mcp
+from nspawn import errors
 from nspawn.errors import NSpawnError
-from nspawn.mcp import (
-    INVALID_PARAMS,
-    MAX_MCP_RESPONSE_BYTES,
-    McpServer,
-    ResponseTooLarge,
-)
+from nspawn.mcp import INVALID_PARAMS, McpServer
 
 
 def bounded(call, seconds: float = 2.0):
@@ -70,23 +64,6 @@ def test_malformed_calls_are_refused_with_invalid_params() -> None:
         assert answer["error"]["code"] == INVALID_PARAMS
 
 
-def test_a_tool_result_is_packaged_the_way_the_oracle_packages_it() -> None:
-    assert mcp.tool_result("hello") == {
-        "content": [{"type": "text", "text": "hello"}],
-        "isError": False,
-    }
-
-
-def test_an_answer_over_the_hard_cap_is_refused_not_truncated() -> None:
-    with pytest.raises(ResponseTooLarge) as caught:
-        mcp.tool_result("x" * (MAX_MCP_RESPONSE_BYTES + 1))
-    assert "pagination" in caught.value.rpc_message
-    # The cap is measured in BYTES: multi-byte text under the character count
-    # can still be over the line.
-    with pytest.raises(ResponseTooLarge):
-        mcp.tool_result("é" * (MAX_MCP_RESPONSE_BYTES // 2 + 1))
-
-
 def test_a_typed_refusal_from_the_tool_is_invalid_params() -> None:
     refusing = FakeSupervisor(
         status_result=NSpawnError(errors.NERR_1113, "refuse for test")
@@ -99,8 +76,3 @@ def test_a_typed_refusal_from_the_tool_is_invalid_params() -> None:
     )
     assert answer is not None
     assert answer["error"]["code"] == INVALID_PARAMS
-
-
-def test_the_response_cap_is_the_oracle_s_number() -> None:
-    # Same class: a cap that fires is not a cap at the right size.
-    assert mcp.MAX_MCP_RESPONSE_BYTES == 1024 * 1024

@@ -34,7 +34,7 @@ from supervisor_support import (
 )
 from test_driver import _call, _payload
 
-from nspawn import app_server, native, picker, supervisor, terminal
+from nspawn import native, picker, supervisor, terminal
 from nspawn.mcp import McpServer
 from nspawn.owner_roster import Defaults, NativeAccount, Provider, Roster
 from nspawn.redact import SecretNeedles
@@ -70,9 +70,7 @@ for line in sys.stdin:
     elif method == 'plugin/installed':
         send({'id': frame['id'], 'result': {'marketplaces': [], 'marketplaceLoadErrors': []}})
     elif method == 'thread/start':
-        profiles = params.get('config', {}).get('permissions', {})
-        profile = profiles.get(params.get('permissions'), {})
-        writer = 'write' in profile.get('filesystem', {}).values()
+        writer = params.get('sandbox') == 'danger-full-access'
         send({'id': frame['id'], 'result': {'thread': {'id': 'router-thread'},
               'model': params['model'],
               'sandbox': json.loads(os.environ['WRITER_SANDBOX']) if writer else {'type': 'readOnly'},
@@ -132,7 +130,7 @@ def _codex_route(
             failing.append(account)
         env = {
             "PATH": "/usr/bin:/bin",
-            "WRITER_SANDBOX": json.dumps(app_server.NATIVE_WRITE_SANDBOX),
+            "WRITER_SANDBOX": json.dumps({"type": "dangerFullAccess"}),
         }
         if account in failing:
             env["FIXTURE_FAIL"] = "429"
@@ -156,7 +154,8 @@ def _start(server: McpServer, checkout: Path, *, writer: bool) -> str:
     arguments: dict[str, Any] = {
         "prompt": "change it" if writer else "read it",
         "cwd": str(checkout),
-        "class": DECLARED_CLASS,
+        # The double makes only scratch writes. C1 no longer admits mechanical writers.
+        "class": "verification" if writer else DECLARED_CLASS,
     }
     arguments.update({"native_write": True} if writer else {"read_only": True})
     return str(_payload(_call(server, "nspawn_run_start", arguments))["run_id"])
@@ -282,8 +281,10 @@ def test_a_refused_account_is_walled_and_the_read_only_run_goes_on(
     recorded = (FIXTURES / fixture).read_text(encoding="utf-8")
     secrets = tmp_path / "secrets" / "claude"
     secrets.mkdir(parents=True)
+    secrets.chmod(0o700)  # whatever the umask
     for alias in ("acct-a", "acct-b"):
         (secrets / f"{alias}.token").write_text("x", encoding="utf-8")
+        (secrets / f"{alias}.token").chmod(0o600)  # whatever the umask
     provider = Provider(name="zai", secrets=secrets, models=["glm"], model="glm")
     roster = Roster(providers=[provider], defaults=Defaults(plugin_root=tmp_path))
     streams = [(recorded, 1), (_answered(recorded), 0)]

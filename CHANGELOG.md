@@ -30,7 +30,7 @@
 - Generate separate native client views. Keep their hook and authentication differences explicit.
 - Install a versioned runtime with owned configuration changes and a restoration path.
 - Add visual architecture guides, contributor entry points, issue forms, and public API references.
-- Add contributor setup, quality commands, diagrams, and a versioned toolkit catalog for all four projects.
+- Add contributor setup, quality commands, and diagrams for all four projects.
 
 ### Compatibility
 

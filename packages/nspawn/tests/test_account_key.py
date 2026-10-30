@@ -70,9 +70,13 @@ auth_env = "ANTHROPIC_AUTH_TOKEN"
 def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     for name in ("claude", "zai", "qwen"):
         (tmp_path / "secrets" / name).mkdir(mode=0o700, parents=True)
+        (tmp_path / "secrets" / name).chmod(0o700)  # whatever the umask
     (tmp_path / "secrets" / "claude" / "first.token").write_text("old-first\n")
+    (tmp_path / "secrets" / "claude" / "first.token").chmod(0o600)  # whatever the umask
     (tmp_path / "secrets" / "zai" / "zai.token").write_text("old-zai\n")
+    (tmp_path / "secrets" / "zai" / "zai.token").chmod(0o600)  # whatever the umask
     (tmp_path / "secrets" / "qwen" / "server.token").write_text("old-qwen\n")
+    (tmp_path / "secrets" / "qwen" / "server.token").chmod(0o600)  # whatever the umask
     roster = tmp_path / "spawn.toml"
     roster.write_text(ROSTER.format(root=tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -118,9 +122,12 @@ def test_a_failed_replace_keeps_the_old_key_and_no_staged_file(
 def test_a_linked_token_is_refused_and_both_ends_stay(host: Path) -> None:
     elsewhere = host / "elsewhere.token"
     elsewhere.write_text("old-elsewhere\n")
+    elsewhere.chmod(0o600)  # whatever the umask
     link = host / "secrets" / "claude" / "first.token"
     link.unlink()
     link.symlink_to(elsewhere)
+    # The owner's link in the 0700 directory is an account (2026-10-21), and a
+    # pasted key never goes through it.
     with pytest.raises(RosterEditRefused, match="change it where it points"):
         write_account_key(host / "spawn.toml", "claude", "first", KEY, new=False)
     assert link.is_symlink() and link.readlink() == elsewhere
@@ -244,6 +251,7 @@ def test_a_vanished_token_never_redirects_the_key(
     fall back to the first discovered account's file."""
     directory = host / "secrets" / "zai"
     (directory / "a.token").write_text("old-a\n")
+    (directory / "a.token").chmod(0o600)  # whatever the umask
     (directory / "zai.token").unlink()
     monkeypatch.setattr(
         owner_roster.Provider, "ordered_accounts", lambda self: ["a", "zai"]
@@ -290,7 +298,8 @@ def test_a_hard_linked_token_is_refused_and_both_names_stay(host: Path) -> None:
     token = host / "secrets" / "claude" / "first.token"
     other = host / "copy.token"
     os.link(token, other)
-    with pytest.raises(RosterEditRefused, match="change it where it points"):
+    # A hard-linked token file is no account (the token file fence, 2026-10-21).
+    with pytest.raises(RosterEditRefused, match="no such account"):
         write_account_key(host / "spawn.toml", "claude", "first", KEY, new=False)
     assert token.read_text() == other.read_text() == "old-first\n"
     assert os.stat(token).st_ino == os.stat(other).st_ino
@@ -533,6 +542,7 @@ def test_a_failed_link_never_removes_a_file_that_reuses_its_inode(
         real_unlink(path, *args, **kwargs)  # type: ignore[arg-type]
         if path.endswith(".tmp"):
             token.write_text("the owner's\n")
+            token.chmod(0o600)  # whatever the umask
 
     def reused(path: str, *args: object, **kwargs: object) -> os.stat_result:
         found = real_stat(path, *args, **kwargs)  # type: ignore[arg-type]
@@ -564,6 +574,7 @@ def test_a_refused_add_never_removes_a_file_that_reuses_its_inode(
         made.append(real_stat(token))
         token.unlink()
         token.write_text("the owner's\n")
+        token.chmod(0o600)  # whatever the umask
         raise RosterEditRefused("already has an account 'work'")
 
     def held(found: os.stat_result) -> bool:

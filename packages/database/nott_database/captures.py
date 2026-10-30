@@ -75,6 +75,18 @@ def _root(create: bool) -> int | None:
     return fd
 
 
+def _names(fd: int) -> list[str]:
+    # Open a fresh view after taking the lock: shared filesystems can retain
+    # an older directory listing on fd. Stay relative to the checked inode.
+    view = os.open(
+        ".", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd
+    )
+    try:
+        return os.listdir(view)
+    finally:
+        os.close(view)
+
+
 def _ident(ident: object) -> str:
     if not isinstance(ident, str) or not ID.fullmatch(ident):
         raise RefusedError("captureId must be 64 lowercase hex characters")
@@ -91,7 +103,7 @@ def keep(data: bytes) -> str:
     temporary = _TEMPORARY + secrets.token_hex(8)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
-        names = os.listdir(fd)
+        names = _names(fd)
         if f"{ident}.png" in names:
             try:
                 kept, _ = read(ident, 0, LIMIT)
@@ -183,7 +195,7 @@ def clear() -> int:
     removed = 0
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
-        for name in os.listdir(fd):
+        for name in _names(fd):
             capture = bool(_NAME.fullmatch(name))
             if capture or name.startswith(_TEMPORARY):
                 try:

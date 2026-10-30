@@ -18,6 +18,7 @@ from jsonschema.exceptions import (  # type: ignore[import-untyped]
 
 from .limits import MAX_DURABLE_ROW_BYTES
 from .pump import MAX_RUN_OUTPUT_BYTES
+from .vendor_home import open_owner_path
 from .wire import DISABLED_CAPABILITY_FEATURES
 
 # These are the installed native capability selections measured for the
@@ -46,32 +47,7 @@ _CODEX_CLOSED_FEATURES = (
 def _native_file(path: Path, home: Path) -> bytes:
     """Read complete bounded evidence through the selected owner's home only."""
     try:
-        parts = path.relative_to(home).parts
-        if not parts or any(part in {".", ".."} for part in parts):
-            raise ValueError
-        directory = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        try:
-            for part in parts[:-1]:
-                metadata = os.fstat(directory)
-                if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
-                    raise ValueError
-                child = os.open(
-                    part,
-                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                    dir_fd=directory,
-                )
-                os.close(directory)
-                directory = child
-            metadata = os.fstat(directory)
-            if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
-                raise ValueError
-            descriptor = os.open(
-                parts[-1],
-                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-                dir_fd=directory,
-            )
-        finally:
-            os.close(directory)
+        descriptor = open_owner_path(home, path)
         with os.fdopen(descriptor, "rb") as stream:
             before = os.fstat(stream.fileno())
             if (

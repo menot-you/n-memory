@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -452,3 +453,49 @@ def test_settling_loss_defers_without_burning_a_canonical_generation(
         worker.cycle()
         assert store.tiers.get_tier(cid) == Tier.ARCHIVED
         assert len(events(store)) == 1
+
+
+def test_all_consolidation_projections_keep_record_fields(
+    store: Store, tmp_path: Path
+) -> None:
+    from dataclasses import replace
+
+    from nmemory.curator import CuratorWorker
+    from nmemory.tools import digest
+
+    cid = capsule(store, "record projection")
+    store.pins.set_pin(cid, True, "keep", "test", NOW)
+    store.traffic.record_recall(cid, NOW)
+    store.tiers.set_tier(cid, Tier.ARCHIVED, NOW)
+    stored = store.capsules.get(cid)
+    assert stored is not None
+    expected = ConsolidationRecord(
+        id=cid,
+        seq=stored.seq,
+        source_hash=sha256_hex(b"record projection"),
+        content="record projection",
+        instruction_taint=False,
+        authority_class=AuthorityClass.OBSERVED_FACT,
+        valid_to=None,
+        created_at=NOW - timedelta(days=31),
+        recall_count=1,
+        is_superseded=True,
+        tier=Tier.ARCHIVED,
+        pinned=True,
+        supersession_archive=False,
+    )
+    sidecars = digest_sidecars(store.db)
+    assert digest.consolidation_records([stored], {cid}, sidecars) == [expected]
+    assert digest.consolidation_records([stored], {cid}, {}) == [
+        replace(expected, recall_count=0, tier=Tier.ACTIVE, pinned=False)
+    ]
+    curator = CuratorWorker(store, root=tmp_path, project="test")
+    assert next(r for r in curator._consolidation_records() if r.id == cid) == expected
+    with (
+        store.db.embedding_worker_owner(),
+        patch.object(
+            embedding_module, "protective_tier_moves", return_value=[]
+        ) as plan,
+    ):
+        EmbeddingWorker(store, EmbeddingClient(api_key=""))._consolidate()
+        assert next(r for r in plan.call_args.args[0] if r.id == cid) == expected

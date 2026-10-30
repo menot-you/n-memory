@@ -265,19 +265,9 @@ def notification(method: str, params: Any) -> RpcFrame:
     return RpcFrame(method=method, params=params)
 
 
-def response(id: Any, result: Any) -> RpcFrame:
-    """A response frame. A null `result` is still an answer."""
-    return RpcFrame(id=id).with_result(result)
-
-
 def error_response(id: Any, error: RpcErrorObject) -> RpcFrame:
     """An error response frame."""
     return RpcFrame(id=id, error=error)
-
-
-def is_response(frame: RpcFrame) -> bool:
-    """A frame answering a request: it has an id AND a result or an error."""
-    return frame.id is not None and (frame.has_result or frame.error is not None)
 
 
 def bounded_identifier(value: str | None) -> str | None:
@@ -317,72 +307,6 @@ def _raw_turn_id(params: Any) -> Any:
 def _turn_id(params: Any) -> str | None:
     raw = _raw_turn_id(params)
     return bounded_identifier(raw) if isinstance(raw, str) else None
-
-
-class IncomingKind(Enum):
-    """What an inbound frame turned out to be."""
-
-    RESPONSE = "response"
-    NOTIFICATION = "notification"
-    REQUEST = "request"
-
-
-@dataclass(frozen=True)
-class IncomingFrame:
-    """A frame read from the child, classified.
-
-    A response carries either a result or an error, never both and never neither.
-    """
-
-    kind: IncomingKind
-    id: Any = None
-    method: str | None = None
-    params: Any = None
-    result: Any = None
-    error: RpcErrorObject | None = None
-
-
-def classify(frame: RpcFrame) -> IncomingFrame:
-    """Classify an inbound frame, or REFUSE it.
-
-    An unbounded method or an id that is not a bounded scalar is refused rather
-    than carried: both cross into durable state further down.
-    """
-    if is_response(frame):
-        if frame.id is None:
-            raise WireError("response has no id")
-        if frame.error is not None:
-            return IncomingFrame(
-                kind=IncomingKind.RESPONSE, id=frame.id, error=frame.error
-            )
-        return IncomingFrame(
-            kind=IncomingKind.RESPONSE,
-            id=frame.id,
-            result=frame.result if frame.has_result else None,
-        )
-    if frame.method is not None:
-        if len(frame.method.encode("utf-8")) > MAX_METHOD_BYTES:
-            raise WireError(f"JSON-RPC method exceeds {MAX_METHOD_BYTES} bytes")
-        params = frame.params if frame.params is not None else {}
-        if frame.id is not None:
-            valid_id = (
-                isinstance(frame.id, int) and not isinstance(frame.id, bool)
-            ) or (
-                isinstance(frame.id, str)
-                and len(frame.id.encode("utf-8")) <= MAX_IDENTIFIER_BYTES
-            )
-            if not valid_id:
-                raise WireError("JSON-RPC request id is not a bounded scalar")
-            return IncomingFrame(
-                kind=IncomingKind.REQUEST,
-                id=frame.id,
-                method=frame.method,
-                params=params,
-            )
-        return IncomingFrame(
-            kind=IncomingKind.NOTIFICATION, method=frame.method, params=params
-        )
-    raise WireError("JSONL frame is neither response nor method message")
 
 
 class TurnCompletionStatus:
@@ -583,44 +507,6 @@ def initialize_params() -> dict[str, Any]:
 def initialized_notification() -> RpcFrame:
     """The `initialized` notification that closes the handshake."""
     return notification("initialized", {})
-
-
-def thread_start_params(
-    model: str, cwd: str, approval_policy: ApprovalPolicy, sandbox: ExecutorSandbox
-) -> dict[str, Any]:
-    """The thread this client opens: no network, no web search, no ambient tools.
-
-    A workspace-write sandbox names its ONE writable root explicitly and excludes
-    the temp directories, so "writable" never means "writable anywhere".
-    """
-    params: dict[str, Any] = {
-        "model": model,
-        "cwd": cwd,
-        "approvalPolicy": approval_policy.as_str(),
-        "approvalsReviewer": "user",
-        "sandbox": sandbox.as_str(),
-        "allowProviderModelFallback": False,
-        "experimentalRawEvents": False,
-        "environments": [],
-        "dynamicTools": [],
-        "selectedCapabilityRoots": [],
-        "config": {
-            "sandbox_workspace_write.network_access": False,
-            "tools.web_search": False,
-            "web_search": "disabled",
-            "notify": [],
-            "analytics.enabled": False,
-            "orchestrator.mcp.enabled": False,
-            "orchestrator.skills.enabled": False,
-            "shell_environment_policy.inherit": "none",
-            "shell_environment_policy.set.PATH": SANDBOX_TOOL_PATH,
-        },
-    }
-    if sandbox is ExecutorSandbox.WORKSPACE_WRITE:
-        params["config"]["sandbox_workspace_write.writable_roots"] = [cwd]
-        params["config"]["sandbox_workspace_write.exclude_tmpdir_env_var"] = True
-        params["config"]["sandbox_workspace_write.exclude_slash_tmp"] = True
-    return params
 
 
 def turn_start_params(

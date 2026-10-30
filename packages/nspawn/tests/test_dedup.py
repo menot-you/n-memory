@@ -10,7 +10,9 @@ the test, not a child, decides when it ends.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -47,7 +49,7 @@ from test_driver import (
     write_mode,
 )
 
-from nspawn import supervisor
+from nspawn import mcp, route, supervisor
 from nspawn.mcp import McpServer
 from nspawn.process_identity import capture_process_identity
 from nspawn.registry import Registry
@@ -949,6 +951,176 @@ def test_a_run_row_held_past_the_lock_timeout_is_the_retryable_busy_refusal(
         ack = _serve(drv, _frame(drv, tmp_path), drivers)
     assert ack["refused"]["type"] == "IdempotencyBusy", ack
     assert ack["refused"]["retryable"] is True
+
+
+def test_a_store_held_while_the_door_opens_its_supervisor_is_a_busy_refusal(
+    registry: Registry, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The supervisor start keeps the busy type: the MCP refusal names
+    `BusyError`, so the caller can know that the same call can succeed later."""
+    # The wait is the store's own busy timeout (10 s); what it proves holds at 0.5 s.
+    monkeypatch.setattr(nott_database, "BUSY_TIMEOUT_MS", 500)
+    monkeypatch.setenv("NOTT_NSPAWN_RUN_ROOT", str(tmp_path / "runs"))
+    server = McpServer()
+    try:
+        with _held():
+            answer = _call(
+                server,
+                "nspawn_run_start",
+                {"prompt": "read it", "cwd": str(tmp_path), "class": DECLARED_CLASS},
+            )
+    finally:
+        server.close()
+    assert answer["error"]["data"]["type"] == "BusyError", answer
+
+
+def test_a_store_held_while_a_driver_opens_its_supervisor_is_a_busy_ack(
+    drv: ModuleType,
+    registry: Registry,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A driver's busy supervisor start is a typed ack, never a lost one."""
+    monkeypatch.setattr(nott_database, "BUSY_TIMEOUT_MS", 500)
+    monkeypatch.setenv("NOTT_NSPAWN_RUN_ROOT", str(tmp_path / "runs"))
+    with _held():
+        ack: dict[str, Any] = drv.serve(
+            _frame(drv, tmp_path),
+            lambda ack: None,
+            supervisor_factory=lambda: mcp._default_supervisor(sidecar_kind="driver"),
+            owns_supervisor=True,
+        )
+    assert ack["refused"]["type"] == "BusyError", ack
+
+
+def _persisted(tmp_path: Path, frame: dict[str, Any]) -> Path:
+    return tmp_path / "runs" / "drivers" / f"{frame['launch_uuid']}.ack"
+
+
+def test_a_store_held_after_a_driver_opens_its_supervisor_is_a_busy_ack(
+    drv: ModuleType,
+    registry: Registry,
+    tmp_path: Path,
+    roster_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reaper: Reaper,
+    parked: None,
+) -> None:
+    """A store held after the driver's supervisor exists, before admission, is a
+    typed busy ack. The driver admits nothing, and the same request succeeds when
+    the store is free."""
+    # The wait is the store's own busy timeout (10 s); what it proves holds at 0.5 s.
+    monkeypatch.setattr(nott_database, "BUSY_TIMEOUT_MS", 500)
+    drivers = _drivers(tmp_path, reaper)
+    held = contextlib.ExitStack()
+
+    def hold_once_built(built: Supervisor) -> Supervisor:
+        held.enter_context(_held())
+        return built
+
+    drivers.wrap = hold_once_built
+    frame = _frame(drv, tmp_path, key=None)
+    written: list[dict[str, Any]] = []
+    with held:
+        ack: dict[str, Any] = drv.serve(
+            frame, written.append, supervisor_factory=drivers, owns_supervisor=False
+        )
+    assert ack["refused"]["type"] == "BusyError", ack
+    assert "run_id" not in ack and "phase" not in ack, ack
+    assert written == [ack]
+    assert json.loads(_persisted(tmp_path, frame).read_text()) == ack
+    assert _runs(registry) == []
+    assert _run_dirs(tmp_path) == []
+    # `Drivers.__call__` applies `wrap` on each build: the retry holds nothing.
+    drivers.wrap = None
+    accepted = _serve(drv, _frame(drv, tmp_path, key=None), drivers)
+    assert "refused" not in accepted, accepted
+    assert _runs(registry) == [accepted["run_id"]]
+
+
+def test_a_busy_store_after_admission_keeps_the_driver_exit_path(
+    drv: ModuleType,
+    registry: Registry,
+    tmp_path: Path,
+    roster_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reaper: Reaper,
+    parked: None,
+) -> None:
+    """A busy store after admission is not a refusal: a worker drives the run, so
+    the driver exits as before and acks nothing."""
+    drivers = _drivers(tmp_path, reaper)
+
+    def busy(lock: object) -> None:
+        raise nott_database.BusyError("the store write lock is held")
+
+    # `serve` releases the key lock after `_dispatch` admits the run.
+    monkeypatch.setattr(drv, "_release", busy)
+    frame = _frame(drv, tmp_path, key=None)
+    written: list[dict[str, Any]] = []
+    with pytest.raises(nott_database.BusyError):
+        drv.serve(
+            frame, written.append, supervisor_factory=drivers, owns_supervisor=False
+        )
+    assert written == []
+    assert not _persisted(tmp_path, frame).exists()
+    assert len(_runs(registry)) == 1
+
+
+@pytest.mark.needs("systemd_user", "cgroup")
+def test_a_store_held_after_an_activation_is_admitted_is_a_busy_refusal(
+    registry: Registry, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The registry wraps the busy append of the writer slice in `RegistryError`.
+    The refusal names the busy store, claims no run phase and starts no child."""
+    # The wait is the store's own busy timeout (10 s); what it proves holds at 0.5 s.
+    registry._run("PRAGMA busy_timeout = 500")
+    marker = tmp_path / "peer-started"
+    peer = [
+        sys.executable,
+        "-c",
+        "import pathlib, sys; pathlib.Path(sys.argv[1]).write_text('started')",
+        str(marker),
+    ]
+    monkeypatch.setattr(
+        route,
+        "route_launch",
+        lambda *args, **kwargs: (peer, {**os.environ, "HOME": str(tmp_path)}),
+    )
+    held = contextlib.ExitStack()
+    admit = registry.admit_run
+
+    def admit_then_hold(*args: Any, **kwargs: Any) -> Any:
+        admitted = admit(*args, **kwargs)
+        held.enter_context(_held())
+        return admitted
+
+    monkeypatch.setattr(registry, "admit_run", admit_then_hold)
+    sv = Supervisor(registry, tmp_path / "runs", host_control=True)
+    server = McpServer(supervisor=sv, host_control=True)
+    try:
+        with held:
+            answer = _call(
+                server,
+                "nspawn_run_start",
+                {
+                    "cwd": str(tmp_path),
+                    "activation": {
+                        "provider": "claude",
+                        "account_route": "claude:fixture@subscription",
+                        "model": "fixture",
+                    },
+                },
+            )
+    finally:
+        server.close()
+        sv.shutdown()
+    assert answer["error"]["data"]["type"] == "BusyError", answer
+    assert "phase" not in answer["error"]["data"], answer
+    (run_id,) = _runs(registry)
+    row = registry.get_run(run_id)
+    assert row is not None and row.phase.value in ("pending", "failed"), row
+    assert not marker.exists()
 
 
 # ---------------------------------------------------------------------------

@@ -363,6 +363,9 @@ _MOVED: Final = re.compile(r"moved off (\S+) \(([^();]*)\)")
 SWARM_CAUSE_MAX_BYTES: Final = 300
 #: The bytes of one substitution alert.
 ALERT_MAX_BYTES: Final = 600
+#: The longest "not listed" line the swarm ceiling can add: its count plus that
+#: fixed text. The head reserves it so the notice's last line is never cut.
+NOTICE_REST_MAX_CHARS: Final = 72
 #: The bytes of one cause in the alert, so the route that served always fits.
 ALERT_CAUSE_MAX_BYTES: Final = 120
 
@@ -379,6 +382,35 @@ def continued_in(warning: str | None) -> str | None:
     # The last match: the note comes after any vendor text in the warning.
     found = _CONTINUED.findall(warning or "")
     return found[-1] if found else None
+
+
+def _continued_line(continuations: Sequence[str], room: int) -> str:
+    """The CONTINUED line within `room` characters: whole entries, then a count.
+
+    A swarm has no member limit, so no reason cap can hold every continuation.
+    The room is the notice's own. An entry enters only while it fits whole, so
+    the line never names a run `as run` with no successor. What does not fit is
+    counted, never hidden.
+    """
+    total = len(continuations)
+    full = "CONTINUED: " + "; ".join(continuations)
+    if len(full) <= room:
+        return full
+
+    def count(dropped: int) -> str:
+        if dropped == 1:
+            return "1 continuation is not listed"
+        return f"{dropped} continuations are not listed"
+
+    for shown in range(total - 1, 0, -1):
+        text = (
+            "CONTINUED: "
+            + "; ".join(continuations[:shown])
+            + f"; and {count(total - shown)}"
+        )
+        if len(text) <= room:
+            return text
+    return f"CONTINUED: {count(total)}"
 
 
 def _route(row: RunRow) -> str:
@@ -428,7 +460,10 @@ def swarm_body(members: Sequence[tuple[str, str, RunRow | None]]) -> str | None:
     None only when no member row names a `swarm:` group: that notice is a single
     run's. Each line names a member's run id, phase, executed account and, when
     it did not complete, its cause. A run that continues a failed member's work
-    names that member.
+    names that member, and the run it continued names its successor on its own
+    line: a Note cut cannot hide it. The CONTINUED line names every continuation
+    the notice can hold: whole entries, then a count of the rest, never a cut
+    one, so a line the ceiling drops cannot hide a successor.
     The ALERT line names each member whose work did not succeed. The answers
     stay with `nspawn_result_show`. The body always fits MAX_BODY_CHARS: past
     it, the last members are counted, not listed.
@@ -446,6 +481,7 @@ def swarm_body(members: Sequence[tuple[str, str, RunRow | None]]) -> str | None:
     }
     rows = {run_id: row for run_id, _, row in members if row is not None}
     alerts: list[str] = []
+    continuations: list[str] = []
     lines: list[str] = []
     for run_id, phase, row in members:
         line = f"- nSPAWN run {run_id} is {phase}."
@@ -456,6 +492,12 @@ def swarm_body(members: Sequence[tuple[str, str, RunRow | None]]) -> str | None:
             )
         if run_id in continued:
             line += f" It continues the work of run {continued[run_id]}."
+        successor = None if row is None else continued_in(row.warning)
+        if successor is not None:
+            # Its own successor, whatever the Note below holds: the failover
+            # note sits after vendor text the 300-byte cut drops first.
+            line += f" Its work continues as run {successor}."
+            continuations.append(f"run {run_id} as run {successor}")
         if row is not None and not any(run_id == o for o in continued.values()):
             # The last run of a chain names the whole move once.
             chain = [row]
@@ -484,19 +526,34 @@ def swarm_body(members: Sequence[tuple[str, str, RunRow | None]]) -> str | None:
             "nspawn_result_show; nothing else is pending."
         )
     ]
-    if alerts:
+    if continuations:
+        # The head reserves the ceiling's "not listed" line, so a CONTINUED
+        # line at full room still leaves the notice under MAX_BODY_CHARS.
         head.append(
             _executor_data(
-                _cut(
-                    f"ALERT: {len(alerts)} member(s) did not succeed: "
-                    + "; ".join(alerts),
-                    REASON_MAX_BYTES * 4,
+                _continued_line(
+                    continuations,
+                    MAX_BODY_CHARS - len(head[0]) - 1 - NOTICE_REST_MAX_CHARS,
                 )
             )
         )
+    if alerts:
+        joined = sum(len(line) + 1 for line in head) - 1
+        room = MAX_BODY_CHARS - joined - 1 - NOTICE_REST_MAX_CHARS
+        if room >= 48:
+            # The ALERT line takes what the notice still holds after CONTINUED.
+            head.append(
+                _executor_data(
+                    _cut(
+                        f"ALERT: {len(alerts)} member(s) did not succeed: "
+                        + "; ".join(alerts),
+                        min(REASON_MAX_BYTES * 4, room),
+                    )
+                )
+            )
     body = "\n".join(head)
     for shown, line in enumerate(lines):
-        rest = f"\n{len(lines) - shown} more runs are not listed; nspawn_run_list lists them."
+        rest = f"\n{len(lines) - shown} more runs not listed: nspawn_run_list(include_terminal=true)."
         if len(body) + 1 + len(line) + len(rest) > MAX_BODY_CHARS:
             return body + rest
         body += "\n" + line

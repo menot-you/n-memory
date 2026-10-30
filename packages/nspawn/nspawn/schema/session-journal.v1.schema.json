@@ -1,0 +1,223 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nott.ing/schema/session-journal.v1",
+  "title": "One row of the nSPAWN session journal, format version 1",
+  "description": "nspawn session serve stores each row in this shape, and nspawn session show prints the rows of a session in seq order. Every row has seq (from 0, with no gap), time (RFC 3339 UTC: the vendor timestamp, or the observation time for a status row), src (the byte offset in the source file of the line the row comes from; for a status row, the offset consumed so far) and type. An injected body keeps only its kind and its size in UTF-8 bytes: a text's own bytes, a list of texts summed, any other value as compact JSON.",
+  "type": "object",
+  "required": ["seq", "time", "src", "type"],
+  "properties": {
+    "seq": {"type": "integer", "minimum": 0},
+    "time": {"type": "string", "format": "date-time"},
+    "src": {"type": "integer", "minimum": 0},
+    "run": {"type": "string", "minLength": 1, "description": "Added by session show for a top-level session whose resolved home is ~/.nott/state/nspawn/runs/<run>/<vendor>. Absent for subagents, teammates, other homes and homes that cannot resolve. The stored row is unchanged."},
+    "type": {
+      "enum": ["session", "message", "reasoning", "tool_call", "tool_result", "child", "hook", "config", "compaction", "status"]
+    }
+  },
+  "oneOf": [
+    {"$ref": "#/$defs/session"},
+    {"$ref": "#/$defs/message"},
+    {"$ref": "#/$defs/reasoning"},
+    {"$ref": "#/$defs/tool_call"},
+    {"$ref": "#/$defs/tool_result"},
+    {"$ref": "#/$defs/child"},
+    {"$ref": "#/$defs/hook"},
+    {"$ref": "#/$defs/config"},
+    {"$ref": "#/$defs/compaction"},
+    {"$ref": "#/$defs/status"}
+  ],
+  "$defs": {
+    "text": {"type": ["string", "null"]},
+    "count": {"type": "integer", "minimum": 0},
+    "injected": {
+      "description": "What Claude Code injected and the row leaves out: its kind (kinds joined with +) and its size.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "bytes"],
+      "properties": {"kind": {"type": "string", "minLength": 1}, "bytes": {"$ref": "#/$defs/count"}}
+    },
+    "media": {
+      "description": "One image or document. file is <sha256>.<ext> under ~/.nott/sessions/media/, or null for a media type the journal keeps no file of.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "mime", "bytes", "sha256", "file"],
+        "properties": {
+          "kind": {"type": "string"},
+          "mime": {"type": "string"},
+          "bytes": {"$ref": "#/$defs/count"},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "file": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}\\.(png|jpeg|gif|webp)$"}
+        }
+      }
+    },
+    "head": {
+      "seq": {"type": "integer"},
+      "time": {"type": "string"},
+      "src": {"type": "integer"}
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seq", "time", "src", "type", "vendor", "id", "source", "account", "cwd", "model", "effort", "parent", "format"],
+      "properties": {
+        "seq": true, "time": true, "src": true, "run": true,
+        "type": {"const": "session"},
+        "metadata": {"type": "object"},
+        "vendor": {"type": "string"},
+        "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,299}$"},
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["home", "path"],
+          "properties": {"home": {"type": "string"}, "path": {"type": "string"}}
+        },
+        "account": {"$ref": "#/$defs/text"},
+        "cwd": {"$ref": "#/$defs/text"},
+        "model": {"$ref": "#/$defs/text"},
+        "effort": {"$ref": "#/$defs/text"},
+        "parent": {"$ref": "#/$defs/text"},
+        "format": {"const": 1}
+      }
+    },
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seq", "time", "src", "type", "role"],
+      "properties": {
+        "seq": true, "time": true, "src": true, "run": true,
+        "type": {"const": "message"},
+        "uuid": {"type": "string"},
+        "parentUuid": {"$ref": "#/$defs/text"},
+        "logicalParentUuid": {"$ref": "#/$defs/text"},
+        "role": {"enum": ["owner", "agent"]},
+        "text": {"type": "string"},
+        "mid": {"type": "string"},
+        "injected": {"$ref": "#/$defs/injected"},
+        "media": {"$ref": "#/$defs/media"}
+      }
+    },
+    "reasoning": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seq", "time", "src", "type", "mid"],
+      "properties": {
+        "seq": true, "time": true, "src": true, "run": true,
+        "type": {"const": "reasoning"},
+        "uuid": {"type": "string"},
+        "parentUuid": {"$ref": "#/$defs/text"},
+        "logicalParentUuid": {"$ref": "#/$defs/text"},
+        "mid": {"type": "string"},
+        "text": {"type": "string"},
+        "redacted": {"$ref": "#/$defs/count"}
+      }
+    },
+    "tool_call": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seq", "time", "src", "type", "mid", "id", "name", "input"],
+      "properties": {
+        "seq": true, "time": true, "src": true, "run": true,
+        "type": {"const": "tool_call"},
+        "uuid": {"type": "string"},
+        "parentUuid": {"$ref": "#/$defs/text"},
+        "logicalParentUuid": {"$ref": "#/$defs/text"},
+        "mid": {"type": "string"},
+        "id": {"type": "string"},
+        "name": {"type": "string"},
+        "input": true
+      }
+    },
+    "tool_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seq", "time", "src", "type", "id", "ok", "output"],
+      "properties": {
+        "seq": true, "time": true, "src": true, "run": true,
+        "type": {"const": "tool_result"},
+        "uuid": {"type": "string"},
+        "parentUuid": {"$ref": "#/$defs/text"},
+        "logicalParentUuid": {"$ref": "#/$defs/text"},
+        "id": {"type": "string"},
+        "ok": {"type": "boolean"},
+        "output": {"type": "string"},
+        "media": {"$ref": "#/$defs/media"},
+        "injected": {"$ref": "#/$defs/injected"},
+        "spill_missing": {"const": true}
+      }
+    },
+    "child": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seq", "time", "src", "type", "id", "kind"],
+      "properties": {
+        "seq": true, "time": true, "src": true, "run": true,
+        "type": {"const": "child"},
+        "uuid": {"type": "string"},
+        "parentUuid": {"$ref": "#/$defs/text"},
+        "logicalParentUuid": {"$ref": "#/$defs/text"},
+        "id": {"type": "string"},
+        "kind": {"enum": ["subagent", "nspawn_run"]}
+      }
+    },
+    "hook": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seq", "time", "src", "type", "event", "name", "tool", "outcome"],
+      "properties": {
+        "seq": true, "time": true, "src": true, "run": true,
+        "type": {"const": "hook"},
+        "uuid": {"type": "string"},
+        "parentUuid": {"$ref": "#/$defs/text"},
+        "logicalParentUuid": {"$ref": "#/$defs/text"},
+        "event": {"$ref": "#/$defs/text"},
+        "name": {"$ref": "#/$defs/text"},
+        "tool": {"$ref": "#/$defs/text"},
+        "outcome": {"enum": ["ok", "blocked", "error", "cancelled", "timeout"]},
+        "exit_code": {"type": "integer"},
+        "duration_ms": {"$ref": "#/$defs/count"},
+        "text": {"type": "string", "description": "Only for blocked and error."}
+      }
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seq", "time", "src", "type", "model", "effort"],
+      "properties": {
+        "seq": true, "time": true, "src": true, "run": true,
+        "type": {"const": "config"},
+        "uuid": {"type": "string"},
+        "parentUuid": {"$ref": "#/$defs/text"},
+        "logicalParentUuid": {"$ref": "#/$defs/text"},
+        "model": {"$ref": "#/$defs/text"},
+        "effort": {"$ref": "#/$defs/text"}
+      }
+    },
+    "compaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seq", "time", "src", "type", "trigger", "tokens_before"],
+      "properties": {
+        "seq": true, "time": true, "src": true, "run": true,
+        "type": {"const": "compaction"},
+        "uuid": {"type": "string"},
+        "parentUuid": {"$ref": "#/$defs/text"},
+        "logicalParentUuid": {"$ref": "#/$defs/text"},
+        "trigger": {"$ref": "#/$defs/text"},
+        "tokens_before": {"type": ["integer", "null"], "minimum": 0}
+      }
+    },
+    "status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seq", "time", "src", "type", "status", "reason"],
+      "properties": {
+        "seq": true, "time": true, "src": true, "run": true,
+        "type": {"const": "status"},
+        "status": {"enum": ["live", "waiting", "ended", "failed"]},
+        "reason": {"$ref": "#/$defs/text"}
+      }
+    }
+  }
+}
