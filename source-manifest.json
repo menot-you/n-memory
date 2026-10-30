@@ -627,7 +627,7 @@
     "nmemory/commands/projection.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "62017f3289bbb5c8d53fb5fd746f85ced7996df976888c5b36bd9997425b6066"
+      "sha256": "32db76ea4d091d3623eacf31500b236a688302e394ba9c9b01d5f0bdcbbd4f68"
     },
     "nmemory/commands/proposal.py": {
       "executable": false,
@@ -722,7 +722,7 @@
     "nmemory/hooks/hooks.json": {
       "executable": false,
       "mode": 420,
-      "sha256": "213b10ff98ad1b62b046dd53bf7083353befd6a7d95a0e1478fce06a79853e99"
+      "sha256": "30c7e142a51851f31cc5c057c9043128843b36a77d63c6060bde4dbeb588c008"
     },
     "nmemory/hooks/nmemory-capture-gate.py": {
       "executable": true,
@@ -1717,7 +1717,7 @@
     "packages/nspawn/tests/fixtures/projection.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "62017f3289bbb5c8d53fb5fd746f85ced7996df976888c5b36bd9997425b6066"
+      "sha256": "32db76ea4d091d3623eacf31500b236a688302e394ba9c9b01d5f0bdcbbd4f68"
     },
     "packages/nspawn/tests/fixtures/run-list-caller.json": {
       "executable": false,
@@ -3477,7 +3477,7 @@
     "tests/test_release_export.py": {
       "executable": false,
       "mode": 420,
-      "sha256": "e31ad815dfb3a2b3fa77419c1eefcaab03b60e0a5ee32d792b4fa4626a228513"
+      "sha256": "32f73ee48c0bdc53c0976ac6c71fc11add890e836cb667bb450405781871e621"
     },
     "tests/test_release_self_exit.py": {
       "executable": false,

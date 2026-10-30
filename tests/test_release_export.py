@@ -1103,3 +1103,36 @@ def test_release_export_accepts_every_declared_component() -> None:
             ["--component", component, "--source-root", ".", "--output", "out"],
         )
         assert args.component == component
+
+
+def test_owner_question_ids_are_private_records(tmp_path: Path) -> None:
+    from nmemory.commands import projection
+
+    path = tmp_path / "route.md"
+    path.write_text("Owner answer " + "q-" + "9e13b715" + ".\n")
+    assert projection.scan(tmp_path) == [
+        {"path": "route.md", "line": 1, "rule": "private-record"}
+    ]
+
+
+def test_question_id_rule_keeps_its_word_boundaries(tmp_path: Path) -> None:
+    from nmemory.commands import projection
+
+    path = tmp_path / "note.md"
+    for allowed in ("q-9e13b71", "q-9e13b7150", "q-9E13B715", "faq-9e13b715", "q-xyz"):
+        path.write_text(allowed + "\n")
+        assert projection.scan(tmp_path) == []
+
+
+def test_docstring_question_id_in_parentheses_is_removed(tmp_path: Path) -> None:
+    from nmemory.commands import projection
+
+    path = tmp_path / "module.py"
+    path.write_text(
+        'def run() -> None:\n    """Run the unit (owner answer '
+        + "q-"
+        + '9e13b715)."""\n'
+    )
+    projection.public_python(path)
+    assert projection.scan(tmp_path) == []
+    assert "owner answer" not in path.read_text()

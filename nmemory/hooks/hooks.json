@@ -40,7 +40,7 @@
         ]
       },
       {
-        "matcher": "^(Agent|Workflow|mcp__(plugin_nott_)?nspawn__nspawn_run_start)$",
+        "matcher": "^(Agent|Workflow)$",
         "hooks": [
           {
             "type": "command",

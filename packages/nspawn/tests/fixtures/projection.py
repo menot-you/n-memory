@@ -13,13 +13,15 @@ import tokenize
 from pathlib import Path
 from typing import Any
 
+RECORD_REFERENCE = r"\b(?:cap-\d+|q-[0-9a-f]{8})\b"
+PARENTHETICAL_RECORD = rf"\s*\([^()]*{RECORD_REFERENCE}[^()]*\)"
 PRIVATE = {
     "private-host-path": re.compile(r"(?<![\w}~$./-])/(?:guara|nott)/(?:[\w./-]+)"),
     "personal-home": re.compile(r"/(?:home|Users)/nott(?:/|\b)"),
     "private-link": re.compile(
         r"https?://(?:docs[.]nott[.]ing|github[.]com/menot-you/pynott)(?:[/\w.#?=-]*)"
     ),
-    "private-record": re.compile(r"\bcap-(?!1\b)\d+\b"),
+    "private-record": re.compile(r"\b(?:cap-(?!1\b)\d+|q-[0-9a-f]{8})\b"),
     "credential": re.compile(
         r"\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|sk-(?:live-|proj-)?[A-Za-z0-9_-]{24,})\b"
     ),
@@ -100,7 +102,7 @@ def public_python(path: Path) -> None:
         if private(value.value):
             paragraphs = []
             for raw_part in re.split(r"\n[ \t]*\n", value.value):
-                part = re.sub(r"\s*\([^()]*\bcap-\d+\b[^()]*\)", "", raw_part)
+                part = re.sub(PARENTHETICAL_RECORD, "", raw_part)
                 if PRIVATE["private-record"].search(part):
                     sentences = [
                         s
@@ -112,9 +114,7 @@ def public_python(path: Path) -> None:
                     paragraphs.append(part)
             public = "\n\n".join(paragraphs)
             if not public.strip():
-                public = re.sub(
-                    r"\s*\([^()]*\bcap-\d+\b[^()]*\)", "", value.value.splitlines()[0]
-                )
+                public = re.sub(PARENTHETICAL_RECORD, "", value.value.splitlines()[0])
                 if not public.strip() or private(public):
                     public = ""
             target: ast.expr | ast.stmt = value
@@ -231,7 +231,12 @@ def public_runtime(stage: Path, mapping: dict[str, str] | None = None) -> None:
             continue
         text = path.read_text()
         if relative.endswith("validation.py"):
-            text = PRIVATE["private-record"].sub("cap-<number>", text)
+            text = PRIVATE["private-record"].sub(
+                lambda match: (
+                    "cap-<number>" if match.group().startswith("cap-") else "q-<id>"
+                ),
+                text,
+            )
         else:
             text = re.sub(r" \(cap-\d+\)", "", text)
         path.write_text(text)
